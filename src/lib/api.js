@@ -1,0 +1,104 @@
+// Thin wrapper that falls back to mock data when running outside Electron (browser preview)
+const isElectron = typeof window !== 'undefined' && !!window.api
+
+const mock = {
+  projects: [],
+  encounters: {},
+  media: {},
+  reviews: {},
+}
+
+export const api = isElectron ? window.api : {
+  listProjects: async () => mock.projects,
+  createProject: async (d) => { const p = { id: Date.now(), ...d, created_at: new Date().toISOString() }; mock.projects.push(p); return p },
+  getProject: async (id) => mock.projects.find(p => p.id == id) || null,
+  updateProject: async () => true,
+  deleteProject: async (id) => { mock.projects = mock.projects.filter(p => p.id != id); return true },
+  listEncounters: async () => [],
+  getEncounter: async () => null,
+  createEncounter: async () => ({ id: Date.now() }),
+  renameEncounter: async () => true,
+  countEncounterReviews: async () => 0,
+  deleteEncounter: async () => true,
+  listMediaFiles: async () => [],
+  getMediaFile: async () => null,
+  updateMediaType: async () => true,
+  countMediaReviews: async () => 0,
+  moveMediaFile: async () => true,
+  renameMediaFile: async () => true,
+  deleteMediaFile: async () => true,
+  getVideoUrl: async (p) => p,
+  listReviews: async () => [],
+  createReview: async (d) => ({ id: Date.now(), ...d, status: 'in_progress', created_at: new Date().toISOString() }),
+  getReview: async () => null,
+  submitReview: async () => true,
+  unsubmitReview: async () => true,
+  deleteReview: async () => true,
+  restoreReview: async () => true,
+  listDeletedReviews: async () => [],
+  saveTimestamp: async (_, d) => Date.now(),
+  deleteTimestamp: async () => true,
+  updateTimestamp: async () => true,
+  saveFormResponse: async () => true,
+  saveMediaType: async () => Date.now(),
+  listMediaTypes: async () => [],
+  countMediaTypeReviews: async () => 0,
+  deleteMediaType: async () => true,
+  saveForm: async () => Date.now(),
+  listForms: async () => [],
+  getForm: async () => null,
+  countFormResponses: async () => 0,
+  deleteForm: async () => true,
+  saveInstruction: async () => Date.now(),
+  listInstructions: async () => [],
+  deleteInstruction: async () => true,
+  uploadPdf: async () => null,
+  getAppSettings: async () => ({ user_uuid: 'mock-uuid' }),
+  setAppSettings: async () => ({}),
+  getProjectName: async () => null,
+  setProjectName: async () => true,
+  setCloudFolderName: async () => true,
+  getCloudFolderName: async () => null,
+  getMachineReviewNames: async () => [],
+  setOwnerPassword: async () => true,
+  verifyOwnerPassword: async () => true,
+  lockProject: async () => true,
+  syncNow: async () => ({ ok: true }),
+  getSyncStatus: async () => ({ syncFolder: null, syncMode: 'none', syncFolderExists: false, cloudProvider: null, cloudFolderId: null, tokenExpired: false, lastSyncAt: null, hasPassword: false, isUnlocked: true }),
+  selectSyncFolder: async () => null,
+  saveProjectFile: async () => null,
+  loadProjectFile: async () => null,
+  importProjectAsNew: async () => ({ ok: true, projectId: null, syncHint: { mode: 'none', provider: null } }),
+  joinFromLocalFolder: async () => ({ error: 'Not in Electron' }),
+  joinFromCloudFolder: async () => ({ error: 'Not in Electron' }),
+  exportExcel: async () => null,
+  syncAcceptConfigUpdate: async () => ({ ok: true }),
+  onConfigUpdateAvailable: () => {},
+  offConfigUpdateAvailable: () => {},
+  cloudConnectOneDrive: async () => ({ error: 'Not in Electron' }),
+  cloudConnectGoogleDrive: async () => ({ error: 'Not in Electron' }),
+  cloudDisconnect: async () => ({ ok: true }),
+  cloudStatus: async () => ({ provider: null, connected: false }),
+  cloudListFolders: async () => ({ ok: true, folders: [] }),
+  cloudSelectFolder: async () => ({ ok: true }),
+  cloudSyncNow: async () => ({ ok: true }),
+  cloudCancelAuth: async () => ({ ok: true }),
+  cloudResolveFolderLink: async () => ({ error: 'Not in Electron' }),
+  fetchProjectStructure: async () => ({ ok: true }),
+  checkManifest: async () => null,
+  selectFolder: async () => null,
+  scanMediaFolder: async () => ({ encountersAdded: 0, filesAdded: 0, directMediaFiles: 0, totalSubfolders: 0, stillUnlinked: 0, stillBroken: 0 }),
+  mediaHealthCheck: async () => ({ unlinked: 0, broken: 0, ok: 0, total: 0, hasMediaFolder: false, issues: [] }),
+}
+
+export function formatTime(seconds) {
+  if (seconds == null || isNaN(seconds)) return '0:00'
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+export function formatDate(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}

@@ -1,0 +1,1537 @@
+import { useState, useEffect, useRef } from 'react'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { ChevronLeft, Plus, FolderOpen, ChevronRight, Trash2, Copy, Edit2, Check, Lock, Unlock, Cloud, HardDrive, X, RefreshCw, AlertTriangle, User } from 'lucide-react'
+import { api } from '../lib/api'
+import FormBuilder from '../components/setup/FormBuilder'
+import MediaTypeEditor from '../components/setup/MediaTypeEditor'
+import InstructionEditor from '../components/setup/InstructionEditor'
+import Modal from '../components/ui/Modal'
+
+const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Media Folder', 'Media Files', 'Sync', 'Keybinds', 'Access', 'Deleted Reviews']
+
+export default function SetupPage() {
+  const { projectId } = useParams()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [section, setSection] = useState(() => {
+    const s = new URLSearchParams(location.search).get('section')
+    const n = parseInt(s, 10)
+    return (!isNaN(n) && n >= 0 && n < SECTIONS.length) ? n : 0
+  })
+  const [project, setProject] = useState(null)
+  const [forms, setForms] = useState([])
+  const [instructions, setInstructions] = useState([])
+  const [mediaTypes, setMediaTypes] = useState([])
+  const [mediaFolder, setMediaFolder] = useState('')
+  const [syncFolder, setSyncFolder] = useState('')
+  const [keybinds, setKeybinds] = useState([])
+  const [scanResult, setScanResult] = useState(null)
+  const [encounters, setEncounters] = useState([])
+  const [editingForm, setEditingForm] = useState(null)
+  const [editingInstr, setEditingInstr] = useState(null)
+  const [editingType, setEditingType] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  // Password / lock state
+  const [isUnlocked, setIsUnlocked] = useState(false)
+  const [hasPassword, setHasPassword] = useState(false)
+  const [showUnlock, setShowUnlock] = useState(false)
+  const [unlockInput, setUnlockInput] = useState('')
+  const [unlockError, setUnlockError] = useState('')
+  const [newPw, setNewPw] = useState('')
+  const [newPwConfirm, setNewPwConfirm] = useState('')
+  const [pwSaved, setPwSaved] = useState(false)
+  // Delete confirmation modal state
+  const [deleteConfirm, setDeleteConfirm] = useState(null) // { type, item, count }
+  const [deleteLoading, setDeleteLoading] = useState(false)
+  // Per-project reviewer name
+  const [projectReviewerName, setProjectReviewerName] = useState('')
+  const [projectReviewerNameSaved, setProjectReviewerNameSaved] = useState(false)
+  // Sync mode state
+  const [syncMode, setSyncMode] = useState('none') // 'none' | 'local' | 'cloud'
+  const [cloudStatus, setCloudStatus] = useState(null)
+  const [cloudConnecting, setCloudConnecting] = useState(false)
+  const [cloudError, setCloudError] = useState('')
+  const [showFolderPicker, setShowFolderPicker] = useState(false)
+  const [folderPickerFolders, setFolderPickerFolders] = useState([])
+  const [folderPickerParent, setFolderPickerParent] = useState(null)
+  const [folderPickerLoading, setFolderPickerLoading] = useState(false)
+  const [folderBreadcrumbs, setFolderBreadcrumbs] = useState([])
+  const [folderLinkInput, setFolderLinkInput] = useState('')
+  const [folderLinkError, setFolderLinkError] = useState('')
+  const [folderLinkLoading, setFolderLinkLoading] = useState(false)
+
+  useEffect(() => { load() }, [projectId])
+
+  async function load() {
+    setLoading(true)
+    const [proj, fs, ins, types, encs] = await Promise.all([
+      api.getProject(projectId),
+      api.listForms(projectId),
+      api.listInstructions(projectId),
+      api.listMediaTypes(projectId),
+      api.listEncounters(projectId),
+    ])
+    // Load media files for each encounter
+    const encsWithMedia = await Promise.all(
+      (encs || []).map(async enc => ({
+        ...enc,
+        media: await api.listMediaFiles(enc.id),
+      }))
+    )
+    setProject(proj)
+    setForms(fs)
+    setInstructions(ins)
+    setMediaTypes(types)
+    setEncounters(encsWithMedia)
+    setMediaFolder(proj?.media_folder || '')
+    setSyncFolder(proj?.sync_folder || '')
+    setKeybinds(proj?.keybinds || [])
+    // Load sync/cloud status
+    const status = await api.getSyncStatus(Number(projectId))
+    setSyncMode(status.syncMode || 'none')
+    if (status.cloudProvider) {
+      const [cs, folderName] = await Promise.all([
+        api.cloudStatus(Number(projectId)),
+        api.getCloudFolderName(Number(projectId)),
+      ])
+      setCloudStatus(cs ? { ...cs, folderName } : null)
+    } else {
+      setCloudStatus(null)
+    }
+    // Load per-project reviewer name
+    const projName = await api.getProjectName(Number(projectId))
+    setProjectReviewerName(projName || '')
+
+    const hasPw = proj?.has_password ?? false
+    setHasPassword(hasPw)
+    // Only prompt on first load — if already unlocked this session, stay unlocked
+    setIsUnlocked(prev => {
+      if (!hasPw) return true
+      if (prev) return true  // already unlocked, don't re-prompt
+      setShowUnlock(true)
+      return false
+    })
+    setLoading(false)
+  }
+
+  async function handleUnlock(e) {
+    e?.preventDefault()
+    const ok = await api.verifyOwnerPassword(Number(projectId), unlockInput)
+    if (ok) {
+      setIsUnlocked(true)
+      setShowUnlock(false)
+      setUnlockInput('')
+      setUnlockError('')
+    } else {
+      setUnlockError('Incorrect password')
+    }
+  }
+
+  async function handleLock() {
+    await api.lockProject(Number(projectId))
+    setIsUnlocked(false)
+  }
+
+  async function handleSetPassword() {
+    if (newPw !== newPwConfirm) return
+    await api.setOwnerPassword(Number(projectId), newPw || null)
+    setHasPassword(!!newPw)
+    setIsUnlocked(true)
+    setNewPw('')
+    setNewPwConfirm('')
+    setPwSaved(true)
+    setTimeout(() => setPwSaved(false), 2000)
+  }
+
+  async function handleSwitchMode(newMode) {
+    // Disconnect old mode first
+    if (syncMode === 'cloud' && cloudStatus?.connected) {
+      await api.cloudDisconnect(Number(projectId))
+      setCloudStatus(null)
+    }
+    if (syncMode === 'local') {
+      await api.updateProject(projectId, { ...project, media_folder: mediaFolder, sync_folder: null, keybinds })
+      setSyncFolder('')
+    }
+    setSyncMode(newMode)
+  }
+
+  async function handleCloudConnect(provider) {
+    setCloudConnecting(true)
+    setCloudError('')
+    try {
+      const result = provider === 'onedrive'
+        ? await api.cloudConnectOneDrive()
+        : await api.cloudConnectGoogleDrive()
+      if (result.error) { setCloudError(result.error); return }
+      // cloud_provider isn't in the DB yet (folder not selected), so build status manually
+      setCloudStatus({ provider, connected: true, email: result.email || '', tokenExpired: false, cloudFolderId: null })
+      setShowFolderPicker(true)
+      setFolderBreadcrumbs([])
+      handleLoadFolders(provider, null)
+    } catch (e) {
+      setCloudError(e.message || 'Connection failed')
+    } finally {
+      setCloudConnecting(false)
+    }
+  }
+
+  async function handleFolderLinkSubmit() {
+    setFolderLinkError('')
+    setFolderLinkLoading(true)
+    const result = await api.cloudResolveFolderLink(cloudStatus?.provider, folderLinkInput.trim())
+    setFolderLinkLoading(false)
+    if (result.error) { setFolderLinkError(result.error); return }
+    await api.cloudSelectFolder(Number(projectId), cloudStatus?.provider, result.folderId)
+    if (result.folderName) await api.setCloudFolderName(Number(projectId), result.folderName)
+    setFolderLinkInput('')
+    const [cs, folderName] = await Promise.all([
+      api.cloudStatus(Number(projectId)),
+      api.getCloudFolderName(Number(projectId)),
+    ])
+    setCloudStatus(cs ? { ...cs, folderName } : null)
+    setSyncMode('cloud')
+  }
+
+  async function handleCancelAuth() {
+    await api.cloudCancelAuth()
+    setCloudConnecting(false)
+    setCloudError('')
+  }
+
+  async function handleCloudDisconnect() {
+    await api.cloudDisconnect(Number(projectId))
+    setCloudStatus(null)
+    setSyncMode('none')
+    setCloudError('')
+  }
+
+  async function handleLoadFolders(provider, parentId) {
+    setFolderPickerLoading(true)
+    const result = await api.cloudListFolders(cloudStatus?.provider || provider, parentId)
+    setFolderPickerFolders(result.folders || [])
+    setFolderPickerParent(parentId)
+    setFolderPickerLoading(false)
+  }
+
+  async function handleSelectCloudFolder(folder) {
+    const folderId = folder.id || 'root'
+    await api.cloudSelectFolder(Number(projectId), cloudStatus?.provider, folderId)
+    if (folder.name) await api.setCloudFolderName(Number(projectId), folder.name)
+    setShowFolderPicker(false)
+    const cs = await api.cloudStatus(Number(projectId))
+    setCloudStatus({ ...cs, folderName: folder.name })
+    setSyncMode('cloud')
+  }
+
+  function handleFolderPickerDrillIn(folder) {
+    setFolderBreadcrumbs(bc => [...bc, { id: folderPickerParent, name: bc.length === 0 ? 'Root' : folderPickerFolders.find(f => f.id === folderPickerParent)?.name }])
+    handleLoadFolders(cloudStatus?.provider, folder.id)
+  }
+
+  function handleFolderPickerRefresh() {
+    handleLoadFolders(cloudStatus?.provider, folderPickerParent)
+  }
+
+  function handleFolderPickerBack() {
+    const prev = folderBreadcrumbs[folderBreadcrumbs.length - 1]
+    setFolderBreadcrumbs(bc => bc.slice(0, -1))
+    handleLoadFolders(cloudStatus?.provider, prev?.id || null)
+  }
+
+  async function handleSaveProjectReviewerName() {
+    await api.setProjectName(Number(projectId), projectReviewerName.trim())
+    setProjectReviewerNameSaved(true)
+    setTimeout(() => setProjectReviewerNameSaved(false), 2000)
+  }
+
+  async function handleDeleteRequest(type, item) {
+    setDeleteLoading(true)
+    let count = 0
+    if (type === 'form') count = await api.countFormResponses(item.id)
+    if (type === 'mediaType') count = await api.countMediaTypeReviews(item.id)
+    setDeleteLoading(false)
+    setDeleteConfirm({ type, item, count })
+  }
+
+  async function handleDeleteConfirm() {
+    if (!deleteConfirm) return
+    const { type, item } = deleteConfirm
+    setDeleteLoading(true)
+    if (type === 'form') await api.deleteForm(projectId, item.id)
+    if (type === 'instruction') await api.deleteInstruction(projectId, item.id)
+    if (type === 'mediaType') await api.deleteMediaType(projectId, item.id)
+    setDeleteLoading(false)
+    setDeleteConfirm(null)
+    load()
+  }
+
+  async function handleScanFolder() {
+    if (!mediaFolder) return
+    setSaving(true)
+    const result = await api.scanMediaFolder(mediaFolder, projectId)
+    setScanResult(result)
+    setSaving(false)
+    await load()
+  }
+
+  async function handleSaveKeybinds(newBinds) {
+    setKeybinds(newBinds)
+    await api.updateProject(projectId, { ...project, media_folder: mediaFolder, sync_folder: syncFolder, keybinds: newBinds })
+  }
+
+  async function handleSaveSyncFolder(folder) {
+    setSyncFolder(folder)
+    await api.updateProject(projectId, { ...project, media_folder: mediaFolder, sync_folder: folder, keybinds })
+  }
+
+  async function handleSelectSyncFolder() {
+    const folder = await api.selectSyncFolder()
+    if (folder) handleSaveSyncFolder(folder)
+  }
+
+  async function handleSelectFolder() {
+    const path = await api.selectFolder()
+    if (path) setMediaFolder(path)
+  }
+
+  if (loading) return <div className="empty-state" style={{ height: '100vh' }}><div className="spinner" /></div>
+
+  // Editing a form
+  if (editingForm !== null) {
+    return (
+      <FormBuilder
+        projectId={projectId}
+        form={editingForm}
+        onSave={async (saved) => { await load(); setEditingForm(null) }}
+        onCancel={() => setEditingForm(null)}
+      />
+    )
+  }
+
+  // Editing an instruction
+  if (editingInstr !== null) {
+    return (
+      <InstructionEditor
+        projectId={projectId}
+        instruction={editingInstr}
+        onSave={async () => { await load(); setEditingInstr(null) }}
+        onCancel={() => setEditingInstr(null)}
+      />
+    )
+  }
+
+  // Editing a media type
+  if (editingType !== null) {
+    return (
+      <MediaTypeEditor
+        projectId={projectId}
+        mediaType={editingType}
+        forms={forms}
+        instructions={instructions}
+        onSave={async () => { await load(); setEditingType(null) }}
+        onCancel={() => setEditingType(null)}
+      />
+    )
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
+      {/* Top bar */}
+      <div style={{
+        height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 20px', borderBottom: '1px solid var(--border)',
+        WebkitAppRegion: 'drag', flexShrink: 0,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, WebkitAppRegion: 'no-drag' }}>
+          <button className="btn btn-ghost btn-icon btn-sm" onClick={() => navigate(`/project/${projectId}`)}>
+            <ChevronLeft size={16} />
+          </button>
+          <span className="text-secondary text-sm">{project?.name}</span>
+          <ChevronRight size={12} color="var(--text-muted)" />
+          <span style={{ fontWeight: 600, fontSize: 14 }}>Setup</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', WebkitAppRegion: 'no-drag' }}>
+          {hasPassword && isUnlocked && (
+            <button className="btn btn-secondary btn-sm" onClick={handleLock} title="Lock setup">
+              <Lock size={13} /> Lock
+            </button>
+          )}
+          {hasPassword && !isUnlocked && (
+            <button className="btn btn-secondary btn-sm" onClick={() => { setUnlockInput(''); setUnlockError(''); setShowUnlock(true) }}>
+              <Unlock size={13} /> Unlock
+            </button>
+          )}
+          <button className="btn btn-primary btn-sm" onClick={() => navigate(`/project/${projectId}`)}>
+            <Check size={13} /> Done
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+        {/* Sidebar nav */}
+        <div style={{ width: 200, borderRight: '1px solid var(--border)', padding: '16px 0', flexShrink: 0 }}>
+          {SECTIONS.map((s, i) => (
+            <button
+              key={s}
+              onClick={() => setSection(i)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                width: '100%', padding: '8px 16px', border: 'none',
+                background: section === i ? 'var(--accent-light)' : 'transparent',
+                color: section === i ? 'var(--accent)' : 'var(--text)',
+                fontWeight: section === i ? 600 : 400, fontSize: 13,
+                cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font)',
+              }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1, overflow: 'auto', padding: '28px 32px' }}>
+          {!isUnlocked && hasPassword && (
+            <div style={{
+              background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8,
+              padding: '10px 14px', marginBottom: 20, fontSize: 13, color: 'var(--text-secondary)',
+              display: 'flex', alignItems: 'center', gap: 10,
+            }}>
+              <Lock size={14} color="var(--text-muted)" />
+              <span>This project is owner-locked. Enter the owner password to edit settings.</span>
+              <button className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }} onClick={() => { setUnlockInput(''); setUnlockError(''); setShowUnlock(true) }}>
+                <Unlock size={12} /> Unlock
+              </button>
+            </div>
+          )}
+          {section === 0 && <OverviewSection />}
+
+          {section === 1 && (
+            <SetupSection
+              title="Forms"
+              description="Create forms for coders to fill out during review. Forms are composed of sections with questions."
+              items={forms}
+              locked={!isUnlocked}
+              onNew={() => setEditingForm({ id: null, name: '', schema: { sections: [] } })}
+              onEdit={async (f) => { const full = await api.getForm(f.id); setEditingForm(full) }}
+              onDuplicate={async (f) => {
+                const full = await api.getForm(f.id)
+                await api.saveForm(projectId, { name: `${full.name} (copy)`, schema: full.schema })
+                load()
+              }}
+              onDelete={(f) => handleDeleteRequest('form', f)}
+              newLabel="New Form"
+            />
+          )}
+
+          {section === 2 && (
+            <SetupSection
+              title="Instructions"
+              description="Write instruction pages in Markdown. These can be added as tabs in the workspace."
+              items={instructions}
+              locked={!isUnlocked}
+              onNew={() => setEditingInstr({ id: null, name: '', content: '' })}
+              onEdit={(i) => setEditingInstr(i)}
+              onDuplicate={async (i) => {
+                await api.saveInstruction(projectId, { name: `${i.name} (copy)`, content: i.content })
+                load()
+              }}
+              onDelete={(i) => setDeleteConfirm({ type: 'instruction', item: i, count: 0 })}
+              newLabel="New Instruction Page"
+            />
+          )}
+
+          {section === 3 && (
+            <SetupSection
+              title="Media Types"
+              description="Define types of media (e.g. 'Consultation Video', 'Debrief Audio'). Each type sets review requirements, timestamp tags, and the workspace layout."
+              items={mediaTypes}
+              locked={!isUnlocked}
+              onNew={() => setEditingType({ id: null, name: '', reviews_required: 1, allow_custom_tags: true, color: '#6366f1', tags: [], workspace_tabs: [] })}
+              onEdit={(t) => setEditingType(t)}
+              onDuplicate={async (t) => {
+                await api.saveMediaType(projectId, { ...t, id: null, name: `${t.name} (copy)` })
+                load()
+              }}
+              onDelete={(t) => handleDeleteRequest('mediaType', t)}
+              newLabel="New Media Type"
+            />
+          )}
+
+          {section === 5 && (
+            <MediaFilesSection
+              encounters={encounters}
+              mediaTypes={mediaTypes}
+              locked={!isUnlocked}
+              projectId={projectId}
+              onReload={load}
+              onTypeChange={load}
+            />
+          )}
+
+          {section === 6 && (
+            <SyncSection
+              syncMode={syncMode}
+              syncFolder={syncFolder}
+              setSyncFolder={setSyncFolder}
+              cloudStatus={cloudStatus}
+              cloudConnecting={cloudConnecting}
+              cloudError={cloudError}
+              showFolderPicker={showFolderPicker}
+              setShowFolderPicker={setShowFolderPicker}
+              folderPickerFolders={folderPickerFolders}
+              folderPickerParent={folderPickerParent}
+              folderPickerLoading={folderPickerLoading}
+              folderBreadcrumbs={folderBreadcrumbs}
+              onSwitchMode={handleSwitchMode}
+              onSaveSyncFolder={handleSaveSyncFolder}
+              onSelectSyncFolder={handleSelectSyncFolder}
+              onCloudConnect={handleCloudConnect}
+              onCancelAuth={handleCancelAuth}
+              onCloudDisconnect={handleCloudDisconnect}
+              onSelectCloudFolder={handleSelectCloudFolder}
+              onDrillIn={handleFolderPickerDrillIn}
+              onFolderBack={handleFolderPickerBack}
+              onFolderRefresh={handleFolderPickerRefresh}
+              folderLinkInput={folderLinkInput}
+              setFolderLinkInput={setFolderLinkInput}
+              folderLinkError={folderLinkError}
+              folderLinkLoading={folderLinkLoading}
+              onFolderLinkSubmit={handleFolderLinkSubmit}
+              isOwner={isUnlocked}
+              hasPassword={hasPassword}
+            />
+          )}
+
+          {section === 7 && (
+            <KeybindsEditor
+              keybinds={keybinds}
+              mediaTypes={mediaTypes}
+              onChange={handleSaveKeybinds}
+            />
+          )}
+
+          {section === 8 && (
+            <div style={{ maxWidth: 480 }}>
+              <h2 style={{ marginBottom: 6 }}>Access</h2>
+
+              {/* Per-project reviewer name */}
+              <div style={{ marginBottom: 28, padding: '16px', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--bg)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                  <User size={15} color="var(--accent)" />
+                  <span style={{ fontWeight: 600, fontSize: 14 }}>Your Name for This Project</span>
+                </div>
+                <p className="text-secondary" style={{ fontSize: 13, marginBottom: 12 }}>
+                  This name appears on your reviews and is used to match your data across devices. Use the same name every time — even a small spelling difference will create a separate reviewer record.
+                  {' '}<strong>If multiple people share this computer</strong>, each person should set their own name here before creating reviews.
+                </p>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    value={projectReviewerName}
+                    onChange={e => { setProjectReviewerName(e.target.value); setProjectReviewerNameSaved(false) }}
+                    placeholder="e.g. Alice Chen"
+                    style={{ flex: 1 }}
+                    onKeyDown={e => e.key === 'Enter' && handleSaveProjectReviewerName()}
+                  />
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={handleSaveProjectReviewerName}
+                    disabled={!projectReviewerName.trim()}
+                  >
+                    Save
+                  </button>
+                  {projectReviewerNameSaved && <span className="text-sm" style={{ color: 'var(--success)' }}>Saved</span>}
+                </div>
+              </div>
+
+              <p className="text-secondary" style={{ marginBottom: 20, fontSize: 13 }}>
+                Set an owner password to lock project settings. Anyone who knows the password can unlock and edit settings. Leave blank to remove the password.
+              </p>
+              {!isUnlocked ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <Lock size={16} color="var(--text-muted)" />
+                  <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Unlock to manage the owner password.</span>
+                  <button className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }} onClick={() => { setUnlockInput(''); setUnlockError(''); setShowUnlock(true) }}>
+                    <Unlock size={12} /> Unlock
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div className="form-field">
+                    <label>{hasPassword ? 'New password' : 'Set password'}</label>
+                    <input
+                      type="password"
+                      placeholder={hasPassword ? 'Enter new password (blank to remove)' : 'Enter a password'}
+                      value={newPw}
+                      onChange={e => { setNewPw(e.target.value); setPwSaved(false) }}
+                    />
+                  </div>
+                  {newPw && (
+                    <div className="form-field">
+                      <label>Confirm password</label>
+                      <input
+                        type="password"
+                        placeholder="Re-enter password"
+                        value={newPwConfirm}
+                        onChange={e => setNewPwConfirm(e.target.value)}
+                      />
+                      {newPwConfirm && newPw !== newPwConfirm && (
+                        <span className="text-sm" style={{ color: 'var(--danger)', marginTop: 4 }}>Passwords don't match</span>
+                      )}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleSetPassword}
+                      disabled={newPw !== newPwConfirm || (newPw === '' && !hasPassword)}
+                    >
+                      {newPw ? 'Set Password' : 'Remove Password'}
+                    </button>
+                    {pwSaved && <span className="text-sm" style={{ color: 'var(--success)' }}>Saved</span>}
+                  </div>
+                  {hasPassword && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <p className="text-muted text-sm">
+                        The password syncs to all machines — everyone will need it to edit settings.
+                      </p>
+                      <p className="text-muted text-sm">
+                        <strong>On another computer:</strong> open Settings, enter your password at the unlock prompt. The machine will remember you until the app is restarted.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {section === 4 && (
+            <div style={{ maxWidth: 560 }}>
+              <h2 style={{ marginBottom: 6 }}>Media Folder</h2>
+              <p className="text-secondary" style={{ marginBottom: 20, fontSize: 13 }}>
+                Point to the folder on your machine that contains the encounter subfolders. The app reads files directly from here — nothing is copied or uploaded.
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div className="form-field">
+                  <label>Folder Path</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input value={mediaFolder} onChange={e => setMediaFolder(e.target.value)} placeholder="/path/to/media/folder" />
+                    <button className="btn btn-secondary" style={{ flexShrink: 0 }} onClick={handleSelectFolder}>
+                      <FolderOpen size={14} /> Browse
+                    </button>
+                  </div>
+                  <span className="text-muted text-sm" style={{ marginTop: 4 }}>
+                    Structure: Media Folder → Encounter Folders → Media Files
+                  </span>
+                </div>
+                <button className="btn btn-secondary" onClick={async () => {
+                  if (!mediaFolder) return
+                  setSaving(true)
+                  await api.updateProject(projectId, { ...project, media_folder: mediaFolder })
+                  setSaving(false)
+                  setScanResult(null)
+                  load()
+                }} disabled={!mediaFolder || saving}>
+                  {saving ? 'Saving…' : 'Save Folder Path'}
+                </button>
+
+                {(isUnlocked || !hasPassword) && (
+                  <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+                    <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+                      <strong>Scan for new encounters</strong> — scans the folder above and adds any new subfolders/files to the project. Only the project owner can do this.
+                    </p>
+                    <button className="btn btn-primary" onClick={handleScanFolder} disabled={!mediaFolder || saving}>
+                      {saving ? 'Scanning…' : 'Scan Folder'}
+                    </button>
+                    {scanResult && (() => {
+                      const { encountersAdded, encountersLinked, filesAdded, filesLinked, directMediaFiles, totalSubfolders } = scanResult
+                      if (directMediaFiles > 0) {
+                        return (
+                          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '12px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 10, marginTop: 12 }}>
+                            <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+                            <div>
+                              <strong>Wrong folder level detected.</strong> This folder contains media files directly. SDMo expects each encounter to be its own subfolder.
+                              <br /><br />
+                              <strong>Expected structure:</strong>
+                              <pre style={{ margin: '6px 0 0', fontSize: 11, fontFamily: 'monospace', lineHeight: 1.6, background: 'rgba(0,0,0,0.05)', padding: '6px 8px', borderRadius: 4 }}>{`SelectedFolder/\n  Patient001/\n    consult.mp4\n  Patient002/\n    consult.mp4`}</pre>
+                              <br />
+                              Select the <em>parent</em> folder that contains all the encounter subfolders, not the encounter folder itself.
+                            </div>
+                          </div>
+                        )
+                      }
+                      if (totalSubfolders === 0) {
+                        return (
+                          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginTop: 12 }}>
+                            <strong>No subfolders found.</strong> This folder appears to be empty or contains only files. Each encounter should be a subfolder inside the selected folder.
+                          </div>
+                        )
+                      }
+                      const nothingNew = encountersAdded === 0 && (encountersLinked || 0) === 0 && filesAdded === 0 && (filesLinked || 0) === 0
+                      const stillMissingEarly = (scanResult.stillUnlinked || 0) + (scanResult.stillBroken || 0)
+                      if (nothingNew && stillMissingEarly === 0) {
+                        return (
+                          <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-secondary)', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginTop: 12 }}>
+                            ✓ All {totalSubfolders} folder{totalSubfolders !== 1 ? 's' : ''} linked, no new files found.
+                          </div>
+                        )
+                      }
+                      if (nothingNew && stillMissingEarly > 0) {
+                        return (
+                          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 8, marginTop: 12 }}>
+                            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                            <div>
+                              <strong>{stillMissingEarly} file{stillMissingEarly !== 1 ? 's' : ''} in the project have no match in this folder.</strong>
+                              {' '}Make sure each encounter has a subfolder named exactly as it appears in the project (e.g. <em>Encounter 1</em> → a folder named "Encounter 1"). If an encounter was renamed, rename the folder to match.
+                            </div>
+                          </div>
+                        )
+                      }
+                      const parts = []
+                      if (encountersAdded > 0) parts.push(`${encountersAdded} new encounter${encountersAdded !== 1 ? 's' : ''} added`)
+                      if ((encountersLinked || 0) > 0) parts.push(`${encountersLinked} encounter folder${encountersLinked !== 1 ? 's' : ''} linked`)
+                      if (filesAdded > 0) parts.push(`${filesAdded} new file${filesAdded !== 1 ? 's' : ''} added`)
+                      if ((filesLinked || 0) > 0) parts.push(`${filesLinked} file${filesLinked !== 1 ? 's' : ''} relinked`)
+                      const stillMissing = (scanResult.stillUnlinked || 0) + (scanResult.stillBroken || 0)
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+                          {parts.length > 0 && (
+                            <div style={{ background: 'var(--success-light)', color: 'var(--success)', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
+                              ✓ {parts.join(', ')}.
+                            </div>
+                          )}
+                          {stillMissing > 0 && (
+                            <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 8 }}>
+                              <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                              <div>
+                                <strong>{stillMissing} file{stillMissing !== 1 ? 's' : ''} still not linked</strong> — {scanResult.stillBroken > 0 ? `${scanResult.stillBroken} path${scanResult.stillBroken !== 1 ? 's' : ''} no longer exist on disk` : ''}{scanResult.stillBroken > 0 && scanResult.stillUnlinked > 0 ? ', ' : ''}{scanResult.stillUnlinked > 0 ? `${scanResult.stillUnlinked} not found in this folder` : ''}.
+                                {' '}Make sure the folder contains a subfolder for each encounter, named exactly as it appears in the project.
+                              </div>
+                            </div>
+                          )}
+                          {stillMissing === 0 && parts.length === 0 && (
+                            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-secondary)', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
+                              ✓ All files linked — nothing new to import.
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )}
+
+                {!isUnlocked && hasPassword && (
+                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', padding: '10px 14px', borderRadius: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
+                    Only the project owner can scan for new encounters. Save your folder path above so the app knows where your local media files are.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {section === 9 && (
+            <DeletedReviewsSection projectId={projectId} />
+          )}
+        </div>
+      </div>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        open={!!deleteConfirm}
+        onClose={() => !deleteLoading && setDeleteConfirm(null)}
+        title={`Delete ${deleteConfirm?.type === 'form' ? 'Form' : deleteConfirm?.type === 'instruction' ? 'Instruction' : 'Media Type'}`}
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setDeleteConfirm(null)} disabled={deleteLoading}>Cancel</button>
+            <button className="btn btn-danger" onClick={handleDeleteConfirm} disabled={deleteLoading}>
+              {deleteLoading ? 'Deleting…' : 'Delete'}
+            </button>
+          </>
+        }
+      >
+        {deleteConfirm && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <p>Delete <strong>{deleteConfirm.item.name}</strong>?</p>
+            {deleteConfirm.type === 'mediaType' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {deleteConfirm.count > 0 && (
+                  <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#92400e', display: 'flex', gap: 8 }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <span><strong>{deleteConfirm.count} review{deleteConfirm.count !== 1 ? 's' : ''}</strong> exist on files assigned to this type. Those reviews are not deleted — they stay on the files. However, the files will become untyped and the type's tag definitions and workspace layout will be permanently removed.</span>
+                  </div>
+                )}
+                {deleteConfirm.count === 0 && (
+                  <p className="text-secondary" style={{ fontSize: 13 }}>No reviews exist for this type. Only its tag definitions and workspace layout will be removed.</p>
+                )}
+              </div>
+            )}
+            {deleteConfirm.type === 'form' && deleteConfirm.count > 0 && (
+              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b91c1c', display: 'flex', gap: 8 }}>
+                <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span><strong>{deleteConfirm.count} saved response{deleteConfirm.count !== 1 ? 's' : ''}</strong> will be permanently deleted. The reviews themselves are kept, but all answers submitted to this form will be gone.</span>
+              </div>
+            )}
+            {deleteConfirm.type === 'form' && deleteConfirm.count === 0 && (
+              <p className="text-secondary" style={{ fontSize: 13 }}>No responses have been saved for this form. It is safe to delete.</p>
+            )}
+            {deleteConfirm.type === 'instruction' && (
+              <p className="text-secondary" style={{ fontSize: 13 }}>This instruction page will be removed from all media type workspaces that reference it.</p>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* Unlock Modal */}
+      <Modal
+        open={showUnlock}
+        onClose={() => setShowUnlock(false)}
+        title="Owner Password"
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setShowUnlock(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleUnlock} disabled={!unlockInput}>Unlock</button>
+          </>
+        }
+      >
+        <form onSubmit={handleUnlock} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>Enter the owner password to edit project settings.</p>
+          <div className="form-field">
+            <label>Password</label>
+            <input
+              type="password"
+              autoFocus
+              placeholder="Owner password"
+              value={unlockInput}
+              onChange={e => { setUnlockInput(e.target.value); setUnlockError('') }}
+            />
+            {unlockError && <span className="text-sm" style={{ color: 'var(--danger)', marginTop: 4 }}>{unlockError}</span>}
+          </div>
+        </form>
+      </Modal>
+    </div>
+  )
+}
+
+function DeletedReviewsSection({ projectId }) {
+  const [deleted, setDeleted] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    api.listDeletedReviews(projectId).then(rows => { setDeleted(rows); setLoading(false) })
+  }, [projectId])
+
+  async function handleRestore(id) {
+    await api.restoreReview(id)
+    setDeleted(d => d.filter(r => r.id !== id))
+  }
+
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <h2 style={{ marginBottom: 6 }}>Deleted Reviews</h2>
+      <p className="text-secondary" style={{ marginBottom: 20, fontSize: 13 }}>
+        Reviews deleted from this project. You can restore them — restoring removes the deletion from sync so other machines keep the review too.
+      </p>
+      {loading ? (
+        <div className="empty-state"><div className="spinner" /></div>
+      ) : deleted.length === 0 ? (
+        <div className="empty-state" style={{ background: 'var(--bg-secondary)', borderRadius: 8, padding: '40px 20px' }}>
+          <p className="text-sm">No deleted reviews.</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {deleted.map(r => (
+            <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
+              <div>
+                <div style={{ fontWeight: 500, fontSize: 13 }}>{r.reviewer_name}</div>
+                <div className="text-muted text-sm" style={{ marginTop: 2 }}>
+                  {r.encounter_name} / {r.media_name} · {r.status} · deleted {new Date(r.deleted_at).toLocaleDateString()}
+                </div>
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={() => handleRestore(r.id)}>
+                Restore
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload, onTypeChange }) {
+  const [renaming, setRenaming] = useState(null) // { type: 'encounter'|'file', id, projectId, name }
+  const [deleteTarget, setDeleteTarget] = useState(null) // { type, id, name, reviewCount }
+  const [deleteLoading, setDeleteLoading] = useState(false)
+  const isOwner = !locked
+
+  async function handleTypeChange(mediaFile, newVal) {
+    await api.updateMediaType(mediaFile.id, newVal || null)
+    onTypeChange()
+  }
+
+  async function handleRenameCommit() {
+    if (!renaming || !renaming.name.trim()) { setRenaming(null); return }
+    if (renaming.type === 'encounter') {
+      await api.renameEncounter(projectId, renaming.id, renaming.name)
+    } else {
+      await api.renameMediaFile(projectId, renaming.id, renaming.name)
+    }
+    setRenaming(null)
+    onReload()
+  }
+
+  async function handleDeleteClick(type, item) {
+    const count = type === 'encounter'
+      ? await api.countEncounterReviews(item.id)
+      : await api.countMediaReviews(item.id)
+    setDeleteTarget({ type, id: item.id, name: item.name, reviewCount: count })
+  }
+
+  async function handleDeleteConfirm() {
+    if (!deleteTarget) return
+    setDeleteLoading(true)
+    if (deleteTarget.type === 'encounter') {
+      await api.deleteEncounter(projectId, deleteTarget.id)
+    } else {
+      await api.deleteMediaFile(projectId, deleteTarget.id)
+    }
+    setDeleteLoading(false)
+    setDeleteTarget(null)
+    onReload()
+  }
+
+  async function handleAddEncounter() {
+    const name = window.prompt('New encounter name:')
+    if (!name?.trim()) return
+    await api.createEncounter(projectId, name.trim())
+    onReload()
+  }
+
+  async function handleMove(mediaFileId, newEncounterId) {
+    await api.moveMediaFile(projectId, mediaFileId, parseInt(newEncounterId))
+    onReload()
+  }
+
+  const TrashIcon = () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+    </svg>
+  )
+
+  return (
+    <div style={{ maxWidth: 700 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <h2 style={{ margin: 0 }}>Media Files</h2>
+        {isOwner && (
+          <button className="btn btn-secondary btn-sm" onClick={handleAddEncounter}>+ Add Encounter</button>
+        )}
+      </div>
+      <p className="text-secondary" style={{ marginBottom: 20, fontSize: 13 }}>
+        {isOwner
+          ? 'Manage encounters and files. Click a name to rename. Use the encounter selector to move a file. Use Media Folder → Scan to add new encounters from disk.'
+          : 'Assign a media type to each file. The type determines how many reviews are required and which tags are available.'}
+      </p>
+
+      {encounters.length === 0 ? (
+        <div className="empty-state" style={{ background: 'var(--bg-secondary)', borderRadius: 8, padding: '40px 20px' }}>
+          <p className="text-sm">{isOwner ? 'No encounters yet. Scan a media folder or click "+ Add Encounter" above.' : 'No encounters yet.'}</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {encounters.map(enc => (
+            <div key={enc.id} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ padding: '8px 14px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                {renaming?.type === 'encounter' && renaming.id === enc.id ? (
+                  <input autoFocus value={renaming.name}
+                    onChange={e => setRenaming(r => ({ ...r, name: e.target.value }))}
+                    onBlur={handleRenameCommit}
+                    onKeyDown={e => { if (e.key === 'Enter') handleRenameCommit(); if (e.key === 'Escape') setRenaming(null) }}
+                    style={{ fontSize: 12, fontWeight: 600, flex: 1, padding: '1px 6px', height: 24 }}
+                  />
+                ) : (
+                  <span
+                    style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', flex: 1, cursor: isOwner ? 'text' : 'default' }}
+                    onClick={() => isOwner && setRenaming({ type: 'encounter', id: enc.id, name: enc.name })}
+                    title={isOwner ? 'Click to rename' : undefined}
+                  >{enc.name}</span>
+                )}
+                {isOwner && (
+                  <button className="btn btn-ghost btn-icon btn-sm" title="Delete encounter"
+                    onClick={() => handleDeleteClick('encounter', enc)}
+                    style={{ color: 'var(--danger)', opacity: 0.6, flexShrink: 0 }}>
+                    <TrashIcon />
+                  </button>
+                )}
+              </div>
+
+              {(enc.media || []).length === 0 ? (
+                <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--text-muted)' }}>No media files</div>
+              ) : enc.media.map(m => (
+                <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
+                  {renaming?.type === 'file' && renaming.id === m.id ? (
+                    <input autoFocus value={renaming.name}
+                      onChange={e => setRenaming(r => ({ ...r, name: e.target.value }))}
+                      onBlur={handleRenameCommit}
+                      onKeyDown={e => { if (e.key === 'Enter') handleRenameCommit(); if (e.key === 'Escape') setRenaming(null) }}
+                      style={{ fontSize: 13, fontWeight: 500, flex: 1, padding: '1px 6px', height: 26 }}
+                    />
+                  ) : (
+                    <span
+                      style={{ fontSize: 13, fontWeight: 500, flex: 1, minWidth: 0, cursor: isOwner ? 'text' : 'default' }}
+                      className="truncate"
+                      onClick={() => isOwner && setRenaming({ type: 'file', id: m.id, name: m.name })}
+                      title={isOwner ? 'Click to rename' : m.name}
+                    >{m.name}</span>
+                  )}
+
+                  {isOwner && encounters.length > 1 && (
+                    <select
+                      value={enc.id}
+                      onChange={e => handleMove(m.id, e.target.value)}
+                      title="Move to encounter"
+                      style={{ fontSize: 11, padding: '2px 4px', height: 26, maxWidth: 120, color: 'var(--text-muted)', flexShrink: 0 }}
+                    >
+                      {encounters.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                    </select>
+                  )}
+
+                  <select
+                    value={m.media_type_id || ''}
+                    disabled={locked}
+                    onChange={e => handleTypeChange(m, e.target.value)}
+                    style={{ fontSize: 12, padding: '3px 6px', height: 28, width: 140, opacity: locked ? 0.5 : 1, flexShrink: 0 }}
+                  >
+                    <option value="">No type</option>
+                    {mediaTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+
+                  {isOwner && (
+                    <button className="btn btn-ghost btn-icon btn-sm" title="Delete file"
+                      onClick={() => handleDeleteClick('file', m)}
+                      style={{ color: 'var(--danger)', opacity: 0.6, flexShrink: 0 }}>
+                      <TrashIcon />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div className="card" style={{ maxWidth: 420, width: '90%', padding: 24 }}>
+            <h3 style={{ marginBottom: 12 }}>Delete {deleteTarget.type === 'encounter' ? 'Encounter' : 'File'}?</h3>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
+              <strong>{deleteTarget.name}</strong>{' '}
+              {deleteTarget.reviewCount > 0
+                ? `has ${deleteTarget.reviewCount} review${deleteTarget.reviewCount !== 1 ? 's' : ''}. Deleting it will permanently destroy all associated reviews, timestamps, and form responses.`
+                : 'has no reviews and will be permanently removed.'}
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => setDeleteTarget(null)} disabled={deleteLoading}>Cancel</button>
+              <button className="btn btn-danger" onClick={handleDeleteConfirm} disabled={deleteLoading}>
+                {deleteLoading ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function KeybindsEditor({ keybinds, mediaTypes, onChange }) {
+  // Collect all tags across all media types
+  const allTags = mediaTypes.flatMap(mt => (mt.tags || []).map(t => ({ ...t, mediaTypeName: mt.name })))
+
+  function addBind() {
+    onChange([...keybinds, { key: '', tagId: null }])
+  }
+
+  function updateBind(i, changes) {
+    const next = keybinds.map((b, idx) => idx === i ? { ...b, ...changes } : b)
+    onChange(next)
+  }
+
+  function removeBind(i) {
+    onChange(keybinds.filter((_, idx) => idx !== i))
+  }
+
+  // Check for duplicate keys
+  const keyCounts = {}
+  for (const b of keybinds) {
+    if (b.key) keyCounts[b.key.toLowerCase()] = (keyCounts[b.key.toLowerCase()] || 0) + 1
+  }
+
+  return (
+    <div style={{ maxWidth: 560 }}>
+      <h2 style={{ marginBottom: 6 }}>Keybinds</h2>
+      <p className="text-secondary" style={{ marginBottom: 20, fontSize: 13 }}>
+        Assign single keys to quickly add timestamps while the video plays. The key fires when you're not focused in a text field.
+      </p>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+        {keybinds.length === 0 && (
+          <div className="empty-state" style={{ background: 'var(--bg-secondary)', borderRadius: 8, padding: '28px 20px' }}>
+            <p className="text-sm">No keybinds yet. Add one below.</p>
+          </div>
+        )}
+        {keybinds.map((bind, i) => {
+          const isDupe = bind.key && keyCounts[bind.key.toLowerCase()] > 1
+          return (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', border: `1px solid ${isDupe ? 'var(--danger)' : 'var(--border)'}`, borderRadius: 8, background: 'var(--bg)' }}>
+              {/* Key input */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <label style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Key</label>
+                <input
+                  value={bind.key}
+                  maxLength={1}
+                  placeholder="t"
+                  onChange={e => updateBind(i, { key: e.target.value.slice(-1) })}
+                  style={{
+                    width: 48, height: 36, textAlign: 'center', fontFamily: 'monospace',
+                    fontWeight: 700, fontSize: 16, textTransform: 'lowercase',
+                    border: `1.5px solid ${isDupe ? 'var(--danger)' : 'var(--border)'}`,
+                    borderRadius: 6,
+                  }}
+                />
+              </div>
+
+              <div style={{ color: 'var(--text-muted)', fontSize: 18, marginTop: 14 }}>→</div>
+
+              {/* Tag selector */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <label style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Tag (optional)</label>
+                <select
+                  value={bind.tagId ?? ''}
+                  onChange={e => updateBind(i, { tagId: e.target.value === '' ? null : Number(e.target.value) })}
+                  style={{ height: 36, fontSize: 13 }}
+                >
+                  <option value="">No tag (plain timestamp)</option>
+                  {allTags.map(t => (
+                    <option key={t.id} value={t.id}>{t.label} — {t.mediaTypeName}</option>
+                  ))}
+                </select>
+              </div>
+
+              <button className="btn btn-ghost btn-icon btn-sm" style={{ marginTop: 14 }} onClick={() => removeBind(i)} title="Remove">
+                <Trash2 size={13} />
+              </button>
+            </div>
+          )
+        })}
+      </div>
+
+      <button className="btn btn-secondary btn-sm" onClick={addBind}>
+        <Plus size={13} /> Add Keybind
+      </button>
+
+      <p className="text-muted text-sm" style={{ marginTop: 16 }}>
+        Changes save automatically. Keys are case-insensitive. During review, keybinds only fire when you're not typing in a form field.
+      </p>
+    </div>
+  )
+}
+
+function OverviewSection() {
+  const block = (emoji, title, body) => (
+    <div style={{ display: 'flex', gap: 14, padding: '14px 16px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
+      <span style={{ fontSize: 20, lineHeight: 1, flexShrink: 0, marginTop: 1 }}>{emoji}</span>
+      <div>
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{title}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{body}</div>
+      </div>
+    </div>
+  )
+
+  const warn = (body) => (
+    <div style={{ display: 'flex', gap: 10, padding: '10px 14px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8 }}>
+      <span style={{ fontSize: 16, flexShrink: 0 }}>⚠️</span>
+      <span style={{ fontSize: 12, color: '#92400e', lineHeight: 1.6 }}>{body}</span>
+    </div>
+  )
+
+  return (
+    <div style={{ maxWidth: 680 }}>
+      <h2 style={{ marginBottom: 4 }}>Overview</h2>
+      <p className="text-secondary" style={{ fontSize: 13, marginBottom: 28 }}>
+        Read this before setting up your project. It covers the full workflow, folder structure, sync, and common mistakes.
+      </p>
+
+      {/* Setup flow */}
+      <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Setup Flow</h3>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 28 }}>
+        {block('📋', '1 · Forms', 'Build the survey forms coders fill out for each review. Forms are made of sections and questions (text, number, multiple choice, etc.). Multiple forms can be assigned to one media type.')}
+        {block('📄', '2 · Instructions', 'Write guidance pages in Markdown, or attach a PDF. These appear as tabs in the reviewer workspace so coders can reference them while watching a video.')}
+        {block('🎬', '3 · Media Types', 'Define categories of media — e.g. "Consultation Video" or "Debrief Audio". Each type sets which forms and instructions appear in the workspace, what timestamp tags are available, how many reviews are required per file, and the review layout.')}
+        {block('📁', '4 · Media Folder', 'Point to the folder on your machine that contains encounter subfolders. The app scans it and creates encounters automatically. Files are never copied or uploaded — the app reads them directly from their original location.')}
+        {block('🎥', '5 · Media Files', 'After scanning, assign a media type to each video or PDF. The type determines the workspace the coder sees when they open that file for review.')}
+        {block('🔄', '6 · Sync', 'Connect to a shared folder (OneDrive, Dropbox, Google Drive, or a network share). Each reviewer\'s data is saved as a separate file — no conflicts. Sync also distributes any changes you make here in Settings to all teammates.')}
+        {block('⌨️', '7 · Keybinds', 'Optional keyboard shortcuts for adding timestamps while a video plays. Useful for frequently used tags.')}
+        {block('🔒', '8 · Access', 'Set an owner password to prevent coders from accidentally changing project settings. Anyone with the password can unlock.')}
+      </div>
+
+      {/* Folder structure */}
+      <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Required Folder Structure</h3>
+      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', marginBottom: 8 }}>
+        <pre style={{ margin: 0, fontSize: 12, fontFamily: 'monospace', lineHeight: 1.7, color: 'var(--text)' }}>{`MediaFolder/          ← point Settings → Media Folder here
+├── Patient001/       ← each subfolder = one Encounter
+│   ├── consult.mp4   ← media files to review
+│   └── debrief.mp4
+├── Patient002/
+│   └── consult.mp4
+└── Patient003/
+    └── consult.mp4`}</pre>
+      </div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 28 }}>
+        Each first-level subfolder becomes an encounter. Files directly inside become the media files. Nested subfolders are ignored.
+      </p>
+
+      {/* Things not to do */}
+      <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Things Not To Do</h3>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 28 }}>
+        {warn("Don't rename or move video files after scanning. The app stores the full file path — if a file moves, it won't be found and won't play.")}
+        {warn("Don't replace a video with a different file using the same filename. The app won't know it changed and the coder will review the wrong video.")}
+        {warn("Don't change your reviewer name mid-project. Reviews are matched by name when syncing — a name change will make the app treat you as a different reviewer and may cause duplicate data.")}
+        {warn("Don't delete or rename encounter folders on disk. If you need to reorganize, do it before the initial scan.")}
+      </div>
+
+      {/* Sync and sharing */}
+      <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sync & Sharing</h3>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 28 }}>
+        {block('🗂️', 'How sync works', "Each reviewer's completed reviews are saved to their own file in the shared folder (e.g. reviewer-AliceChen.json). There are no write conflicts. \"Sync Now\" on the project page merges everyone's latest data into your local database.")}
+        {block('🆕', 'Joining on a new device', "A teammate shares their sync file (any .json file from the shared folder works). Click \"Import Project\" on the home screen, select the file, then set your local Media Folder and Sync Folder. The app will scan and link your local files automatically.")}
+        {block('🔑', 'Password changes', 'The owner password is included in the sync file. When you change it in Access and sync, all teammates will be required to use the new password.')}
+        {block('📑', 'PDF instructions', 'PDFs attached to instructions are embedded in the sync file (as base64). Teammates receive them automatically the next time they sync — no manual file sharing needed.')}
+      </div>
+
+      {/* Export */}
+      <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Exporting Data</h3>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {block('📊', 'Export to Excel', 'Use the "Export Excel" button on the project page. The spreadsheet is organized by media type — each sheet contains all reviews for that type. Each row is one review. Columns include reviewer name, encounter, file name, timestamps, and one column per form question across all forms assigned to that media type.')}
+        {block('🔎', 'What\'s included', 'All submitted and in-progress reviews are exported. Deleted reviews are not. Each question\'s column is labelled "[Form Name] Question Label" so you can identify where each response came from.')}
+      </div>
+    </div>
+  )
+}
+
+function SyncSection({
+  syncMode, syncFolder, setSyncFolder, cloudStatus, cloudConnecting, cloudError,
+  showFolderPicker, setShowFolderPicker, folderPickerFolders, folderPickerParent, folderPickerLoading, folderBreadcrumbs,
+  onSwitchMode, onSaveSyncFolder, onSelectSyncFolder,
+  onCloudConnect, onCancelAuth, onCloudDisconnect, onSelectCloudFolder, onDrillIn, onFolderBack, onFolderRefresh,
+  folderLinkInput, setFolderLinkInput, folderLinkError, folderLinkLoading, onFolderLinkSubmit,
+  isOwner, hasPassword,
+}) {
+  const modes = [
+    { id: 'none', label: 'None', desc: 'No automatic sync. Use Export/Import manually.' },
+    { id: 'local', label: 'Local Folder', desc: 'Shared folder on disk (OneDrive, Dropbox, network drive).' },
+    { id: 'cloud', label: 'OneDrive / Google Drive', desc: 'Connect directly — no local sync required.' },
+  ]
+
+  const providerLabel = cloudStatus?.provider === 'onedrive' ? 'OneDrive' : cloudStatus?.provider === 'googledrive' ? 'Google Drive' : 'Cloud'
+  const locked = hasPassword && !isOwner
+
+  return (
+    <div style={{ maxWidth: 580 }}>
+      <h2 style={{ marginBottom: 6 }}>Sync</h2>
+      <p className="text-secondary" style={{ marginBottom: 12, fontSize: 13 }}>
+        Choose how to share reviews and settings with teammates. Each reviewer's data is stored as a separate file — no write conflicts.
+      </p>
+      {locked && (
+        <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+          Sync destination is managed by the project owner. Unlock the project in the Access tab to change it.
+        </div>
+      )}
+      {!locked && (
+      <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#92400e', marginBottom: 20 }}>
+        <strong>Everyone on the team must point to the same sync destination.</strong>
+        {' '}If you're joining an existing project, ask the project owner which method and folder they use — using a different location means reviews will never merge.
+      </div>
+      )}
+
+      {/* Mode selector */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
+        {modes.map(m => (
+          <button
+            key={m.id}
+            onClick={() => !locked && onSwitchMode(m.id)}
+            disabled={locked}
+            style={{
+              display: 'flex', alignItems: 'flex-start', gap: 12,
+              padding: '12px 14px', border: `2px solid ${syncMode === m.id ? 'var(--accent)' : 'var(--border)'}`,
+              borderRadius: 10, background: syncMode === m.id ? 'var(--accent-light)' : 'var(--bg)',
+              cursor: locked ? 'default' : 'pointer', textAlign: 'left', fontFamily: 'var(--font)', width: '100%',
+              transition: 'border-color 0.15s', opacity: locked && syncMode !== m.id ? 0.5 : 1,
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: '50%', border: `2px solid ${syncMode === m.id ? 'var(--accent)' : 'var(--border)'}`,
+              background: syncMode === m.id ? 'var(--accent)' : 'transparent', flexShrink: 0, marginTop: 1,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              {syncMode === m.id && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'white' }} />}
+            </div>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)', marginBottom: 2 }}>{m.label}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{m.desc}</div>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* Local folder panel */}
+      {syncMode === 'local' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '18px', border: '1px solid var(--border)', borderRadius: 10 }}>
+          <div className="form-field">
+            <label>Shared Folder Path</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                value={syncFolder}
+                onChange={e => setSyncFolder(e.target.value)}
+                placeholder="/path/to/OneDrive/MyStudy"
+              />
+              <button className="btn btn-secondary" style={{ flexShrink: 0 }} onClick={onSelectSyncFolder}>
+                <FolderOpen size={14} /> Browse
+              </button>
+            </div>
+          </div>
+          <button className="btn btn-primary" onClick={() => onSaveSyncFolder(syncFolder)} disabled={!syncFolder}>
+            Save Folder
+          </button>
+          <div style={{ background: 'var(--bg-secondary)', borderRadius: 8, padding: '12px 14px', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+            <strong style={{ color: 'var(--text)', display: 'block', marginBottom: 6 }}>Setup steps:</strong>
+            <ol style={{ paddingLeft: 16, margin: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <li>Create a folder inside your OneDrive/Dropbox/Google Drive for this study</li>
+              <li>Share that folder with all teammates via your cloud provider's sharing settings</li>
+              <li>Each teammate browses to their local copy of that same folder here</li>
+              <li>Sync happens automatically after you submit reviews or change settings</li>
+            </ol>
+            <div style={{ marginTop: 8, color: 'var(--text-muted)', fontSize: 11 }}>
+              If your cloud folder is set to "online only", you'll need to right-click it and choose "Always keep on this device" before using it here.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cloud panel */}
+      {syncMode === 'cloud' && (
+        <div style={{ padding: '18px', border: '1px solid var(--border)', borderRadius: 10 }}>
+          {cloudError && (
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b91c1c', marginBottom: 14, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <X size={14} style={{ flexShrink: 0 }} /> {cloudError}
+            </div>
+          )}
+
+          {!cloudStatus?.connected ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                Sign in to connect your cloud storage directly — no local sync needed.
+              </p>
+              <button
+                className="btn btn-secondary"
+                onClick={() => onCloudConnect('onedrive')}
+                disabled={cloudConnecting}
+                style={{ justifyContent: 'flex-start', gap: 10 }}
+              >
+                <Cloud size={16} /> {cloudConnecting ? 'Waiting for browser sign-in…' : 'Connect OneDrive'}
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => onCloudConnect('googledrive')}
+                disabled={cloudConnecting}
+                style={{ justifyContent: 'flex-start', gap: 10 }}
+              >
+                <Cloud size={16} /> {cloudConnecting ? 'Waiting for browser sign-in…' : 'Connect Google Drive'}
+              </button>
+              {cloudConnecting && (
+                <button className="btn btn-ghost btn-sm" style={{ alignSelf: 'flex-start' }} onClick={onCancelAuth}>
+                  Cancel
+                </button>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
+                <Cloud size={16} color="var(--accent)" />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>{providerLabel}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{cloudStatus.email}</div>
+                </div>
+                <div style={{
+                  width: 8, height: 8, borderRadius: '50%',
+                  background: cloudStatus.tokenExpired ? 'var(--danger)' : 'var(--success)',
+                }} />
+              </div>
+
+              {cloudStatus.cloudFolderId ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                  <HardDrive size={14} color="var(--text-muted)" />
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    {cloudStatus.folderName ? <><strong>{cloudStatus.folderName}</strong></> : 'Sync folder selected'}
+                  </span>
+                  <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={() => { setShowFolderPicker(true) }}>
+                    Change
+                  </button>
+                </div>
+              ) : (
+                <button className="btn btn-primary" onClick={() => setShowFolderPicker(true)}>
+                  Select Sync Folder
+                </button>
+              )}
+
+              {/* Paste a share link to set/change the sync folder */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
+                  Or paste a shared folder link
+                </label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    style={{ flex: 1, fontSize: 13 }}
+                    placeholder={cloudStatus?.provider === 'googledrive'
+                      ? 'https://drive.google.com/drive/folders/…'
+                      : 'https://onedrive.live.com/…'}
+                    value={folderLinkInput || ''}
+                    onChange={e => setFolderLinkInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') onFolderLinkSubmit() }}
+                    disabled={folderLinkLoading}
+                  />
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={onFolderLinkSubmit}
+                    disabled={folderLinkLoading || !folderLinkInput?.trim()}
+                  >
+                    {folderLinkLoading ? '…' : 'Use Link'}
+                  </button>
+                </div>
+                {folderLinkError && (
+                  <p style={{ fontSize: 12, color: 'var(--danger)', margin: 0 }}>{folderLinkError}</p>
+                )}
+              </div>
+
+              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)', alignSelf: 'flex-start' }} onClick={onCloudDisconnect}>
+                Disconnect
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Cloud folder picker modal */}
+      <Modal
+        open={showFolderPicker}
+        onClose={() => setShowFolderPicker(false)}
+        title="Select Sync Folder"
+        footer={
+          <button className="btn btn-secondary" onClick={() => setShowFolderPicker(false)}>Cancel</button>
+        }
+      >
+        <div style={{ minHeight: 240 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            {folderBreadcrumbs.length > 0 && (
+              <button className="btn btn-ghost btn-sm" onClick={onFolderBack}>← Back</button>
+            )}
+            <button
+              className="btn btn-ghost btn-sm"
+              style={{ marginLeft: 'auto' }}
+              onClick={onFolderRefresh}
+              disabled={folderPickerLoading}
+              title="Refresh"
+            >
+              <RefreshCw size={13} />
+            </button>
+          </div>
+          {folderPickerLoading ? (
+            <div className="empty-state"><div className="spinner" /></div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <button
+                className="btn btn-primary btn-sm"
+                style={{ alignSelf: 'flex-start', marginBottom: 8 }}
+                onClick={() => onSelectCloudFolder({ id: folderPickerParent, name: folderBreadcrumbs.length === 0 ? 'My Drive (root)' : folderPickerFolders[0]?.name || 'This folder' })}
+              >
+                Use This Location
+              </button>
+              {folderPickerFolders.length === 0 ? (
+                <p className="text-sm" style={{ color: 'var(--text-muted)', padding: '8px 0' }}>No subfolders here — click "Use This Location" to sync to this folder, or go back to pick a different one.</p>
+              ) : (
+                folderPickerFolders.map(f => (
+                  <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}>
+                    <HardDrive size={14} color="var(--text-muted)" />
+                    <span style={{ flex: 1, fontSize: 13 }}>{f.name}</span>
+                    <button className="btn btn-ghost btn-sm" onClick={() => onDrillIn(f)}>Open</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => onSelectCloudFolder(f)}>Select</button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      </Modal>
+    </div>
+  )
+}
+
+function SetupSection({ title, description, items, onNew, onEdit, onDuplicate, onDelete, newLabel, locked }) {
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 20 }}>
+        <div>
+          <h2 style={{ marginBottom: 4 }}>{title}</h2>
+          <p className="text-secondary" style={{ fontSize: 13 }}>{description}</p>
+        </div>
+        {!locked && (
+          <button className="btn btn-primary btn-sm" style={{ flexShrink: 0, marginLeft: 16 }} onClick={onNew}>
+            <Plus size={13} /> {newLabel}
+          </button>
+        )}
+      </div>
+
+      {items.length === 0 ? (
+        <div className="empty-state" style={{ background: 'var(--bg-secondary)', borderRadius: 8, padding: '40px 20px' }}>
+          <p className="text-sm">No {title.toLowerCase()} yet. Create one to get started.</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {items.map(item => (
+            <div key={item.id} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8,
+              background: 'var(--bg)',
+            }}>
+              <div>
+                <div style={{ fontWeight: 500, fontSize: 13 }}>{item.name}</div>
+                {item.color && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: '50%', background: item.color }} />
+                    <span className="text-muted text-sm">{item.reviews_required ? `${item.reviews_required} review${item.reviews_required !== 1 ? 's' : ''} required` : 'No review requirement'}</span>
+                  </div>
+                )}
+              </div>
+              {!locked && (
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {onDuplicate && (
+                    <button className="btn btn-ghost btn-icon btn-sm" title="Duplicate" onClick={() => onDuplicate(item)}>
+                      <Copy size={13} />
+                    </button>
+                  )}
+                  <button className="btn btn-ghost btn-icon btn-sm" title="Edit" onClick={() => onEdit(item)}>
+                    <Edit2 size={13} />
+                  </button>
+                  {onDelete && (
+                    <button className="btn btn-ghost btn-icon btn-sm" title="Delete" onClick={() => onDelete(item)}>
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
