@@ -57,9 +57,7 @@ jobs:
 
       - name: Package (Mac)
         if: matrix.platform == 'mac'
-        run: |
-          npx electron-builder --mac --arm64
-          npx electron-builder --mac --x64
+        run: npx electron-builder --mac --arm64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
