@@ -74,9 +74,9 @@ test('config: rename via sync_id updates in place (no duplicate rows)', () => {
   db.close()
 })
 
-// ─── Config prune must never destroy reviewer work ──────────────────────────────
+// ─── Applying a config never prunes — deletion requires a tombstone ──────────────
 
-test('config: prune removes a reviewless encounter not in config', () => {
+test('config: applying a config does NOT prune an encounter absent from it (no tombstone = keep)', () => {
   const db = makeDb()
   const p = createProject(db, 'P')
   const keep = addEncounter(db, p, 'Keep')
@@ -84,15 +84,17 @@ test('config: prune removes a reviewless encounter not in config', () => {
   const drop = addEncounter(db, p, 'Drop')
   addMedia(db, drop.id, 'd.mp4')
 
+  // 'Drop' is absent from the config but was NOT explicitly deleted (no tombstone),
+  // so per-entity merge must leave it alone — config is no longer authoritative-prune.
   const config = {
-    sdmo: true, version: 4, config_version: 999, project: { name: 'P' },
+    sdmo: true, version: 5, config_version: 999, project: { name: 'P' },
     forms: [], instructions: [], media_types: [],
     encounters: [{ sync_id: keep.sync_id, name: 'Keep', media: [{ sync_id: null, name: 'k.mp4', file_type: 'video', media_type_name: null }] }],
   }
   sync.mergeConfigImport(db, p, config, { force: true })
 
-  const names = db.prepare('SELECT name FROM encounters WHERE project_id=?').all(p).map(r => r.name)
-  assert.deepStrictEqual(names, ['Keep'])
+  const names = db.prepare('SELECT name FROM encounters WHERE project_id=?').all(p).map(r => r.name).sort()
+  assert.deepStrictEqual(names, ['Drop', 'Keep'])
   db.close()
 })
 
@@ -125,6 +127,101 @@ test('config: refuses a config newer than CONFIG_FORMAT_VERSION', () => {
   const config = { sdmo: true, version: 999, config_version: 2, project: { name: 'P' }, encounters: [] }
   assert.throws(() => sync.mergeConfigImport(db, p, config, { force: true }), /newer version of SDMo/)
   db.close()
+})
+
+// ─── Per-entity structure merge (last-writer-wins, no whole-blob clobber) ────────
+
+// Minimal v5 config envelope with a per-entity clock on every form.
+function cfg({ exported_at = '2024-01-01 00:00:00', config_version = 1, forms = [], encounters = [] } = {}) {
+  return {
+    sdmo: true, version: 5, config_version, exported_at,
+    project: { name: 'P', updated_at: exported_at },
+    forms, instructions: [], media_types: [], encounters,
+  }
+}
+function setFormClock(db, formId, ts) { db.prepare('UPDATE forms SET updated_at=? WHERE id=?').run(ts, formId) }
+
+test('merge: two machines that add DIFFERENT entities both survive (the silent-loss bug)', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  addForm(db, p, 'Local Form') // this machine's form — the peer has never seen it
+
+  // Peer's config lists only ITS form (and the same config_version). The old code
+  // would have left the peer form out OR pruned ours; merge must keep both.
+  const incoming = cfg({ forms: [{ sync_id: 'peer-form', updated_at: '2024-01-01 00:00:00', name: 'Peer Form', schema: { sections: [] } }] })
+  const { conflicts } = sync.mergeStructureFromConfig(db, p, incoming)
+
+  const names = db.prepare('SELECT name FROM forms WHERE project_id=? ORDER BY name').all(p).map(f => f.name)
+  assert.deepStrictEqual(names, ['Local Form', 'Peer Form'])
+  assert.strictEqual(conflicts.length, 0)
+  db.close()
+})
+
+test('merge: newer incoming edit wins; older incoming edit is ignored', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const fId = addForm(db, p, 'F', { sections: [{ id: 's', title: 'orig', elements: [] }] }, { sync_id: 'f1' })
+  setFormClock(db, fId, '2024-06-01 00:00:00')
+
+  // Older edit (loses) — local schema must be untouched.
+  sync.mergeStructureFromConfig(db, p, cfg({ forms: [{ sync_id: 'f1', updated_at: '2024-01-01 00:00:00', name: 'F', schema: { sections: [{ id: 's', title: 'STALE', elements: [] }] } }] }))
+  assert.match(db.prepare('SELECT schema FROM forms WHERE id=?').get(fId).schema, /orig/)
+
+  // Newer edit (wins) — local schema is replaced.
+  sync.mergeStructureFromConfig(db, p, cfg({ forms: [{ sync_id: 'f1', updated_at: '2024-12-01 00:00:00', name: 'F', schema: { sections: [{ id: 's', title: 'NEWER', elements: [] }] } }] }))
+  assert.match(db.prepare('SELECT schema FROM forms WHERE id=?').get(fId).schema, /NEWER/)
+  db.close()
+})
+
+test('merge: same-entity concurrent edit (equal clocks, different content) reports a conflict + converges deterministically', () => {
+  function run(localTitle, incomingTitle) {
+    const db = makeDb()
+    const p = createProject(db, 'P')
+    const fId = addForm(db, p, 'F', { sections: [{ id: 's', title: localTitle, elements: [] }] }, { sync_id: 'f1' })
+    setFormClock(db, fId, '2024-06-01 00:00:00') // identical clock to the incoming edit
+    const { conflicts } = sync.mergeStructureFromConfig(db, p, cfg({ forms: [{ sync_id: 'f1', updated_at: '2024-06-01 00:00:00', name: 'F', schema: { sections: [{ id: 's', title: incomingTitle, elements: [] }] } }] }))
+    const winner = db.prepare('SELECT schema FROM forms WHERE id=?').get(fId).schema
+    db.close()
+    return { conflicts, winner }
+  }
+  const a = run('AAA', 'BBB')
+  assert.strictEqual(a.conflicts.length, 1)
+  assert.strictEqual(a.conflicts[0].kind, 'form')
+  // Deterministic tiebreak: both machines (mirror inputs) must agree on the same winner.
+  const b = run('BBB', 'AAA')
+  assert.strictEqual(a.winner, b.winner)
+})
+
+test('merge: a form tombstone deletes it and a stale config cannot resurrect it', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  addForm(db, p, 'Doomed', { sections: [] }, { sync_id: 'f1' })
+
+  sync.applyStructureTombstones(db, p, [{ kind: 'form', sync_id: 'f1' }])
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM forms WHERE project_id=?').get(p).n, 0)
+
+  // A peer whose config still lists the form must NOT bring it back.
+  sync.mergeStructureFromConfig(db, p, cfg({ forms: [{ sync_id: 'f1', updated_at: '2099-01-01 00:00:00', name: 'Doomed', schema: { sections: [] } }] }))
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM forms WHERE project_id=?').get(p).n, 0)
+  db.close()
+})
+
+test('merge: structureFingerprint ignores row order + clocks, reflects content', () => {
+  const a = makeDb(); const pa = createProject(a, 'P')
+  addForm(a, pa, 'One', { sections: [] }, { sync_id: 's-one' })
+  addForm(a, pa, 'Two', { sections: [] }, { sync_id: 's-two' })
+
+  // Same two forms, inserted in the opposite order, with different local clocks.
+  const b = makeDb(); const pb = createProject(b, 'P')
+  const t = addForm(b, pb, 'Two', { sections: [] }, { sync_id: 's-two' })
+  addForm(b, pb, 'One', { sections: [] }, { sync_id: 's-one' })
+  setFormClock(b, t, '2030-01-01 00:00:00')
+
+  assert.strictEqual(sync.structureFingerprint(a, pa), sync.structureFingerprint(b, pb))
+  // Changing content must change the fingerprint.
+  addForm(b, pb, 'Three', { sections: [] }, { sync_id: 's-three' })
+  assert.notStrictEqual(sync.structureFingerprint(a, pa), sync.structureFingerprint(b, pb))
+  a.close(); b.close()
 })
 
 // ─── Review file merge ──────────────────────────────────────────────────────────
@@ -601,6 +698,35 @@ test('doLocalSync: a structure tombstone deletes the item on a peer and config c
   // B syncs: the tombstone removes it, and the still-present config entry must NOT resurrect it.
   await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')
   assert.strictEqual(b.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id=?').get(pb).n, 0)
+
+  a.close(); b.close()
+})
+
+test('doLocalSync: concurrent structure edits on two machines converge (self-heal, no loss)', async () => {
+  const folder = tmpDir('sdmo-converge-')
+  const formNames = (db, pid) => db.prepare('SELECT name FROM forms WHERE project_id=? ORDER BY name').all(pid).map(f => f.name)
+
+  // Same-named project on both machines so project-meta never diverges; focus is structure.
+  const a = makeDb(); const pa = createProject(a, 'Study')
+  addForm(a, pa, 'Shared', { sections: [] }, { sync_id: 'shared' })
+  await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice')
+
+  const b = makeDb(); const pb = createProject(b, 'Study')
+  await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')
+  assert.deepStrictEqual(formNames(b, pb), ['Shared'])
+
+  // Both machines add a DIFFERENT form before syncing — the classic concurrent edit.
+  addForm(a, pa, 'A-only', { sections: [] }, { sync_id: 'a-only' })
+  addForm(b, pb, 'B-only', { sections: [] }, { sync_id: 'b-only' })
+
+  await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice') // publishes Shared + A-only
+  await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')   // pulls A-only, keeps B-only, republishes all
+  await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice') // pulls B-only
+
+  const expected = ['A-only', 'B-only', 'Shared']
+  assert.deepStrictEqual(formNames(a, pa), expected, 'A has all three — nothing lost')
+  assert.deepStrictEqual(formNames(b, pb), expected, 'B has all three — nothing lost')
+  assert.strictEqual(sync.structureFingerprint(a, pa), sync.structureFingerprint(b, pb), 'fully converged')
 
   a.close(); b.close()
 })

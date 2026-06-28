@@ -7,7 +7,9 @@ const { getSettings, getProjectName, getOrCreateUUID } = require('./settings')
 
 // Bump when the split-config file format changes in a backward-incompatible way.
 // buildConfigExport stamps this; readers refuse configs newer than they understand.
-const CONFIG_FORMAT_VERSION = 4
+// v5: every structural entity carries a stable sync_id + an updated_at clock so
+// sync merges per-entity (last-writer-wins) instead of replacing the whole config.
+const CONFIG_FORMAT_VERSION = 5
 
 function assertConfigCompatible(configData) {
   const fmt = configData?.version || 1
@@ -55,6 +57,17 @@ function safeJsonParse(str, fallback) {
 // ─── Main window reference (set by main.js so we can push events to renderer) ─
 let _mainWindow = null
 function setMainWindow(win) { _mainWindow = win }
+
+// Push a concurrent-edit toast to the renderer. A "conflict" is a genuine
+// same-entity edit on two machines at once; LWW already resolved it deterministically,
+// this just lets the user know their version may have been superseded.
+function emitConflicts(conflicts) {
+  if (!conflicts || !conflicts.length || !_mainWindow || _mainWindow.isDestroyed?.()) return
+  const first = conflicts[0]
+  const more = conflicts.length > 1 ? ` (+${conflicts.length - 1} more)` : ''
+  const message = `Edit conflict on ${first.kind} "${first.name}"${more}: another machine's change was newer, so the most recent version was kept.`
+  try { _mainWindow.webContents.send('sync:conflict', { message, conflicts }) } catch (_) {}
+}
 
 // ─── Debounced auto-sync ──────────────────────────────────────────────────────
 
@@ -110,6 +123,8 @@ function buildConfigExport(db, projectId) {
   const keybinds = safeJsonParse(project.keybinds, [])
 
   const forms = db.prepare('SELECT * FROM forms WHERE project_id=?').all(projectId).map(f => ({
+    sync_id: f.sync_id,
+    updated_at: f.updated_at || f.created_at,
     name: f.name,
     schema: JSON.parse(f.schema || '{"sections":[]}'),
   }))
@@ -119,7 +134,7 @@ function buildConfigExport(db, projectId) {
     if (i.content_type === 'pdf' && i.file_path) {
       try { pdf_data = fs.readFileSync(i.file_path).toString('base64') } catch (_) {}
     }
-    return { name: i.name, content_type: i.content_type || 'markdown', content: i.content || '', pdf_data }
+    return { sync_id: i.sync_id, updated_at: i.updated_at || i.created_at, name: i.name, content_type: i.content_type || 'markdown', content: i.content || '', pdf_data }
   })
 
   const formNames = Object.fromEntries(
@@ -139,6 +154,8 @@ function buildConfigExport(db, projectId) {
       return { tab_type: tab.tab_type, ref_name: refName, label: tab.label, sort_order: tab.sort_order }
     })
     return {
+      sync_id: mt.sync_id,
+      updated_at: mt.updated_at || mt.created_at,
       name: mt.name,
       reviews_required: mt.reviews_required,
       allow_custom_tags: mt.allow_custom_tags,
@@ -158,8 +175,9 @@ function buildConfigExport(db, projectId) {
     `).all(enc.id)
     return {
       sync_id: enc.sync_id,
+      updated_at: enc.updated_at || enc.created_at,
       name: enc.name,
-      media: mediaFiles.map(m => ({ sync_id: m.sync_id, name: m.name, file_type: m.file_type, media_type_name: m.media_type_name || null })),
+      media: mediaFiles.map(m => ({ sync_id: m.sync_id, updated_at: m.updated_at || m.created_at, name: m.name, file_type: m.file_type, media_type_name: m.media_type_name || null })),
     }
   })
 
@@ -173,6 +191,7 @@ function buildConfigExport(db, projectId) {
       description: project.description,
       owner_password_hash: project.owner_password_hash || null,
       keybinds,
+      updated_at: project.updated_at,
     },
     forms,
     instructions,
@@ -233,174 +252,254 @@ function buildReviewExport(db, projectId, reviewerUuid, reviewerName) {
   }
 }
 
-// ─── Shared config apply transaction ─────────────────────────────────────────
-// Single authoritative implementation used by mergeConfigImport and replaceStructureFromConfig.
-// Adding a new synced entity means updating this one function only.
+// ─── Per-entity structure apply / merge ──────────────────────────────────────
+// Single code path applies a config to the DB. Two modes:
+//   • authoritative (default) — incoming always wins, entity by entity. Used by
+//     manual Import File, join-from-folder, and the "accept update" prompt.
+//   • merge — each entity is kept or replaced by last-writer-wins on its updated_at
+//     clock. Used by auto-sync, so two machines that both edited never silently
+//     clobber: only the genuinely older edit is replaced.
+// NEITHER mode prunes. Deletions propagate solely via structure tombstones, so a
+// stale or partial config can never destroy local work. Adding a new synced entity
+// means updating this one function (and structureFingerprint / tombstones).
 
-function _applyConfigTransaction(db, projectId, configData) {
+function hashOf(obj) {
+  return crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex').slice(0, 16)
+}
+
+// LWW clock. Falls back to created_at (local rows whose updated_at is still NULL)
+// and exported_at (pre-v5 incoming configs with no per-entity clock) so the value
+// is always a comparable string in the DB's 'YYYY-MM-DD HH:MM:SS' format.
+function localClock(row) { return row.updated_at || row.created_at || '' }
+function incomingClock(entity, configData) { return entity.updated_at || configData.exported_at || '' }
+
+// Decide whether an incoming entity should overwrite the local one (merge mode).
+// Equal clocks with differing content is a real concurrent edit: a deterministic
+// content-hash tiebreak keeps both machines convergent, and we flag a conflict so
+// the UI can surface a toast.
+function decideWrite(localHash, incomingHash, lClock, iClock) {
+  if (iClock > lClock) return { write: true, conflict: false }
+  if (iClock < lClock) return { write: false, conflict: false }
+  if (localHash === incomingHash) return { write: false, conflict: false }
+  return { write: incomingHash > localHash, conflict: true }
+}
+
+// Replaces a media type's tags + workspace tabs from a config entry (full replace —
+// these children have no independent identity). Tabs reference forms/instructions by
+// name, resolved into this DB's ids.
+function _writeMediaTypeChildren(db, projectId, mtId, mt) {
+  db.prepare('DELETE FROM timestamp_tags WHERE media_type_id=?').run(mtId)
+  for (const tag of (mt.tags || [])) {
+    db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)').run(mtId, tag.label, tag.color || '#6366f1', tag.description || '')
+  }
+  db.prepare('DELETE FROM workspace_tabs WHERE media_type_id=?').run(mtId)
+  for (let i = 0; i < (mt.workspace_tabs || []).length; i++) {
+    const tab = mt.workspace_tabs[i]
+    let refId = null
+    if (tab.tab_type === 'form' && tab.ref_name) {
+      refId = db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, tab.ref_name)?.id || null
+    } else if (tab.tab_type === 'instruction' && tab.ref_name) {
+      refId = db.prepare('SELECT id FROM instructions WHERE project_id=? AND name=?').get(projectId, tab.ref_name)?.id || null
+    }
+    if (refId != null) {
+      db.prepare('INSERT INTO workspace_tabs (media_type_id, tab_type, ref_id, label, sort_order) VALUES (?,?,?,?,?)').run(mtId, tab.tab_type, refId, tab.label, i)
+    }
+  }
+}
+
+// Content shapes for tie-break hashing — only the synced fields that define an entity.
+function _localMediaTypeContent(db, row) {
+  const tags = db.prepare('SELECT label, color, description FROM timestamp_tags WHERE media_type_id=? ORDER BY label').all(row.id)
+  const tabs = db.prepare("SELECT tab_type, label, sort_order, ref_id FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order").all(row.id)
+    .map(t => ({ tab_type: t.tab_type, label: t.label, sort_order: t.sort_order }))
+  return { name: row.name, reviews_required: row.reviews_required, allow_custom_tags: row.allow_custom_tags ? 1 : 0, color: row.color, tags, tabs: tabs.length }
+}
+function _incomingMediaTypeContent(mt) {
+  const tags = (mt.tags || []).map(t => ({ label: t.label, color: t.color, description: t.description })).sort((a, b) => (a.label > b.label ? 1 : -1))
+  return { name: mt.name, reviews_required: mt.reviews_required, allow_custom_tags: mt.allow_custom_tags ? 1 : 0, color: mt.color, tags, tabs: (mt.workspace_tabs || []).length }
+}
+
+function applyStructure(db, projectId, configData, { merge = false } = {}) {
   const incomingVersion = configData.config_version || 1
+  const conflicts = []
+  const tombstoned = tombstonedSyncIds(db, projectId)
 
   const tx = db.transaction(() => {
+    // ── Project meta (a single record, not a set) ──
     if (configData.project) {
-      const kbJson = JSON.stringify(configData.project.keybinds || [])
-      const incomingHash = configData.project.owner_password_hash || null
+      const proj = configData.project
+      const local = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId)
+      const kbJson = JSON.stringify(proj.keybinds || [])
       // Never silently clear an existing password with a null from a stale config file
-      const localHash = db.prepare('SELECT owner_password_hash FROM projects WHERE id=?').get(projectId)?.owner_password_hash || null
-      const hashToUse = incomingHash || localHash
-      db.prepare("UPDATE projects SET name=?, description=?, owner_password_hash=?, keybinds=?, config_version=?, updated_at=datetime('now') WHERE id=?")
-        .run(configData.project.name || '', configData.project.description || '', hashToUse, kbJson, incomingVersion, projectId)
-    }
-
-    for (const f of (configData.forms || [])) {
-      const schema = typeof f.schema === 'string' ? f.schema : JSON.stringify(f.schema)
-      const existing = db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, f.name)
-      if (existing) {
-        db.prepare("UPDATE forms SET schema=?, updated_at=datetime('now') WHERE id=?").run(schema, existing.id)
+      const hashToUse = (proj.owner_password_hash || null) || (local?.owner_password_hash || null)
+      let write = true
+      if (merge && local) {
+        const lHash = hashOf({ name: local.name, description: local.description, owner_password_hash: local.owner_password_hash || null, keybinds: safeJsonParse(local.keybinds, []) })
+        const iHash = hashOf({ name: proj.name || '', description: proj.description || '', owner_password_hash: hashToUse, keybinds: proj.keybinds || [] })
+        const d = decideWrite(lHash, iHash, localClock(local), incomingClock(proj, configData))
+        write = d.write
+        if (d.conflict) conflicts.push({ kind: 'project', name: proj.name || local.name })
+      }
+      // Always absorb the higher config_version counter so the legacy "update available"
+      // badge clears even when our per-entity content already won.
+      const newVersion = merge ? Math.max(local?.config_version || 1, incomingVersion) : incomingVersion
+      if (write) {
+        db.prepare("UPDATE projects SET name=?, description=?, owner_password_hash=?, keybinds=?, config_version=?, updated_at=COALESCE(?, datetime('now')) WHERE id=?")
+          .run(proj.name || '', proj.description || '', hashToUse, kbJson, newVersion, proj.updated_at || null, projectId)
       } else {
-        db.prepare('INSERT INTO forms (project_id, name, schema) VALUES (?,?,?)').run(projectId, f.name, schema)
+        db.prepare('UPDATE projects SET config_version=? WHERE id=?').run(newVersion, projectId)
       }
     }
 
+    // ── Forms ──
+    for (const f of (configData.forms || [])) {
+      if (f.sync_id && tombstoned.form.has(f.sync_id)) continue
+      const schema = typeof f.schema === 'string' ? f.schema : JSON.stringify(f.schema)
+      let local = f.sync_id ? db.prepare('SELECT * FROM forms WHERE project_id=? AND sync_id=?').get(projectId, f.sync_id) : null
+      if (!local) local = db.prepare('SELECT * FROM forms WHERE project_id=? AND name=?').get(projectId, f.name)
+      if (!local) {
+        db.prepare("INSERT INTO forms (project_id, name, schema, sync_id, updated_at) VALUES (?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, f.name, schema, f.sync_id || crypto.randomUUID(), f.updated_at || null)
+        continue
+      }
+      let write = true
+      if (merge) {
+        const d = decideWrite(hashOf({ name: local.name, schema: local.schema }), hashOf({ name: f.name, schema }), localClock(local), incomingClock(f, configData))
+        write = d.write
+        if (d.conflict) conflicts.push({ kind: 'form', name: f.name })
+      }
+      if (write) {
+        db.prepare("UPDATE forms SET name=?, schema=?, sync_id=COALESCE(sync_id,?), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(f.name, schema, f.sync_id || null, f.updated_at || null, local.id)
+      }
+    }
+
+    // ── Instructions ──
     for (const i of (configData.instructions || [])) {
-      let filePath = null
+      if (i.sync_id && tombstoned.instruction.has(i.sync_id)) continue
+      let local = i.sync_id ? db.prepare('SELECT * FROM instructions WHERE project_id=? AND sync_id=?').get(projectId, i.sync_id) : null
+      if (!local) local = db.prepare('SELECT * FROM instructions WHERE project_id=? AND name=?').get(projectId, i.name)
+
+      let write = true
+      if (merge && local) {
+        const d = decideWrite(
+          hashOf({ name: local.name, content_type: local.content_type, content: local.content }),
+          hashOf({ name: i.name, content_type: i.content_type || 'markdown', content: i.content || '' }),
+          localClock(local), incomingClock(i, configData))
+        write = d.write
+        if (d.conflict) conflicts.push({ kind: 'instruction', name: i.name })
+      }
+      if (local && !write) continue
+
+      // Only materialize the (potentially large) PDF when we're actually writing it.
+      let filePath = local?.file_path || null
       if (i.content_type === 'pdf' && i.pdf_data) {
         const destDir = path.join(app.getPath('userData'), 'projects', String(projectId))
         fs.mkdirSync(destDir, { recursive: true })
-        const existingFile = db.prepare('SELECT file_path FROM instructions WHERE project_id=? AND name=?').get(projectId, i.name)
-        filePath = existingFile?.file_path || path.join(destDir, `${Date.now()}-${i.name}.pdf`)
+        filePath = local?.file_path || path.join(destDir, `${Date.now()}-${i.name}.pdf`)
         fs.writeFileSync(filePath, Buffer.from(i.pdf_data, 'base64'))
       }
-      const existing = db.prepare('SELECT id FROM instructions WHERE project_id=? AND name=?').get(projectId, i.name)
-      if (existing) {
-        db.prepare('UPDATE instructions SET content=?, content_type=?, file_path=? WHERE id=?')
-          .run(i.content || '', i.content_type || 'markdown', filePath, existing.id)
+      if (local) {
+        db.prepare("UPDATE instructions SET name=?, content=?, content_type=?, file_path=?, sync_id=COALESCE(sync_id,?), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(i.name, i.content || '', i.content_type || 'markdown', filePath, i.sync_id || null, i.updated_at || null, local.id)
       } else {
-        db.prepare('INSERT INTO instructions (project_id, name, content, content_type, file_path) VALUES (?,?,?,?,?)')
-          .run(projectId, i.name, i.content || '', i.content_type || 'markdown', filePath)
+        db.prepare("INSERT INTO instructions (project_id, name, content, content_type, file_path, sync_id, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, i.name, i.content || '', i.content_type || 'markdown', filePath, i.sync_id || crypto.randomUUID(), i.updated_at || null)
       }
     }
 
+    // ── Media types (+ tags + workspace tabs) ──
     for (const mt of (configData.media_types || [])) {
+      if (mt.sync_id && tombstoned.media_type.has(mt.sync_id)) continue
+      let local = mt.sync_id ? db.prepare('SELECT * FROM media_types WHERE project_id=? AND sync_id=?').get(projectId, mt.sync_id) : null
+      if (!local) local = db.prepare('SELECT * FROM media_types WHERE project_id=? AND name=?').get(projectId, mt.name)
+
+      let write = true
+      if (merge && local) {
+        const d = decideWrite(hashOf(_localMediaTypeContent(db, local)), hashOf(_incomingMediaTypeContent(mt)), localClock(local), incomingClock(mt, configData))
+        write = d.write
+        if (d.conflict) conflicts.push({ kind: 'media type', name: mt.name })
+      }
+      if (local && !write) continue
+
       let mtId
-      const existing = db.prepare('SELECT id FROM media_types WHERE project_id=? AND name=?').get(projectId, mt.name)
-      if (existing) {
-        db.prepare('UPDATE media_types SET reviews_required=?, allow_custom_tags=?, color=? WHERE id=?')
-          .run(mt.reviews_required, mt.allow_custom_tags ? 1 : 0, mt.color, existing.id)
-        mtId = existing.id
+      if (local) {
+        db.prepare("UPDATE media_types SET name=?, reviews_required=?, allow_custom_tags=?, color=?, sync_id=COALESCE(sync_id,?), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(mt.name, mt.reviews_required, mt.allow_custom_tags ? 1 : 0, mt.color, mt.sync_id || null, mt.updated_at || null, local.id)
+        mtId = local.id
       } else {
-        const r = db.prepare('INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color) VALUES (?,?,?,?,?)')
-          .run(projectId, mt.name, mt.reviews_required || 1, mt.allow_custom_tags ? 1 : 0, mt.color || '#6366f1')
+        const r = db.prepare("INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, mt.name, mt.reviews_required || 1, mt.allow_custom_tags ? 1 : 0, mt.color || '#6366f1', mt.sync_id || crypto.randomUUID(), mt.updated_at || null)
         mtId = r.lastInsertRowid
       }
-      db.prepare('DELETE FROM timestamp_tags WHERE media_type_id=?').run(mtId)
-      for (const tag of (mt.tags || [])) {
-        db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)').run(mtId, tag.label, tag.color || '#6366f1', tag.description || '')
-      }
-      db.prepare('DELETE FROM workspace_tabs WHERE media_type_id=?').run(mtId)
-      for (let i = 0; i < (mt.workspace_tabs || []).length; i++) {
-        const tab = mt.workspace_tabs[i]
-        let refId = null
-        if (tab.tab_type === 'form' && tab.ref_name) {
-          refId = db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, tab.ref_name)?.id || null
-        } else if (tab.tab_type === 'instruction' && tab.ref_name) {
-          refId = db.prepare('SELECT id FROM instructions WHERE project_id=? AND name=?').get(projectId, tab.ref_name)?.id || null
-        }
-        if (refId != null) {
-          db.prepare('INSERT INTO workspace_tabs (media_type_id, tab_type, ref_id, label, sort_order) VALUES (?,?,?,?,?)').run(mtId, tab.tab_type, refId, tab.label, i)
-        }
-      }
+      _writeMediaTypeChildren(db, projectId, mtId, mt)
     }
 
-    // Ensure encounter/media stubs exist (config is authoritative source for structure).
-    // Skip anything explicitly tombstoned — a deleted item must never be resurrected
-    // by a peer's stale config that still lists it.
-    const tombstoned = tombstonedSyncIds(db, projectId)
+    // ── Encounters + media files ──
+    // Tombstoned items are skipped so a peer's stale config can't resurrect a deletion.
     for (const enc of (configData.encounters || [])) {
       if (enc.sync_id && tombstoned.enc.has(enc.sync_id)) continue
       let localEnc = enc.sync_id
-        ? db.prepare('SELECT id FROM encounters WHERE project_id=? AND sync_id=?').get(projectId, enc.sync_id)
+        ? db.prepare('SELECT * FROM encounters WHERE project_id=? AND sync_id=?').get(projectId, enc.sync_id)
         : null
+      if (!localEnc) localEnc = db.prepare('SELECT * FROM encounters WHERE project_id=? AND name=?').get(projectId, enc.name)
+
       if (!localEnc) {
-        localEnc = db.prepare('SELECT id FROM encounters WHERE project_id=? AND name=?').get(projectId, enc.name)
-      }
-      if (localEnc) {
-        db.prepare('UPDATE encounters SET name=?, sync_id=COALESCE(?,sync_id) WHERE id=?')
-          .run(enc.name, enc.sync_id || null, localEnc.id)
-      } else {
-        const r = db.prepare("INSERT INTO encounters (project_id, name, folder_path, sync_id) VALUES (?,?,?,?)")
-          .run(projectId, enc.name, '', enc.sync_id || crypto.randomUUID())
+        const r = db.prepare("INSERT INTO encounters (project_id, name, folder_path, sync_id, updated_at) VALUES (?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, enc.name, '', enc.sync_id || crypto.randomUUID(), enc.updated_at || null)
         localEnc = { id: r.lastInsertRowid }
+      } else {
+        let write = true
+        if (merge) {
+          const d = decideWrite(hashOf({ name: localEnc.name }), hashOf({ name: enc.name }), localClock(localEnc), incomingClock(enc, configData))
+          write = d.write
+          if (d.conflict) conflicts.push({ kind: 'encounter', name: enc.name })
+        }
+        if (write) {
+          db.prepare("UPDATE encounters SET name=?, sync_id=COALESCE(sync_id,?), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+            .run(enc.name, enc.sync_id || null, enc.updated_at || null, localEnc.id)
+        }
       }
+
       for (const media of (enc.media || [])) {
         if (media.sync_id && tombstoned.media.has(media.sync_id)) continue
-        // Search globally by sync_id (handles moves — file may be under different encounter locally)
-        let localMedia = media.sync_id
-          ? db.prepare('SELECT id FROM media_files WHERE sync_id=?').get(media.sync_id)
-          : null
-        if (!localMedia) {
-          localMedia = db.prepare('SELECT id FROM media_files WHERE encounter_id=? AND name=?').get(localEnc.id, media.name)
-        }
+        // Search globally by sync_id (handles moves — file may be under a different encounter locally)
+        let localMedia = media.sync_id ? db.prepare('SELECT * FROM media_files WHERE sync_id=?').get(media.sync_id) : null
+        if (!localMedia) localMedia = db.prepare('SELECT * FROM media_files WHERE encounter_id=? AND name=?').get(localEnc.id, media.name)
         const mt = media.media_type_name
           ? db.prepare('SELECT id FROM media_types WHERE project_id=? AND name=?').get(projectId, media.media_type_name)
           : null
+
         if (!localMedia) {
-          db.prepare("INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id) VALUES (?,?,?,?,?,?)")
-            .run(localEnc.id, media.name, '', media.file_type || 'video', mt?.id || null, media.sync_id || crypto.randomUUID())
-        } else {
+          db.prepare("INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))")
+            .run(localEnc.id, media.name, '', media.file_type || 'video', mt?.id || null, media.sync_id || crypto.randomUUID(), media.updated_at || null)
+          continue
+        }
+        let write = true
+        if (merge) {
+          const localMtName = localMedia.media_type_id ? db.prepare('SELECT name FROM media_types WHERE id=?').get(localMedia.media_type_id)?.name || null : null
+          const d = decideWrite(
+            hashOf({ name: localMedia.name, file_type: localMedia.file_type, media_type_name: localMtName }),
+            hashOf({ name: media.name, file_type: media.file_type || 'video', media_type_name: media.media_type_name || null }),
+            localClock(localMedia), incomingClock(media, configData))
+          write = d.write
+          if (d.conflict) conflicts.push({ kind: 'file', name: media.name })
+        }
+        if (write) {
           // Update handles: moves (encounter_id), renames (name), media type, sync_id backfill
-          db.prepare('UPDATE media_files SET encounter_id=?, name=?, media_type_id=?, sync_id=COALESCE(?,sync_id) WHERE id=?')
-            .run(localEnc.id, media.name, mt?.id || null, media.sync_id || null, localMedia.id)
+          db.prepare("UPDATE media_files SET encounter_id=?, name=?, media_type_id=?, sync_id=COALESCE(sync_id,?), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+            .run(localEnc.id, media.name, mt?.id || null, media.sync_id || null, media.updated_at || null, localMedia.id)
         }
-      }
-    }
-
-    // Config is authoritative for structure — remove local encounters/files not in the config.
-    // FK cascade (encounters → media_files → reviews → timestamps/form_responses) handles cleanup.
-    const configSyncIds = (configData.encounters || []).map(e => e.sync_id).filter(Boolean)
-    const configNames = (configData.encounters || []).map(e => e.name)
-    const localEncs = db.prepare('SELECT id, sync_id, name FROM encounters WHERE project_id=?').all(projectId)
-    for (const localEnc of localEncs) {
-      const inConfig = localEnc.sync_id
-        ? configSyncIds.includes(localEnc.sync_id)
-        : configNames.includes(localEnc.name)
-      if (!inConfig) {
-        // Never let an authoritative-config prune cascade-delete reviewer work.
-        // If any review (even soft-deleted) exists under this encounter, keep it.
-        const reviewCount = db.prepare(`
-          SELECT COUNT(*) AS n FROM reviews r
-          JOIN media_files mf ON r.media_file_id = mf.id
-          WHERE mf.encounter_id = ?
-        `).get(localEnc.id).n
-        if (reviewCount > 0) {
-          console.warn(`[sync] keeping encounter "${localEnc.name}" (#${localEnc.id}) absent from config — has ${reviewCount} review(s); refusing to destroy data`)
-          continue
-        }
-        db.prepare('DELETE FROM encounters WHERE id=?').run(localEnc.id)
-      }
-    }
-
-    const configMediaSyncIds = (configData.encounters || []).flatMap(e => (e.media || []).map(m => m.sync_id)).filter(Boolean)
-    const remainingFiles = db.prepare(`
-      SELECT mf.id, mf.sync_id, mf.name, e.name as enc_name FROM media_files mf
-      JOIN encounters e ON mf.encounter_id = e.id WHERE e.project_id=?
-    `).all(projectId)
-    for (const f of remainingFiles) {
-      const encInConfig = (configData.encounters || []).find(e => e.name === f.enc_name || configSyncIds.includes(f.sync_id))
-      if (!encInConfig) continue
-      const mediaInConfig = f.sync_id
-        ? (configMediaSyncIds.includes(f.sync_id) || (encInConfig.media || []).some(m => m.name === f.name))
-        : (encInConfig.media || []).some(m => m.name === f.name)
-      if (!mediaInConfig) {
-        const reviewCount = db.prepare('SELECT COUNT(*) AS n FROM reviews WHERE media_file_id=?').get(f.id).n
-        if (reviewCount > 0) {
-          console.warn(`[sync] keeping media "${f.name}" (#${f.id}) absent from config — has ${reviewCount} review(s); refusing to destroy data`)
-          continue
-        }
-        db.prepare('DELETE FROM media_files WHERE id=?').run(f.id)
       }
     }
   })
   tx()
+  return { conflicts }
+}
+
+// Authoritative apply (incoming wins). Back-compat wrapper for manual import / join.
+function _applyConfigTransaction(db, projectId, configData) {
+  applyStructure(db, projectId, configData, { merge: false })
 }
 
 // ─── Split-file mergers ───────────────────────────────────────────────────────
@@ -553,6 +652,20 @@ function recordMediaTombstone(db, projectId, mediaFileId) {
   }
 }
 
+// Generic recorder for the by-id structural entities (form / instruction / media_type).
+// Call it BEFORE deleting the row, so the deletion propagates to peers as a tombstone
+// instead of being silently re-published by anyone whose config still lists the item.
+const TOMBSTONE_TABLE = { form: 'forms', instruction: 'instructions', media_type: 'media_types' }
+function recordStructureTombstone(db, projectId, kind, id) {
+  const table = TOMBSTONE_TABLE[kind]
+  if (!table) return
+  const row = db.prepare(`SELECT sync_id FROM ${table} WHERE id=?`).get(id)
+  if (row?.sync_id) {
+    db.prepare('INSERT OR IGNORE INTO deleted_structure (project_id, kind, sync_id) VALUES (?,?,?)')
+      .run(projectId, kind, row.sync_id)
+  }
+}
+
 function readStructureTombstoneFile(filePath) {
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'))
@@ -570,6 +683,10 @@ function applyStructureTombstones(db, projectId, tombstones) {
     } else if (del.kind === 'media') {
       db.prepare(`DELETE FROM media_files WHERE sync_id=? AND encounter_id IN (SELECT id FROM encounters WHERE project_id=?)`)
         .run(del.sync_id, projectId)
+    } else if (TOMBSTONE_TABLE[del.kind]) {
+      // form / instruction / media_type — FK cascade cleans up children (form_responses,
+      // timestamp_tags, workspace_tabs).
+      db.prepare(`DELETE FROM ${TOMBSTONE_TABLE[del.kind]} WHERE project_id=? AND sync_id=?`).run(projectId, del.sync_id)
     }
   }
 }
@@ -592,79 +709,139 @@ function mergeStructureTombstones(...lists) {
 }
 
 function tombstonedSyncIds(db, projectId) {
-  const enc = new Set()
-  const media = new Set()
+  const sets = { enc: new Set(), media: new Set(), form: new Set(), instruction: new Set(), media_type: new Set() }
   for (const row of db.prepare('SELECT kind, sync_id FROM deleted_structure WHERE project_id=?').all(projectId)) {
-    if (row.kind === 'encounter') enc.add(row.sync_id)
-    else if (row.kind === 'media') media.add(row.sync_id)
+    if (row.kind === 'encounter') sets.enc.add(row.sync_id)
+    else if (row.kind === 'media') sets.media.add(row.sync_id)
+    else if (sets[row.kind]) sets[row.kind].add(row.sync_id)
   }
-  return { enc, media }
+  return sets
+}
+
+// ─── Structure fingerprint (content identity, drives merge + cheap polling) ───
+// A hash of the canonical structure (sorted by sync_id, clocks stripped) plus the
+// tombstone set. Two machines with identical content produce the same fingerprint
+// regardless of row order or per-entity timestamps, so "fingerprints match" ⇒
+// nothing to sync, and "fingerprints differ" ⇒ run a per-entity merge.
+
+function canonicalizeConfig(cfg) {
+  const sortBySync = (arr) => [...(arr || [])].sort((a, b) => ((a.sync_id || a.name || '') > (b.sync_id || b.name || '') ? 1 : -1))
+  const stripClock = ({ updated_at, ...rest }) => rest
+  return {
+    project: cfg.project ? { name: cfg.project.name || '', description: cfg.project.description || '', owner_password_hash: cfg.project.owner_password_hash || null, keybinds: cfg.project.keybinds || [] } : null,
+    forms: sortBySync(cfg.forms).map(stripClock),
+    instructions: sortBySync(cfg.instructions).map(stripClock),
+    media_types: sortBySync(cfg.media_types).map(stripClock),
+    encounters: sortBySync(cfg.encounters).map(e => ({ sync_id: e.sync_id, name: e.name, media: sortBySync(e.media).map(stripClock) })),
+  }
+}
+
+function structureFingerprint(db, projectId) {
+  const tombs = db.prepare('SELECT kind, sync_id FROM deleted_structure WHERE project_id=?').all(projectId)
+    .map(t => `${t.kind}:${t.sync_id}`).sort()
+  return hashOf({ structure: canonicalizeConfig(buildConfigExport(db, projectId)), tombstones: tombs })
 }
 
 // ─── Manifest helpers (tiny file for cheap polling) ───────────────────────────
 
-function buildManifest(db, projectId) {
+function buildManifest(db, projectId, fingerprint) {
   const project = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)
-  return { config_version: project?.config_version || 1, updated_at: new Date().toISOString() }
+  return {
+    config_version: project?.config_version || 1,
+    fingerprint: fingerprint || structureFingerprint(db, projectId),
+    updated_at: new Date().toISOString(),
+  }
 }
 
 function readLocalManifest(syncFolder) {
   try { return JSON.parse(fs.readFileSync(path.join(syncFolder, 'manifest.json'), 'utf8')) } catch { return null }
 }
 
-// ─── Cloud-authoritative structure replacement ────────────────────────────────
+// ─── Structure apply entry points ─────────────────────────────────────────────
 
+// Authoritative apply (incoming wins). Kept for callers that want "make my DB match
+// this config" semantics; deletions still come only from tombstones (no prune).
 function replaceStructureFromConfig(db, projectId, configData) {
   if (!configData?.sdmo) throw new Error('Not a valid SDMo config file')
   assertConfigCompatible(configData)
-  // This is the authoritative-prune path (can remove structure). Snapshot first.
   backupDb('pre-config-apply')
   _applyConfigTransaction(db, projectId, configData)
 }
 
+// Per-entity merge (last-writer-wins). The auto-sync path. Returns { conflicts }.
+function mergeStructureFromConfig(db, projectId, configData) {
+  if (!configData?.sdmo) throw new Error('Not a valid SDMo config file')
+  assertConfigCompatible(configData)
+  return applyStructure(db, projectId, configData, { merge: true })
+}
+
 // ─── Config sync helpers (used by both do*Sync and fetchStructure) ────────────
+// Fingerprint-driven, bidirectional. No "who's newer" gate: read the folder config,
+// merge it per-entity (older edits lose, never silently — concurrent same-entity
+// edits surface as conflicts), then publish if our content still differs (we hold
+// newer/extra entities). Returns { conflicts } for the caller to toast.
 
 function syncConfigLocal(db, projectId, syncFolder) {
-  const localVersion = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)?.config_version || 0
-  const manifest = readLocalManifest(syncFolder)
-  const folderVersion = manifest?.config_version || 0
   const configPath = path.join(syncFolder, 'project-config.json')
+  const manifest = readLocalManifest(syncFolder)
+  const folderFingerprint = manifest?.fingerprint || null
+  const localFingerprint = structureFingerprint(db, projectId)
+  // Cheap path: folder content already equals ours.
+  if (folderFingerprint && folderFingerprint === localFingerprint) return { conflicts: [] }
 
-  if (folderVersion > localVersion) {
-    if (fs.existsSync(configPath)) {
+  let conflicts = []
+  if (fs.existsSync(configPath)) {
+    try {
       const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'))
-      if ((configData.config_version || 0) > localVersion) {
-        replaceStructureFromConfig(db, projectId, configData)
+      if (configData?.sdmo) {
+        // Snapshot before pulling genuinely newer remote state (parallel to the old pull backup).
+        const localVersion = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)?.config_version || 0
+        if ((manifest?.config_version || 0) > localVersion) backupDb('pre-config-merge')
+        conflicts = mergeStructureFromConfig(db, projectId, configData).conflicts
       }
+    } catch (e) {
+      console.error('[sync] reading folder config failed:', e.message)
     }
-  } else if (localVersion > folderVersion) {
-    const configData = buildConfigExport(db, projectId)
-    fs.writeFileSync(configPath, JSON.stringify(configData, null, 2))
-    fs.writeFileSync(path.join(syncFolder, 'manifest.json'), JSON.stringify(buildManifest(db, projectId)))
   }
+  // Publish if our post-merge content differs from the folder's.
+  const postFingerprint = structureFingerprint(db, projectId)
+  if (postFingerprint !== folderFingerprint) {
+    fs.writeFileSync(configPath, JSON.stringify(buildConfigExport(db, projectId), null, 2))
+    fs.writeFileSync(path.join(syncFolder, 'manifest.json'), JSON.stringify(buildManifest(db, projectId, postFingerprint)))
+  }
+  return { conflicts }
 }
 
 async function syncConfigCloud(db, projectId, adapter, folderId, allFiles) {
-  const localVersion = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)?.config_version || 0
   const manifestFile = allFiles.find(f => f.name === 'manifest.json')
-  let cloudVersion = 0
+  let manifest = null
   if (manifestFile) {
-    try { cloudVersion = JSON.parse(await adapter.readFile(manifestFile.id)).config_version || 0 } catch {}
+    try { manifest = JSON.parse(await adapter.readFile(manifestFile.id)) } catch {}
   }
+  const cloudFingerprint = manifest?.fingerprint || null
+  const localFingerprint = structureFingerprint(db, projectId)
+  if (cloudFingerprint && cloudFingerprint === localFingerprint) return { conflicts: [] }
 
-  if (cloudVersion > localVersion) {
-    const configFile = allFiles.find(f => f.name === 'project-config.json')
-    if (configFile) {
+  let conflicts = []
+  const configFile = allFiles.find(f => f.name === 'project-config.json')
+  if (configFile) {
+    try {
       const configData = JSON.parse(await adapter.readFile(configFile.id))
-      if ((configData.config_version || 0) > localVersion) {
-        replaceStructureFromConfig(db, projectId, configData)
+      if (configData?.sdmo) {
+        const localVersion = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)?.config_version || 0
+        if ((manifest?.config_version || 0) > localVersion) backupDb('pre-config-merge')
+        conflicts = mergeStructureFromConfig(db, projectId, configData).conflicts
       }
+    } catch (e) {
+      console.error('[sync] reading cloud config failed:', e.message)
     }
-  } else if (localVersion > cloudVersion) {
-    const configData = buildConfigExport(db, projectId)
-    await adapter.writeFile(folderId, 'project-config.json', JSON.stringify(configData, null, 2))
-    await adapter.writeFile(folderId, 'manifest.json', JSON.stringify(buildManifest(db, projectId)))
   }
+  const postFingerprint = structureFingerprint(db, projectId)
+  if (postFingerprint !== cloudFingerprint) {
+    await adapter.writeFile(folderId, 'project-config.json', JSON.stringify(buildConfigExport(db, projectId), null, 2))
+    await adapter.writeFile(folderId, 'manifest.json', JSON.stringify(buildManifest(db, projectId, postFingerprint)))
+  }
+  return { conflicts }
 }
 
 // ─── Local folder sync ────────────────────────────────────────────────────────
@@ -696,7 +873,8 @@ async function _doLocalSync(db, projectId, syncFolder, uuid, name) {
 
   // 2. Config
   try {
-    syncConfigLocal(db, projectId, syncFolder)
+    const { conflicts } = syncConfigLocal(db, projectId, syncFolder)
+    emitConflicts(conflicts)
   } catch (e) {
     console.error('[sync] config sync failed:', e.message)
   }
@@ -780,7 +958,8 @@ async function _doCloudSync(db, projectId, provider, folderId, uuid, name) {
 
   // 2. Config
   try {
-    await syncConfigCloud(db, projectId, adapter, folderId, allFiles)
+    const { conflicts } = await syncConfigCloud(db, projectId, adapter, folderId, allFiles)
+    emitConflicts(conflicts)
   } catch (e) {
     console.error('[sync] cloud config sync failed:', e.message)
   }
@@ -1198,12 +1377,13 @@ module.exports = {
   buildReviewsWorkbook, REVIEWS_REPORT_FILENAME,
   buildConfigExport, buildReviewExport,
   mergeConfigImport, mergeReviewFile,
-  replaceStructureFromConfig,
+  applyStructure, replaceStructureFromConfig, mergeStructureFromConfig,
   syncConfigLocal, syncConfigCloud,
+  structureFingerprint,
   buildManifest, readLocalManifest,
   doLocalSync, doCloudSync,
   applyTombstones, buildTombstones,
-  recordEncounterTombstone, recordMediaTombstone,
+  recordEncounterTombstone, recordMediaTombstone, recordStructureTombstone,
   applyStructureTombstones, buildStructureTombstones,
   getLastSyncAt, markSynced, cancelSync,
   setMainWindow,

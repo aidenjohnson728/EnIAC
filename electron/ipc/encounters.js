@@ -43,7 +43,7 @@ module.exports = function (ipcMain) {
   ipcMain.handle('encounters:rename', (_, projectId, encounterId, name) => {
     const db = getDb()
     // Clear folder_path — the old folder name no longer matches. Scan will re-link by name.
-    db.prepare('UPDATE encounters SET name=?, folder_path=? WHERE id=?').run(name.trim(), '', encounterId)
+    db.prepare("UPDATE encounters SET name=?, folder_path=?, updated_at=datetime('now') WHERE id=?").run(name.trim(), '', encounterId)
     bumpAndSync(db, projectId)
     return true
   })

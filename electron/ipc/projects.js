@@ -11,8 +11,10 @@ const {
   syncConfigLocal, syncConfigCloud,
   mergeConfigImport, bumpConfigVersion, bumpAndSync,
   markSynced, getLastSyncAt,
+  recordStructureTombstone,
   safeJsonParse,
 } = require('../sync')
+const { randomUUID } = require('crypto')
 
 // In-memory unlock sessions — cleared on app restart. A project is "unlocked"
 // when its password has been entered this session (or it has no password).
@@ -241,7 +243,7 @@ module.exports = function (ipcMain) {
   ipcMain.handle('setup:saveMediaType', (_, projectId, data) => {
     const db = getDb()
     if (data.id) {
-      db.prepare('UPDATE media_types SET name=?, reviews_required=?, allow_custom_tags=?, color=? WHERE id=?')
+      db.prepare("UPDATE media_types SET name=?, reviews_required=?, allow_custom_tags=?, color=?, updated_at=datetime('now') WHERE id=?")
         .run(data.name, data.reviews_required, data.allow_custom_tags ? 1 : 0, data.color, data.id)
       db.prepare('DELETE FROM timestamp_tags WHERE media_type_id=?').run(data.id)
       const insertTag = db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)')
@@ -255,8 +257,8 @@ module.exports = function (ipcMain) {
       bumpAndSync(db, projectId)
       return data.id
     } else {
-      const r = db.prepare('INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color) VALUES (?,?,?,?,?)')
-        .run(projectId, data.name, data.reviews_required || 1, data.allow_custom_tags ? 1 : 0, data.color || '#6366f1')
+      const r = db.prepare("INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))")
+        .run(projectId, data.name, data.reviews_required || 1, data.allow_custom_tags ? 1 : 0, data.color || '#6366f1', randomUUID())
       const mediaTypeId = r.lastInsertRowid
       const insertTag = db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)')
       for (const tag of (data.tags || [])) insertTag.run(mediaTypeId, tag.label, tag.color || '#6366f1', tag.description || '')
@@ -283,6 +285,7 @@ module.exports = function (ipcMain) {
   ipcMain.handle('setup:deleteMediaType', (_, projectId, id) => {
     const db = getDb()
     backupDb('pre-delete-mediatype')
+    recordStructureTombstone(db, projectId, 'media_type', id)
     db.prepare('DELETE FROM media_types WHERE id=?').run(id)
     bumpAndSync(db, projectId)
     return true
@@ -307,7 +310,7 @@ module.exports = function (ipcMain) {
       bumpAndSync(db, projectId)
       return data.id
     } else {
-      const r = db.prepare('INSERT INTO forms (project_id, name, schema) VALUES (?,?,?)').run(projectId, data.name, schema)
+      const r = db.prepare('INSERT INTO forms (project_id, name, schema, sync_id) VALUES (?,?,?,?)').run(projectId, data.name, schema, randomUUID())
       bumpAndSync(db, projectId)
       return r.lastInsertRowid
     }
@@ -323,6 +326,7 @@ module.exports = function (ipcMain) {
     const db = getDb()
     // Deleting a form cascades to all reviewers' form_responses — snapshot first.
     backupDb('pre-delete-form')
+    recordStructureTombstone(db, projectId, 'form', id)
     db.prepare('DELETE FROM forms WHERE id=?').run(id)
     bumpAndSync(db, projectId)
     return true
@@ -344,13 +348,13 @@ module.exports = function (ipcMain) {
   ipcMain.handle('setup:saveInstruction', (_, projectId, data) => {
     const db = getDb()
     if (data.id) {
-      db.prepare('UPDATE instructions SET name=?, content=?, content_type=?, file_path=? WHERE id=?')
+      db.prepare("UPDATE instructions SET name=?, content=?, content_type=?, file_path=?, updated_at=datetime('now') WHERE id=?")
         .run(data.name, data.content || '', data.content_type || 'markdown', data.file_path || null, data.id)
       bumpAndSync(db, projectId)
       return data.id
     } else {
-      const r = db.prepare('INSERT INTO instructions (project_id, name, content, content_type, file_path) VALUES (?,?,?,?,?)')
-        .run(projectId, data.name, data.content || '', data.content_type || 'markdown', data.file_path || null)
+      const r = db.prepare("INSERT INTO instructions (project_id, name, content, content_type, file_path, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))")
+        .run(projectId, data.name, data.content || '', data.content_type || 'markdown', data.file_path || null, randomUUID())
       bumpAndSync(db, projectId)
       return r.lastInsertRowid
     }
@@ -358,6 +362,7 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('setup:deleteInstruction', (_, projectId, id) => {
     const db = getDb()
+    recordStructureTombstone(db, projectId, 'instruction', id)
     db.prepare('DELETE FROM instructions WHERE id=?').run(id)
     bumpAndSync(db, projectId)
     return true

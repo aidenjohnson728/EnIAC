@@ -42,6 +42,15 @@ function runDataMigrations(db) {
         db.prepare("UPDATE reviews SET review_sync_id=? WHERE id=?").run(crypto.randomUUID(), rev.id)
       }
     },
+    // v1 → v2: backfill sync ids on forms/media_types/instructions so per-entity merge
+    // can match them across machines (parallel to the v0→v1 encounter/media backfill).
+    (db) => {
+      for (const tbl of ['forms', 'media_types', 'instructions']) {
+        for (const row of db.prepare(`SELECT id FROM ${tbl} WHERE sync_id IS NULL`).all()) {
+          db.prepare(`UPDATE ${tbl} SET sync_id=? WHERE id=?`).run(crypto.randomUUID(), row.id)
+        }
+      }
+    },
   ]
 
   let version = db.pragma('user_version', { simple: true })
@@ -145,6 +154,19 @@ function migrate(db) {
     "ALTER TABLE media_files ADD COLUMN sync_id TEXT",
     "ALTER TABLE reviews ADD COLUMN review_sync_id TEXT",
     "ALTER TABLE deleted_reviews ADD COLUMN review_sync_id TEXT",
+    // Per-entity merge: every structural entity needs a stable id + a modification
+    // clock so sync can merge per-entity (last-writer-wins by updated_at) instead of
+    // replacing the whole config blob. encounters/media_files already have sync_id.
+    // updated_at is added by ALTER (no constant default possible), so it is NULL on
+    // existing rows and must be set explicitly on insert/edit; readers fall back to
+    // created_at when it is NULL.
+    "ALTER TABLE forms ADD COLUMN sync_id TEXT",
+    "ALTER TABLE media_types ADD COLUMN sync_id TEXT",
+    "ALTER TABLE instructions ADD COLUMN sync_id TEXT",
+    "ALTER TABLE media_types ADD COLUMN updated_at TEXT",
+    "ALTER TABLE instructions ADD COLUMN updated_at TEXT",
+    "ALTER TABLE encounters ADD COLUMN updated_at TEXT",
+    "ALTER TABLE media_files ADD COLUMN updated_at TEXT",
     `CREATE TABLE IF NOT EXISTS media_file_links (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       media_file_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE CASCADE,
@@ -169,6 +191,9 @@ function migrate(db) {
     "CREATE INDEX IF NOT EXISTS idx_encounters_project ON encounters(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_media_files_encounter ON media_files(encounter_id)",
     "CREATE INDEX IF NOT EXISTS idx_media_files_sync ON media_files(sync_id)",
+    "CREATE INDEX IF NOT EXISTS idx_forms_sync ON forms(sync_id)",
+    "CREATE INDEX IF NOT EXISTS idx_media_types_sync ON media_types(sync_id)",
+    "CREATE INDEX IF NOT EXISTS idx_instructions_sync ON instructions(sync_id)",
     "CREATE INDEX IF NOT EXISTS idx_reviews_media_file ON reviews(media_file_id)",
     "CREATE INDEX IF NOT EXISTS idx_reviews_sync ON reviews(review_sync_id)",
     "CREATE INDEX IF NOT EXISTS idx_timestamps_review ON timestamps(review_id)",

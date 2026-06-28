@@ -81,7 +81,7 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('media:updateType', (_, id, mediaTypeId) => {
     const db = getDb()
-    db.prepare('UPDATE media_files SET media_type_id=? WHERE id=?').run(mediaTypeId || null, id)
+    db.prepare("UPDATE media_files SET media_type_id=?, updated_at=datetime('now') WHERE id=?").run(mediaTypeId || null, id)
     const mf = db.prepare('SELECT encounter_id FROM media_files WHERE id=?').get(id)
     const enc = mf ? db.prepare('SELECT project_id FROM encounters WHERE id=?').get(mf.encounter_id) : null
     if (enc?.project_id) {
@@ -193,14 +193,14 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('media:move', (_, projectId, mediaFileId, newEncounterId) => {
     const db = getDb()
-    db.prepare('UPDATE media_files SET encounter_id=? WHERE id=?').run(newEncounterId, mediaFileId)
+    db.prepare("UPDATE media_files SET encounter_id=?, updated_at=datetime('now') WHERE id=?").run(newEncounterId, mediaFileId)
     bumpAndSync(db, projectId)
     return true
   })
 
   ipcMain.handle('media:rename', (_, projectId, mediaFileId, name) => {
     const db = getDb()
-    db.prepare('UPDATE media_files SET name=? WHERE id=?').run(name.trim(), mediaFileId)
+    db.prepare("UPDATE media_files SET name=?, updated_at=datetime('now') WHERE id=?").run(name.trim(), mediaFileId)
     bumpAndSync(db, projectId)
     return true
   })
@@ -255,7 +255,7 @@ module.exports = function (ipcMain) {
     if (!Array.isArray(ids) || ids.length === 0) return { updated: 0 }
     db.transaction(() => {
       for (const id of ids) {
-        db.prepare('UPDATE media_files SET media_type_id=? WHERE id=?').run(mediaTypeId || null, id)
+        db.prepare("UPDATE media_files SET media_type_id=?, updated_at=datetime('now') WHERE id=?").run(mediaTypeId || null, id)
       }
     })()
     bumpAndSync(db, projectId)

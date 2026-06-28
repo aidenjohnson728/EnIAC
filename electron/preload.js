@@ -30,6 +30,7 @@ function makeEventBridge(channel) {
 const configUpdateBridge = makeEventBridge('sync:configUpdateAvailable')
 const reviewUpdatedBridge = makeEventBridge('review:updated')
 const workspaceClosedBridge = makeEventBridge('workspace:closed')
+const syncConflictBridge = makeEventBridge('sync:conflict')
 
 contextBridge.exposeInMainWorld('api', {
   // Projects
@@ -125,6 +126,10 @@ contextBridge.exposeInMainWorld('api', {
   // Event: project config updated by owner on another machine (returns subscription id)
   onConfigUpdateAvailable: (cb) => configUpdateBridge.on(cb),
   offConfigUpdateAvailable: (id) => configUpdateBridge.off(id),
+
+  // Event: a structural edit conflicted with another machine's during sync (LWW-resolved)
+  onSyncConflict: (cb) => syncConflictBridge.on(cb),
+  offSyncConflict: (id) => syncConflictBridge.off(id),
 
   // Cloud sync
   cloudConnectOneDrive: () => ipcRenderer.invoke('cloud:connectOneDrive'),

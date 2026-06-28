@@ -76,6 +76,18 @@ export default function ProjectPage() {
     return () => api.offConfigUpdateAvailable(subId)
   }, [projectId])
 
+  // A structural edit collided with another machine's during sync. LWW already
+  // picked a winner deterministically; just let the user know and refresh.
+  useEffect(() => {
+    const handler = (data) => {
+      if (!data?.message) return
+      showToast(data.message, true)
+      load()
+    }
+    const subId = api.onSyncConflict(handler)
+    return () => api.offSyncConflict(subId)
+  }, [projectId])
+
   async function load() {
     setLoading(true)
     // Refresh structure from cloud before loading (cloud is authoritative for structure)

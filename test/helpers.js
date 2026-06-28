@@ -18,14 +18,19 @@ function createProject(db, name = 'Project', extra = {}) {
     .run(name, extra.description || '').lastInsertRowid
 }
 
-function addForm(db, projectId, name, schema = { sections: [] }) {
-  return db.prepare('INSERT INTO forms (project_id, name, schema) VALUES (?,?,?)')
-    .run(projectId, name, JSON.stringify(schema)).lastInsertRowid
+function addForm(db, projectId, name, schema = { sections: [] }, opts = {}) {
+  return db.prepare('INSERT INTO forms (project_id, name, schema, sync_id) VALUES (?,?,?,?)')
+    .run(projectId, name, JSON.stringify(schema), opts.sync_id || crypto.randomUUID()).lastInsertRowid
+}
+
+function addInstruction(db, projectId, name, opts = {}) {
+  return db.prepare("INSERT INTO instructions (project_id, name, content, content_type, sync_id) VALUES (?,?,?,?,?)")
+    .run(projectId, name, opts.content || '', opts.content_type || 'markdown', opts.sync_id || crypto.randomUUID()).lastInsertRowid
 }
 
 function addMediaType(db, projectId, name, opts = {}) {
-  const id = db.prepare('INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color) VALUES (?,?,?,?,?)')
-    .run(projectId, name, opts.reviews_required ?? 1, opts.allow_custom_tags ? 1 : 0, opts.color || '#6366f1').lastInsertRowid
+  const id = db.prepare('INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id) VALUES (?,?,?,?,?,?)')
+    .run(projectId, name, opts.reviews_required ?? 1, opts.allow_custom_tags ? 1 : 0, opts.color || '#6366f1', opts.sync_id || crypto.randomUUID()).lastInsertRowid
   for (const t of (opts.tags || [])) {
     db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)')
       .run(id, t.label, t.color || '#000000', t.description || '')
@@ -63,6 +68,6 @@ function addReview(db, mediaFileId, reviewerName, opts = {}) {
 }
 
 module.exports = {
-  makeDb, createProject, addForm, addMediaType, addWorkspaceTab,
+  makeDb, createProject, addForm, addInstruction, addMediaType, addWorkspaceTab,
   addEncounter, addMedia, addReview,
 }
