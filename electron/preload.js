@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('api', {
   renameEncounter: (projectId, encounterId, name) => ipcRenderer.invoke('encounters:rename', projectId, encounterId, name),
   countEncounterReviews: (encounterId) => ipcRenderer.invoke('encounters:countReviews', encounterId),
   deleteEncounter: (projectId, encounterId) => ipcRenderer.invoke('encounters:delete', projectId, encounterId),
+  bulkDeleteEncounters: (projectId, ids) => ipcRenderer.invoke('encounters:bulkDelete', projectId, ids),
   batchCreateEncounters: (projectId, names, slots) => ipcRenderer.invoke('encounters:batchCreate', projectId, names, slots),
   exportStructure: (projectId) => ipcRenderer.invoke('encounters:exportStructure', projectId),
   previewImport: (projectId) => ipcRenderer.invoke('encounters:previewImport', projectId),
@@ -60,6 +61,8 @@ contextBridge.exposeInMainWorld('api', {
   renameMediaFile: (projectId, mediaFileId, name) => ipcRenderer.invoke('media:rename', projectId, mediaFileId, name),
   createMediaFile: (projectId, encounterId, name) => ipcRenderer.invoke('media:create', projectId, encounterId, name),
   deleteMediaFile: (projectId, mediaFileId) => ipcRenderer.invoke('media:deleteFile', projectId, mediaFileId),
+  bulkDeleteMediaFiles: (projectId, ids) => ipcRenderer.invoke('media:bulkDelete', projectId, ids),
+  bulkUpdateMediaType: (projectId, ids, mediaTypeId) => ipcRenderer.invoke('media:bulkUpdateType', projectId, ids, mediaTypeId),
   getVideoUrl: (filePath) => ipcRenderer.invoke('media:getUrl', filePath),
 
   // Reviews

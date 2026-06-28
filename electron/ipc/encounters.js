@@ -2,7 +2,7 @@ const { getDb, backupDb } = require('../db')
 const { dialog } = require('electron')
 const fs = require('fs')
 const crypto = require('crypto')
-const { bumpAndSync } = require('../sync')
+const { bumpAndSync, recordEncounterTombstone } = require('../sync')
 const { resolveLink } = require('../mediaLinks')
 
 module.exports = function (ipcMain) {
@@ -61,9 +61,25 @@ module.exports = function (ipcMain) {
     const db = getDb()
     // FK cascade: encounter → media_files → reviews → timestamps/form_responses
     backupDb('pre-delete-encounter')
+    recordEncounterTombstone(db, projectId, encounterId)
     db.prepare('DELETE FROM encounters WHERE id=?').run(encounterId)
     bumpAndSync(db, projectId)
     return true
+  })
+
+  // Bulk delete — one backup + one transaction + one sync for the whole batch.
+  ipcMain.handle('encounters:bulkDelete', (_, projectId, ids) => {
+    const db = getDb()
+    if (!Array.isArray(ids) || ids.length === 0) return { deleted: 0 }
+    backupDb('pre-bulk-delete-encounter')
+    db.transaction(() => {
+      for (const id of ids) {
+        recordEncounterTombstone(db, projectId, id)
+        db.prepare('DELETE FROM encounters WHERE id=?').run(id)
+      }
+    })()
+    bumpAndSync(db, projectId)
+    return { deleted: ids.length }
   })
 
   // names: string[]  slots: { name, mediaTypeId }[]  (slots repeated for every encounter)
@@ -99,22 +115,18 @@ module.exports = function (ipcMain) {
     if (!filePath) return null
 
     const encounters = db.prepare('SELECT * FROM encounters WHERE project_id=? ORDER BY name').all(pid)
-    const rows = [['Encounter', 'File Name', 'Media Type', 'Reviews Required', 'Reviews Submitted', 'Link Status']]
+    const rows = [['Encounter', 'File Name', 'Media Type']]
     for (const enc of encounters) {
       const media = db.prepare(`
-        SELECT mf.*, mt.name as media_type_name, mt.reviews_required
+        SELECT mf.*, mt.name as media_type_name
         FROM media_files mf LEFT JOIN media_types mt ON mf.media_type_id = mt.id
         WHERE mf.encounter_id=? ORDER BY mf.name
       `).all(enc.id)
       if (media.length === 0) {
-        rows.push([enc.name, '', '', '', '', ''])
+        rows.push([enc.name, '', ''])
       } else {
         for (const m of media) {
-          const submitted = db.prepare(
-            'SELECT COUNT(*) as n FROM reviews WHERE media_file_id=? AND status=? AND deleted_at IS NULL'
-          ).get(m.id, 'submitted').n
-          const { status } = resolveLink(db, m.id, pid)
-          rows.push([enc.name, m.name, m.media_type_name || '', m.reviews_required || '', submitted, status || 'not_linked'])
+          rows.push([enc.name, m.name, m.media_type_name || ''])
         }
       }
     }

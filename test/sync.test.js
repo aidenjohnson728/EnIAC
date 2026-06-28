@@ -1,10 +1,15 @@
 const assert = require('node:assert')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 const { test } = require('./_harness')
 const sync = require('../electron/sync')
 const {
   makeDb, createProject, addForm, addMediaType, addWorkspaceTab,
   addEncounter, addMedia, addReview,
 } = require('./helpers')
+
+function tmpDir(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)) }
 
 // ─── Config export/import round-trip ────────────────────────────────────────────
 
@@ -244,4 +249,358 @@ test('tombstones: applyTombstones soft-deletes by review_sync_id and records it'
   assert.strictEqual(tombs.length, 1)
   assert.strictEqual(tombs[0].review_sync_id, rev.review_sync_id)
   db.close()
+})
+
+// ─── Structure tombstones (explicit encounter/media deletion propagation) ────────
+
+test('structure tombstone: deletes a reviewed encounter everywhere (overrides prune guard)', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const enc = addEncounter(db, p, 'Drop')
+  const media = addMedia(db, enc.id, 'd.mp4')
+  addReview(db, media.id, 'Alice', { status: 'submitted' })
+
+  // Peer device explicitly deleted this encounter — tombstone arrives via sync.
+  sync.applyStructureTombstones(db, p, [{ kind: 'encounter', sync_id: enc.sync_id }])
+
+  // Unlike absent-from-config pruning, an explicit tombstone destroys it + its reviews.
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id=?').get(p).n, 0)
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM reviews').get().n, 0)
+  const tombs = sync.buildStructureTombstones(db, p)
+  assert.strictEqual(tombs.length, 1)
+  assert.strictEqual(tombs[0].sync_id, enc.sync_id)
+  db.close()
+})
+
+test('structure tombstone: a stale config cannot resurrect a tombstoned encounter', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const enc = addEncounter(db, p, 'Drop')
+  addMedia(db, enc.id, 'd.mp4')
+
+  // Tombstone the encounter (e.g. deleted on this machine), then a peer's stale
+  // config that still lists it tries to apply.
+  sync.applyStructureTombstones(db, p, [{ kind: 'encounter', sync_id: enc.sync_id }])
+  const staleConfig = {
+    sdmo: true, version: 4, config_version: 999, project: { name: 'P' },
+    forms: [], instructions: [], media_types: [],
+    encounters: [{ sync_id: enc.sync_id, name: 'Drop', media: [{ sync_id: null, name: 'd.mp4', file_type: 'video', media_type_name: null }] }],
+  }
+  sync.mergeConfigImport(db, p, staleConfig, { force: true })
+
+  // The tombstoned encounter must NOT come back.
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id=?').get(p).n, 0)
+  db.close()
+})
+
+// ─── Reviews report workbook (auto-uploaded .xlsx) ──────────────────────────────
+
+test('reviews report: builds a workbook with a per-media-type Reviews sheet incl. form responses', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const formId = addForm(db, p, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'text', label: 'Outcome' }] }],
+  })
+  const mtId = addMediaType(db, p, 'Video')
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId })
+  const rev = addReview(db, media.id, 'Alice', { status: 'submitted' })
+  db.prepare('INSERT INTO form_responses (review_id, form_id, responses) VALUES (?,?,?)')
+    .run(rev.id, formId, JSON.stringify({ q1: 'Improved' }))
+  db.prepare('INSERT INTO timestamps (review_id, time_seconds, tag_label, notes) VALUES (?,?,?,?)')
+    .run(rev.id, 65, 'Pain', 'winced')
+
+  const wb = sync.buildReviewsWorkbook(db, p)
+  assert.ok(wb, 'expected a workbook')
+  assert.ok(wb.SheetNames.includes('Video Reviews'), 'has reviews sheet')
+  assert.ok(wb.SheetNames.includes('Video Timestamps'), 'has timestamps sheet')
+
+  const XLSX = require('xlsx')
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets['Video Reviews'])
+  assert.strictEqual(rows.length, 1)
+  assert.strictEqual(rows[0].Reviewer, 'Alice')
+  assert.strictEqual(rows[0]['[Intake] Outcome'], 'Improved')
+  const ts = XLSX.utils.sheet_to_json(wb.Sheets['Video Timestamps'])
+  assert.strictEqual(ts[0].Time, '1:05')
+  db.close()
+})
+
+test('reviews report: soft-deleted reviews are excluded; no reviews → null workbook', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const mtId = addMediaType(db, p, 'Video')
+  const enc = addEncounter(db, p, 'Patient 1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId })
+
+  assert.strictEqual(sync.buildReviewsWorkbook(db, p), null, 'no reviews → null')
+
+  const rev = addReview(db, media.id, 'Bob')
+  db.prepare("UPDATE reviews SET deleted_at=? WHERE id=?").run(new Date().toISOString(), rev.id)
+  assert.strictEqual(sync.buildReviewsWorkbook(db, p), null, 'only deleted reviews → null')
+  db.close()
+})
+
+// ─── Small pure helpers ─────────────────────────────────────────────────────────
+
+test('util: safeJsonParse returns parsed value, or the fallback on bad/empty input', () => {
+  assert.deepStrictEqual(sync.safeJsonParse('{"a":1}', null), { a: 1 })
+  assert.deepStrictEqual(sync.safeJsonParse('not json', { fb: true }), { fb: true })
+  assert.strictEqual(sync.safeJsonParse('', 42), 42) // empty string throws → fallback
+  assert.strictEqual(sync.safeJsonParse(undefined, 'x'), 'x')
+})
+
+test('config_version: bumpConfigVersion increments by exactly one', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const before = db.prepare('SELECT config_version FROM projects WHERE id=?').get(p).config_version
+  sync.bumpConfigVersion(db, p)
+  sync.bumpConfigVersion(db, p)
+  const after = db.prepare('SELECT config_version FROM projects WHERE id=?').get(p).config_version
+  assert.strictEqual(after, before + 2)
+  db.close()
+})
+
+// ─── Manifest helpers ───────────────────────────────────────────────────────────
+
+test('manifest: buildManifest reflects config_version and round-trips through readLocalManifest', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  sync.bumpConfigVersion(db, p) // 1 → 2
+  const m = sync.buildManifest(db, p)
+  assert.strictEqual(m.config_version, 2)
+
+  const dir = tmpDir('sdmo-manifest-')
+  fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(m))
+  assert.strictEqual(sync.readLocalManifest(dir).config_version, 2)
+  // Missing folder/file → null, never throws.
+  assert.strictEqual(sync.readLocalManifest(path.join(dir, 'nope')), null)
+  db.close()
+})
+
+// ─── Structure-tombstone recorders (run before the actual delete) ───────────────
+
+test('structure tombstone: recordEncounterTombstone records the encounter AND its child media', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const enc = addEncounter(db, p, 'E')
+  const m1 = addMedia(db, enc.id, 'a.mp4')
+  const m2 = addMedia(db, enc.id, 'b.mp4')
+
+  sync.recordEncounterTombstone(db, p, enc.id)
+
+  const tombs = sync.buildStructureTombstones(db, p)
+  assert.deepStrictEqual(tombs.map(t => t.kind).sort(), ['encounter', 'media', 'media'])
+  assert.deepStrictEqual(
+    tombs.filter(t => t.kind === 'media').map(t => t.sync_id).sort(),
+    [m1.sync_id, m2.sync_id].sort()
+  )
+  // Recording does NOT delete the row — the delete handler does that afterwards.
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM encounters WHERE id=?').get(enc.id).n, 1)
+  db.close()
+})
+
+test('structure tombstone: recordMediaTombstone records a single media sync_id', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const enc = addEncounter(db, p, 'E')
+  const m = addMedia(db, enc.id, 'a.mp4')
+
+  sync.recordMediaTombstone(db, p, m.id)
+
+  const tombs = sync.buildStructureTombstones(db, p)
+  assert.strictEqual(tombs.length, 1)
+  assert.strictEqual(tombs[0].kind, 'media')
+  assert.strictEqual(tombs[0].sync_id, m.sync_id)
+  db.close()
+})
+
+// ─── Config push to a local folder ──────────────────────────────────────────────
+
+test('syncConfigLocal: when local is newer it writes project-config.json + manifest.json', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  addForm(db, p, 'Intake', { sections: [] })
+  sync.bumpConfigVersion(db, p) // 2 > empty folder (0)
+
+  const dir = tmpDir('sdmo-cfg-')
+  sync.syncConfigLocal(db, p, dir)
+
+  assert.ok(fs.existsSync(path.join(dir, 'project-config.json')))
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'))
+  assert.strictEqual(manifest.config_version, 2)
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'project-config.json'), 'utf8'))
+  assert.strictEqual(cfg.config_version, 2)
+  assert.strictEqual(cfg.forms.length, 1)
+  db.close()
+})
+
+// ─── Legacy export/import (manual Save File / Import File flow) ──────────────────
+
+test('legacy import: mergeImport ADDS structure and never prunes existing items', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  // A pre-existing encounter absent from the import payload must survive.
+  addEncounter(db, p, 'Keep')
+
+  const res = sync.mergeImport(db, p, {
+    sdmo: true, version: 3, project: { name: 'P' },
+    forms: [{ name: 'F', schema: { sections: [] } }],
+    media_types: [],
+    encounters: [{ sync_id: 'enc-new', name: 'New', media: [] }],
+  })
+
+  assert.strictEqual(res.formsAdded, 1)
+  const names = db.prepare('SELECT name FROM encounters WHERE project_id=? ORDER BY name').all(p).map(e => e.name)
+  assert.deepStrictEqual(names, ['Keep', 'New'])
+  db.close()
+})
+
+test('legacy export/import: buildExport → createFromImport clones a project incl. reviews', () => {
+  const src = makeDb()
+  const p1 = createProject(src, 'Study')
+  const formId = addForm(src, p1, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'text', label: 'Q' }] }],
+  })
+  const mtId = addMediaType(src, p1, 'Video')
+  addWorkspaceTab(src, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
+  const enc = addEncounter(src, p1, 'P1')
+  const media = addMedia(src, enc.id, 'v.mp4', { media_type_id: mtId })
+  const rev = addReview(src, media.id, 'Alice', { status: 'submitted' })
+  src.prepare('INSERT INTO form_responses (review_id, form_id, responses) VALUES (?,?,?)')
+    .run(rev.id, formId, JSON.stringify({ q1: 'Yes' }))
+  src.prepare('INSERT INTO timestamps (review_id, time_seconds, tag_label, notes) VALUES (?,?,?,?)')
+    .run(rev.id, 30, null, 'note')
+
+  const data = sync.buildExport(src, p1)
+  const dst = makeDb()
+  const p2 = sync.createFromImport(dst, data)
+
+  assert.strictEqual(dst.prepare('SELECT name FROM projects WHERE id=?').get(p2).name, 'Study')
+  assert.strictEqual(dst.prepare('SELECT COUNT(*) n FROM forms WHERE project_id=?').get(p2).n, 1)
+  assert.strictEqual(dst.prepare('SELECT COUNT(*) n FROM media_types WHERE project_id=?').get(p2).n, 1)
+
+  const r = dst.prepare(`
+    SELECT r.* FROM reviews r
+    JOIN media_files m ON r.media_file_id=m.id
+    JOIN encounters e ON m.encounter_id=e.id
+    WHERE e.project_id=?`).get(p2)
+  assert.ok(r, 'review cloned')
+  assert.strictEqual(r.reviewer_name, 'Alice')
+  assert.strictEqual(r.status, 'submitted')
+  assert.deepStrictEqual(JSON.parse(dst.prepare('SELECT responses FROM form_responses WHERE review_id=?').get(r.id).responses), { q1: 'Yes' })
+  assert.strictEqual(dst.prepare('SELECT time_seconds FROM timestamps WHERE review_id=?').get(r.id).time_seconds, 30)
+  src.close(); dst.close()
+})
+
+test('legacy import: an in_progress review is upgraded in place when a submitted copy arrives', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const enc = addEncounter(db, p, 'P1')
+  const media = addMedia(db, enc.id, 'v.mp4')
+  addReview(db, media.id, 'Alice', { status: 'in_progress' })
+
+  sync.mergeImport(db, p, {
+    sdmo: true, version: 3, project: { name: 'P' },
+    encounters: [{
+      sync_id: enc.sync_id, name: 'P1',
+      media: [{ sync_id: media.sync_id, name: 'v.mp4', file_type: 'video', media_type_name: null,
+        reviews: [{ reviewer_name: 'Alice', status: 'submitted', submitted_at: '2026-01-01T00:00:00Z', timestamps: [], form_responses: [] }] }],
+    }],
+  })
+
+  // Same reviewer + media → updated in place, not duplicated.
+  const rows = db.prepare('SELECT status FROM reviews WHERE media_file_id=?').all(media.id)
+  assert.strictEqual(rows.length, 1)
+  assert.strictEqual(rows[0].status, 'submitted')
+  db.close()
+})
+
+// ─── Full local-folder sync between two "machines" (separate DBs, shared folder) ─
+
+test('doLocalSync: two machines exchange config + reviews + the .xlsx report through a shared folder', async () => {
+  const folder = tmpDir('sdmo-sync-')
+
+  // Machine A — authoritative structure + Alice's submitted review.
+  const a = makeDb()
+  const pa = createProject(a, 'Study')
+  const formId = addForm(a, pa, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'text', label: 'Q' }] }],
+  })
+  const mtId = addMediaType(a, pa, 'Video')
+  addWorkspaceTab(a, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
+  const encA = addEncounter(a, pa, 'P1', 'enc-1')
+  const mediaA = addMedia(a, encA.id, 'v.mp4', { media_type_id: mtId, sync_id: 'media-1' })
+  const revA = addReview(a, mediaA.id, 'Alice', { reviewer_uuid: 'uuid-A', status: 'submitted' })
+  a.prepare('INSERT INTO form_responses (review_id, form_id, responses) VALUES (?,?,?)')
+    .run(revA.id, formId, JSON.stringify({ q1: 'Yes' }))
+  sync.bumpConfigVersion(a, pa) // bump so peers (default v1) will pull
+
+  await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice')
+
+  assert.ok(fs.existsSync(path.join(folder, 'project-config.json')), 'config written')
+  assert.ok(fs.existsSync(path.join(folder, 'manifest.json')), 'manifest written')
+  assert.ok(fs.existsSync(path.join(folder, 'reviews', 'uuid-A.json')), 'own review file written')
+  assert.ok(fs.existsSync(path.join(folder, sync.REVIEWS_REPORT_FILENAME)), 'xlsx report written')
+
+  // Machine B — fresh placeholder project pulls A's structure + Alice's review.
+  const b = makeDb()
+  const pb = createProject(b, 'Placeholder')
+  await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')
+
+  assert.strictEqual(b.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id=?').get(pb).n, 1)
+  assert.strictEqual(b.prepare('SELECT COUNT(*) n FROM forms WHERE project_id=?').get(pb).n, 1)
+  const aliceOnB = b.prepare(`
+    SELECT r.reviewer_name FROM reviews r
+    JOIN media_files m ON r.media_file_id=m.id
+    JOIN encounters e ON m.encounter_id=e.id
+    WHERE e.project_id=? AND r.deleted_at IS NULL`).all(pb).map(x => x.reviewer_name)
+  assert.deepStrictEqual(aliceOnB, ['Alice'], 'Alice review pulled onto B')
+
+  // B adds Bob's own review and syncs it back up.
+  const bMediaId = b.prepare(`SELECT m.id FROM media_files m JOIN encounters e ON m.encounter_id=e.id WHERE e.project_id=?`).get(pb).id
+  addReview(b, bMediaId, 'Bob', { reviewer_uuid: 'uuid-B', status: 'in_progress' })
+  await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')
+  assert.ok(fs.existsSync(path.join(folder, 'reviews', 'uuid-B.json')), "Bob's review file written")
+
+  // A syncs again and now sees both reviewers.
+  await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice')
+  const reviewersOnA = a.prepare(`
+    SELECT DISTINCT r.reviewer_name FROM reviews r
+    JOIN media_files m ON r.media_file_id=m.id
+    JOIN encounters e ON m.encounter_id=e.id
+    WHERE e.project_id=? AND r.deleted_at IS NULL ORDER BY r.reviewer_name`).all(pa).map(x => x.reviewer_name)
+  assert.deepStrictEqual(reviewersOnA, ['Alice', 'Bob'])
+
+  a.close(); b.close()
+})
+
+test('doLocalSync: a structure tombstone deletes the item on a peer and config cannot resurrect it', async () => {
+  const folder = tmpDir('sdmo-sync-tomb-')
+
+  // A publishes structure (one encounter) at a bumped version.
+  const a = makeDb()
+  const pa = createProject(a, 'Study')
+  const encA = addEncounter(a, pa, 'P1', 'enc-1')
+  addMedia(a, encA.id, 'v.mp4', { sync_id: 'media-1' })
+  sync.bumpConfigVersion(a, pa)
+  await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice')
+
+  // B pulls it.
+  const b = makeDb()
+  const pb = createProject(b, 'Placeholder')
+  await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')
+  assert.strictEqual(b.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id=?').get(pb).n, 1)
+
+  // A deletes the encounter (record tombstone first, then delete the rows), and syncs.
+  sync.recordEncounterTombstone(a, pa, encA.id)
+  a.prepare('DELETE FROM encounters WHERE id=?').run(encA.id)
+  await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice')
+  assert.ok(fs.existsSync(path.join(folder, 'deleted-structure.json')), 'structure tombstone file written')
+
+  // B syncs: the tombstone removes it, and the still-present config entry must NOT resurrect it.
+  await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')
+  assert.strictEqual(b.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id=?').get(pb).n, 0)
+
+  a.close(); b.close()
 })

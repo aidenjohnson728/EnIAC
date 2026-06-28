@@ -311,8 +311,12 @@ function _applyConfigTransaction(db, projectId, configData) {
       }
     }
 
-    // Ensure encounter/media stubs exist (config is authoritative source for structure)
+    // Ensure encounter/media stubs exist (config is authoritative source for structure).
+    // Skip anything explicitly tombstoned — a deleted item must never be resurrected
+    // by a peer's stale config that still lists it.
+    const tombstoned = tombstonedSyncIds(db, projectId)
     for (const enc of (configData.encounters || [])) {
+      if (enc.sync_id && tombstoned.enc.has(enc.sync_id)) continue
       let localEnc = enc.sync_id
         ? db.prepare('SELECT id FROM encounters WHERE project_id=? AND sync_id=?').get(projectId, enc.sync_id)
         : null
@@ -328,6 +332,7 @@ function _applyConfigTransaction(db, projectId, configData) {
         localEnc = { id: r.lastInsertRowid }
       }
       for (const media of (enc.media || [])) {
+        if (media.sync_id && tombstoned.media.has(media.sync_id)) continue
         // Search globally by sync_id (handles moves — file may be under different encounter locally)
         let localMedia = media.sync_id
           ? db.prepare('SELECT id FROM media_files WHERE sync_id=?').get(media.sync_id)
@@ -383,7 +388,7 @@ function _applyConfigTransaction(db, projectId, configData) {
       const encInConfig = (configData.encounters || []).find(e => e.name === f.enc_name || configSyncIds.includes(f.sync_id))
       if (!encInConfig) continue
       const mediaInConfig = f.sync_id
-        ? configMediaSyncIds.includes(f.sync_id)
+        ? (configMediaSyncIds.includes(f.sync_id) || (encInConfig.media || []).some(m => m.name === f.name))
         : (encInConfig.media || []).some(m => m.name === f.name)
       if (!mediaInConfig) {
         const reviewCount = db.prepare('SELECT COUNT(*) AS n FROM reviews WHERE media_file_id=?').get(f.id).n
@@ -520,6 +525,82 @@ function buildTombstones(db, projectId) {
   return db.prepare('SELECT encounter_name, media_name, reviewer_name, review_sync_id, deleted_at FROM deleted_reviews WHERE project_id=?').all(projectId)
 }
 
+// ─── Structure tombstones (explicit encounter/media deletions) ─────────────────
+// Unlike "absent from config" pruning — which deliberately spares anything with
+// reviews so a stale/buggy config can't wipe data — an explicit tombstone records
+// a deliberate user deletion (the delete UI warns that reviews are destroyed). It
+// therefore overrides the review-protection guard and propagates to every machine.
+
+function recordEncounterTombstone(db, projectId, encounterId) {
+  const enc = db.prepare('SELECT sync_id FROM encounters WHERE id=?').get(encounterId)
+  if (enc?.sync_id) {
+    db.prepare('INSERT OR IGNORE INTO deleted_structure (project_id, kind, sync_id) VALUES (?,?,?)')
+      .run(projectId, 'encounter', enc.sync_id)
+  }
+  // Tombstone child media too, so a stale peer config can't resurrect them.
+  const media = db.prepare('SELECT sync_id FROM media_files WHERE encounter_id=? AND sync_id IS NOT NULL').all(encounterId)
+  for (const m of media) {
+    db.prepare('INSERT OR IGNORE INTO deleted_structure (project_id, kind, sync_id) VALUES (?,?,?)')
+      .run(projectId, 'media', m.sync_id)
+  }
+}
+
+function recordMediaTombstone(db, projectId, mediaFileId) {
+  const m = db.prepare('SELECT sync_id FROM media_files WHERE id=?').get(mediaFileId)
+  if (m?.sync_id) {
+    db.prepare('INSERT OR IGNORE INTO deleted_structure (project_id, kind, sync_id) VALUES (?,?,?)')
+      .run(projectId, 'media', m.sync_id)
+  }
+}
+
+function readStructureTombstoneFile(filePath) {
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    return Array.isArray(data.tombstones) ? data.tombstones : []
+  } catch { return [] }
+}
+
+function applyStructureTombstones(db, projectId, tombstones) {
+  for (const del of tombstones) {
+    if (!del || !del.sync_id || !del.kind) continue
+    db.prepare('INSERT OR IGNORE INTO deleted_structure (project_id, kind, sync_id, deleted_at) VALUES (?,?,?,?)')
+      .run(projectId, del.kind, del.sync_id, del.deleted_at || new Date().toISOString())
+    if (del.kind === 'encounter') {
+      db.prepare('DELETE FROM encounters WHERE project_id=? AND sync_id=?').run(projectId, del.sync_id)
+    } else if (del.kind === 'media') {
+      db.prepare(`DELETE FROM media_files WHERE sync_id=? AND encounter_id IN (SELECT id FROM encounters WHERE project_id=?)`)
+        .run(del.sync_id, projectId)
+    }
+  }
+}
+
+function buildStructureTombstones(db, projectId) {
+  return db.prepare('SELECT kind, sync_id, deleted_at FROM deleted_structure WHERE project_id=?').all(projectId)
+}
+
+function mergeStructureTombstones(...lists) {
+  const seen = new Set()
+  const out = []
+  for (const t of [].concat(...lists)) {
+    if (!t || !t.sync_id || !t.kind) continue
+    const key = `${t.kind}:${t.sync_id}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ kind: t.kind, sync_id: t.sync_id, deleted_at: t.deleted_at || new Date().toISOString() })
+  }
+  return out
+}
+
+function tombstonedSyncIds(db, projectId) {
+  const enc = new Set()
+  const media = new Set()
+  for (const row of db.prepare('SELECT kind, sync_id FROM deleted_structure WHERE project_id=?').all(projectId)) {
+    if (row.kind === 'encounter') enc.add(row.sync_id)
+    else if (row.kind === 'media') media.add(row.sync_id)
+  }
+  return { enc, media }
+}
+
 // ─── Manifest helpers (tiny file for cheap polling) ───────────────────────────
 
 function buildManifest(db, projectId) {
@@ -607,6 +688,12 @@ async function _doLocalSync(db, projectId, syncFolder, uuid, name) {
     }
   }
 
+  // 1b. Structure tombstones — apply before config so deleted items aren't resurrected.
+  const structTombPath = path.join(syncFolder, 'deleted-structure.json')
+  const fileStructTombs = readStructureTombstoneFile(structTombPath)
+  applyStructureTombstones(db, projectId, fileStructTombs)
+  const mergedStructTombs = mergeStructureTombstones(fileStructTombs, buildStructureTombstones(db, projectId))
+
   // 2. Config
   try {
     syncConfigLocal(db, projectId, syncFolder)
@@ -632,6 +719,15 @@ async function _doLocalSync(db, projectId, syncFolder, uuid, name) {
 
   // 5. Write merged tombstones
   fs.writeFileSync(tombstonePath, JSON.stringify({ tombstones: mergedTombstones }, null, 2))
+  fs.writeFileSync(structTombPath, JSON.stringify({ tombstones: mergedStructTombs }, null, 2))
+
+  // 6. Write the auto-updated reviews report (.xlsx of all merged reviews)
+  try {
+    const wb = buildReviewsWorkbook(db, projectId)
+    if (wb) require('xlsx').writeFile(wb, path.join(syncFolder, REVIEWS_REPORT_FILENAME))
+  } catch (e) {
+    console.error('[sync] reviews report write failed:', e.message)
+  }
 
   markSynced(projectId)
 }
@@ -670,6 +766,18 @@ async function _doCloudSync(db, projectId, provider, folderId, uuid, name) {
     }
   }
 
+  // 1b. Structure tombstones — apply before config so deleted items aren't resurrected.
+  const structTombFile = allFiles.find(f => f.name === 'deleted-structure.json')
+  let fileStructTombs = []
+  if (structTombFile) {
+    try {
+      const data = JSON.parse(await adapter.readFile(structTombFile.id))
+      fileStructTombs = Array.isArray(data.tombstones) ? data.tombstones : []
+    } catch {}
+  }
+  applyStructureTombstones(db, projectId, fileStructTombs)
+  const mergedStructTombs = mergeStructureTombstones(fileStructTombs, buildStructureTombstones(db, projectId))
+
   // 2. Config
   try {
     await syncConfigCloud(db, projectId, adapter, folderId, allFiles)
@@ -695,9 +803,136 @@ async function _doCloudSync(db, projectId, provider, folderId, uuid, name) {
 
   // 5. Write tombstones
   await adapter.writeFile(folderId, 'deleted-reviews.json', JSON.stringify({ tombstones: mergedTombstones }, null, 2))
+  await adapter.writeFile(folderId, 'deleted-structure.json', JSON.stringify({ tombstones: mergedStructTombs }, null, 2))
+
+  // 6. Write the auto-updated reviews report (.xlsx of all merged reviews)
+  try {
+    const wb = buildReviewsWorkbook(db, projectId)
+    if (wb) {
+      const buf = require('xlsx').write(wb, { type: 'buffer', bookType: 'xlsx' })
+      await adapter.writeFile(folderId, REVIEWS_REPORT_FILENAME, buf,
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    }
+  } catch (e) {
+    console.error('[sync] cloud reviews report write failed:', e.message)
+  }
 
   markSynced(projectId)
 }
+
+// ─── Reviews report (auto-uploaded .xlsx of all reviews) ─────────────────────
+
+// Builds the multi-sheet Excel workbook of every review + timestamp in the DB
+// (one "<Media Type> Reviews"/"<Media Type> Timestamps" sheet pair per media
+// type), mirroring the manual `export:excel` flow. After a sync merges all peer
+// review files into the DB, this captures exactly the union of the cloud reviews.
+// Returns an XLSX workbook, or null when there are no reviews to report (an
+// empty workbook can't be written).
+function buildReviewsWorkbook(db, projectId) {
+  const XLSX = require('xlsx')
+  const wb = XLSX.utils.book_new()
+  const FIXED = ['Encounter', 'Media File', 'Reviewer', 'Status', 'Created At', 'Submitted At', 'Review Notes']
+
+  function sheetName(base, suffix) {
+    const s = `${base} ${suffix}`
+    return s.length > 31 ? s.slice(0, 28) + '...' : s
+  }
+  function fmtTime(sec) {
+    const m = Math.floor(sec / 60)
+    const s = String(Math.floor(sec % 60)).padStart(2, '0')
+    return `${m}:${s}`
+  }
+
+  const allForms = {}
+  for (const f of db.prepare('SELECT * FROM forms WHERE project_id=?').all(projectId)) {
+    const schema = safeJsonParse(f.schema, { sections: [] })
+    const elements = []
+    for (const sec of (schema.sections || [])) {
+      for (const el of (sec.elements || [])) {
+        if (el.type !== 'text_block') elements.push(el)
+      }
+    }
+    allForms[f.id] = { name: f.name, elements }
+  }
+
+  function getResponses(reviewId) {
+    const rows = db.prepare('SELECT form_id, responses FROM form_responses WHERE review_id=?').all(reviewId)
+    const out = {}
+    for (const row of rows) out[row.form_id] = safeJsonParse(row.responses, {})
+    return out
+  }
+
+  const mediaTypes = db.prepare('SELECT * FROM media_types WHERE project_id=?').all(projectId)
+  const buckets = [...mediaTypes, { id: null, name: '(Untyped)' }]
+  const encounters = db.prepare('SELECT * FROM encounters WHERE project_id=? ORDER BY name').all(projectId)
+
+  let appended = 0
+  for (const mt of buckets) {
+    const tabForms = mt.id
+      ? db.prepare(`
+          SELECT DISTINCT f.id, f.name FROM workspace_tabs wt
+          JOIN forms f ON wt.ref_id = f.id
+          WHERE wt.media_type_id=? AND wt.tab_type='form'
+        `).all(mt.id)
+      : []
+
+    const qCols = []
+    for (const tf of tabForms) {
+      const form = allForms[tf.id]
+      if (!form) continue
+      for (const el of form.elements) {
+        qCols.push({ formId: tf.id, formName: form.name, elId: el.id, label: el.label || el.id })
+      }
+    }
+
+    const reviewRows = []
+    const tsRows = []
+    const qHeaders = qCols.map(c => `[${c.formName}] ${c.label}`)
+    const allCols = [...FIXED, ...qHeaders]
+
+    for (const enc of encounters) {
+      const condition = mt.id === null ? 'mf.media_type_id IS NULL' : 'mf.media_type_id = ?'
+      const params = mt.id === null ? [enc.id] : [enc.id, mt.id]
+      const mediaFiles = db.prepare(
+        `SELECT mf.* FROM media_files mf WHERE mf.encounter_id=? AND ${condition} ORDER BY mf.name`
+      ).all(...params)
+
+      for (const mf of mediaFiles) {
+        const reviews = db.prepare('SELECT * FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(mf.id)
+        for (const rev of reviews) {
+          const responses = getResponses(rev.id)
+          const row = {
+            'Encounter': enc.name, 'Media File': mf.name, 'Reviewer': rev.reviewer_name,
+            'Status': rev.status, 'Created At': rev.created_at, 'Submitted At': rev.submitted_at || '',
+            'Review Notes': rev.notes || '',
+          }
+          for (const qc of qCols) {
+            const val = (responses[qc.formId] || {})[qc.elId]
+            row[`[${qc.formName}] ${qc.label}`] = val == null ? '' : Array.isArray(val) ? val.join('; ') : String(val)
+          }
+          reviewRows.push(row)
+          for (const ts of db.prepare('SELECT * FROM timestamps WHERE review_id=? ORDER BY time_seconds').all(rev.id)) {
+            tsRows.push({
+              'Encounter': enc.name, 'Media File': mf.name, 'Reviewer': rev.reviewer_name,
+              'Time': fmtTime(ts.time_seconds), 'Time (seconds)': ts.time_seconds,
+              'Tag': ts.tag_label || '', 'Notes': ts.notes || '',
+            })
+          }
+        }
+      }
+    }
+
+    if (reviewRows.length === 0 && tsRows.length === 0) continue
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(reviewRows, { header: allCols }), sheetName(mt.name, 'Reviews'))
+    if (tsRows.length > 0) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tsRows), sheetName(mt.name, 'Timestamps'))
+    appended++
+  }
+
+  return appended > 0 ? wb : null
+}
+
+// Filename of the auto-uploaded reviews report in the sync folder/cloud.
+const REVIEWS_REPORT_FILENAME = 'reviews-export.xlsx'
 
 // ─── Legacy monolithic export/import (kept for Export/Import file flow) ───────
 
@@ -960,12 +1195,16 @@ module.exports = {
   scheduleSync, scheduleSyncForReview,
   bumpConfigVersion, bumpAndSync,
   buildExport, mergeImport, createFromImport,
+  buildReviewsWorkbook, REVIEWS_REPORT_FILENAME,
   buildConfigExport, buildReviewExport,
   mergeConfigImport, mergeReviewFile,
   replaceStructureFromConfig,
   syncConfigLocal, syncConfigCloud,
   buildManifest, readLocalManifest,
   doLocalSync, doCloudSync,
+  applyTombstones, buildTombstones,
+  recordEncounterTombstone, recordMediaTombstone,
+  applyStructureTombstones, buildStructureTombstones,
   getLastSyncAt, markSynced, cancelSync,
   setMainWindow,
 }

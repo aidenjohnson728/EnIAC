@@ -10,7 +10,7 @@ const BACKUP_PATH = SETTINGS_PATH + '.bak'
 function getSettings() {
   // Try the live file first, then the last-known-good backup. A truncated/corrupt
   // file (e.g. from a crash mid-write) must not silently wipe user_uuid,
-  // owner_projects, cloud tokens, and media_base_folders.
+  // cloud tokens, and media_base_folders.
   for (const p of [SETTINGS_PATH, BACKUP_PATH]) {
     try {
       const raw = fs.readFileSync(p, 'utf8')

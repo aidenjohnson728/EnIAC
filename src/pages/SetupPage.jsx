@@ -1007,6 +1007,48 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
   const [applyingImport, setApplyingImport] = useState(false)
   const isOwner = !locked
 
+  // ── Multi-select for bulk delete / set media type ──
+  const [selEnc, setSelEnc] = useState(() => new Set())
+  const [selFiles, setSelFiles] = useState(() => new Set())
+  const [bulkType, setBulkType] = useState('')
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const selCount = selEnc.size + selFiles.size
+
+  function toggleEnc(id) {
+    setSelEnc(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }
+  function toggleFile(id) {
+    setSelFiles(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }
+  function clearSelection() { setSelEnc(new Set()); setSelFiles(new Set()); setBulkType('') }
+
+  async function handleBulkSetType() {
+    if (!selFiles.size || !bulkType) return
+    const typeArg = bulkType === '__none__' ? null : Number(bulkType)
+    setBulkBusy(true)
+    await api.bulkUpdateMediaType(projectId, [...selFiles], typeArg)
+    setBulkBusy(false)
+    clearSelection()
+    onReload()
+  }
+
+  async function handleBulkDeleteConfirm() {
+    setBulkBusy(true)
+    // Files under a selected encounter are removed by the cascade, so only delete
+    // files whose encounter isn't itself selected.
+    const fileIds = [...selFiles].filter(fid => {
+      const enc = encounters.find(e => (e.media || []).some(m => m.id === fid))
+      return !enc || !selEnc.has(enc.id)
+    })
+    if (selEnc.size) await api.bulkDeleteEncounters(projectId, [...selEnc])
+    if (fileIds.length) await api.bulkDeleteMediaFiles(projectId, fileIds)
+    setBulkBusy(false)
+    setBulkDeleteOpen(false)
+    clearSelection()
+    onReload()
+  }
+
   async function handleTypeChange(mediaFile, newVal) {
     await api.updateMediaType(mediaFile.id, newVal || null)
     onTypeChange()
@@ -1129,6 +1171,10 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
           {encounters.map(enc => (
             <div key={enc.id} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
               <div style={{ padding: '8px 14px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                {isOwner && (
+                  <input type="checkbox" checked={selEnc.has(enc.id)} onChange={() => toggleEnc(enc.id)}
+                    title="Select encounter for bulk actions" style={{ flexShrink: 0, cursor: 'pointer', margin: 0 }} />
+                )}
                 {renaming?.type === 'encounter' && renaming.id === enc.id ? (
                   <input autoFocus value={renaming.name}
                     onChange={e => setRenaming(r => ({ ...r, name: e.target.value }))}
@@ -1162,7 +1208,11 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
               {(enc.media || []).length === 0 ? (
                 <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--text-muted)' }}>No media files</div>
               ) : enc.media.map(m => (
-                <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
+                <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--border)', background: selFiles.has(m.id) ? 'var(--bg-secondary)' : undefined }}>
+                  {isOwner && (
+                    <input type="checkbox" checked={selFiles.has(m.id)} onChange={() => toggleFile(m.id)}
+                      title="Select file for bulk actions" style={{ flexShrink: 0, cursor: 'pointer', margin: 0 }} />
+                  )}
                   {renaming?.type === 'file' && renaming.id === m.id ? (
                     <input autoFocus value={renaming.name}
                       onChange={e => setRenaming(r => ({ ...r, name: e.target.value }))}
@@ -1211,6 +1261,55 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
               ))}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Bulk action bar — appears when one or more items are selected */}
+      {isOwner && selCount > 0 && (
+        <div style={{
+          position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)', zIndex: 900,
+          background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 10,
+          boxShadow: '0 6px 24px rgba(0,0,0,0.18)', padding: '8px 12px',
+          display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>{selCount} selected</span>
+          {selFiles.size > 0 && (
+            <>
+              <span style={{ width: 1, height: 22, background: 'var(--border)' }} />
+              <select value={bulkType} onChange={e => setBulkType(e.target.value)}
+                title="Set media type for selected files"
+                style={{ fontSize: 12, height: 30, padding: '0 6px' }}>
+                <option value="">Set type…</option>
+                <option value="__none__">No type</option>
+                {mediaTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+              <button className="btn btn-secondary btn-sm" disabled={!bulkType || bulkBusy} onClick={handleBulkSetType}>Apply</button>
+            </>
+          )}
+          <span style={{ width: 1, height: 22, background: 'var(--border)' }} />
+          <button className="btn btn-danger btn-sm" disabled={bulkBusy} onClick={() => setBulkDeleteOpen(true)}>Delete</button>
+          <button className="btn btn-ghost btn-sm" disabled={bulkBusy} onClick={clearSelection}>Clear</button>
+        </div>
+      )}
+
+      {bulkDeleteOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div className="card" style={{ maxWidth: 440, width: '90%', padding: 24 }}>
+            <h3 style={{ marginBottom: 12 }}>
+              Delete {selEnc.size > 0 && `${selEnc.size} encounter${selEnc.size !== 1 ? 's' : ''}`}
+              {selEnc.size > 0 && selFiles.size > 0 && ' and '}
+              {selFiles.size > 0 && `${selFiles.size} file${selFiles.size !== 1 ? 's' : ''}`}?
+            </h3>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
+              This permanently removes the selected items and any reviews, timestamps, and form responses under them. The deletion syncs to all machines.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => setBulkDeleteOpen(false)} disabled={bulkBusy}>Cancel</button>
+              <button className="btn btn-danger" onClick={handleBulkDeleteConfirm} disabled={bulkBusy}>
+                {bulkBusy ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

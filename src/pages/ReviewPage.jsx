@@ -625,12 +625,13 @@ export default function ReviewPage() {
             display: 'flex',
             flexDirection: 'column',
             transition: 'width 0.2s ease',
+            height: '100%',
           }}>
           <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
             <span style={{ fontWeight: 600, fontSize: 13 }}>Timestamps</span>
             <span className="badge badge-muted">{timestamps.length}</span>
           </div>
-          <div style={{ flex: 1, overflow: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {timestamps.length === 0 ? (
               <div className="empty-state" style={{ padding: '40px 10px' }}>
                 <Clock size={24} />
@@ -760,7 +761,7 @@ function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, readOnly }) {
     <div style={{
       background: 'var(--bg-secondary)', border: '1px solid',
       borderColor: tagColor ? tagColor + '55' : 'var(--border)',
-      borderRadius: 8, overflow: 'hidden',
+      borderRadius: 8, overflow: 'hidden', flexShrink: 0,
       borderLeft: tagColor ? `3px solid ${tagColor}` : undefined,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 10px', cursor: 'pointer' }} onClick={() => setExpanded(e => !e)}>

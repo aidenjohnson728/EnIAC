@@ -100,7 +100,11 @@
       "mcp__visualize__read_me",
       "Bash(sed -i '' \"s#require\\('./node_modules/better-sqlite3'\\)#require\\('$\\(pwd\\)/node_modules/better-sqlite3'\\)#\" /private/tmp/claude-501/-Users-nihanthpinnaka-Documents-SDMo-App/430a4e71-d566-4730-abaf-e288a9a1e101/scratchpad/dbtest.js)",
       "Bash(node /private/tmp/claude-501/-Users-nihanthpinnaka-Documents-SDMo-App/430a4e71-d566-4730-abaf-e288a9a1e101/scratchpad/dbtest.js)",
-      "Bash(ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron /private/tmp/claude-501/-Users-nihanthpinnaka-Documents-SDMo-App/430a4e71-d566-4730-abaf-e288a9a1e101/scratchpad/dbtest.js)"
+      "Bash(ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron /private/tmp/claude-501/-Users-nihanthpinnaka-Documents-SDMo-App/430a4e71-d566-4730-abaf-e288a9a1e101/scratchpad/dbtest.js)",
+      "Bash(npm test *)",
+      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).scripts, null, 2\\)\\)\")",
+      "Bash(ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron test/run.js)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('electron', \\(p.devDependencies||{}\\).electron, '| better-sqlite3', \\(p.dependencies||{}\\)['better-sqlite3']||\\(p.devDependencies||{}\\)['better-sqlite3']\\)\")"
     ]
   }
 }

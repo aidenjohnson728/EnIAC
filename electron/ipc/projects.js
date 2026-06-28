@@ -6,6 +6,7 @@ const { createHash } = require('crypto')
 const { getSettings, saveSettings, getProjectName, getOrCreateUUID, setProjectName } = require('../settings')
 const {
   buildExport, mergeImport, createFromImport,
+  buildReviewsWorkbook,
   doLocalSync, doCloudSync,
   syncConfigLocal, syncConfigCloud,
   mergeConfigImport, bumpConfigVersion, bumpAndSync,
@@ -13,16 +14,10 @@ const {
   safeJsonParse,
 } = require('../sync')
 
-// In-memory unlock sessions — cleared on app restart
+// In-memory unlock sessions — cleared on app restart. A project is "unlocked"
+// when its password has been entered this session (or it has no password).
+// This is the only access gate: anyone who can edit settings knew the password.
 const unlockedProjects = new Set()
-
-// PI for a project means either: unlocked this session, or owns it persistently via settings.
-// Use this instead of unlockedProjects.has() for any PI-gated logic.
-function isOwner(projectId) {
-  if (unlockedProjects.has(Number(projectId))) return true
-  const s = getSettings()
-  return (s.owner_projects || []).includes(String(projectId))
-}
 
 function hashPassword(pw) {
   return createHash('sha256').update(pw).digest('hex')
@@ -57,17 +52,8 @@ module.exports = function (ipcMain) {
     bumpAndSync(db, projectId)
     if (hash) {
       unlockedProjects.add(projectId)
-      // Persist ownership so PI status survives app restarts
-      const s = getSettings()
-      const owned = new Set(s.owner_projects || [])
-      owned.add(String(projectId))
-      saveSettings({ owner_projects: [...owned] })
     } else {
       unlockedProjects.delete(projectId)
-      const s = getSettings()
-      const owned = new Set(s.owner_projects || [])
-      owned.delete(String(projectId))
-      saveSettings({ owner_projects: [...owned] })
     }
     return true
   })
@@ -225,7 +211,6 @@ module.exports = function (ipcMain) {
   })
 
   ipcMain.handle('export:excel', async (_, projectId) => {
-    const XLSX = require('xlsx')
     const db = getDb()
     const project = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId)
     const safeName = (project?.name || 'project').replace(/[^a-zA-Z0-9_-]/g, '_')
@@ -236,108 +221,10 @@ module.exports = function (ipcMain) {
     })
     if (!filePath) return null
 
-    const wb = require('xlsx').utils.book_new()
-    const FIXED = ['Encounter', 'Media File', 'Reviewer', 'Status', 'Created At', 'Submitted At', 'Review Notes']
+    const wb = buildReviewsWorkbook(db, projectId)
+    if (!wb) return null // no reviews to export
 
-    function sheetName(base, suffix) {
-      const s = `${base} ${suffix}`
-      return s.length > 31 ? s.slice(0, 28) + '...' : s
-    }
-
-    function fmtTime(sec) {
-      const m = Math.floor(sec / 60)
-      const s = String(Math.floor(sec % 60)).padStart(2, '0')
-      return `${m}:${s}`
-    }
-
-    const allForms = {}
-    for (const f of db.prepare('SELECT * FROM forms WHERE project_id=?').all(projectId)) {
-      const schema = JSON.parse(f.schema || '{"sections":[]}')
-      const elements = []
-      for (const sec of (schema.sections || [])) {
-        for (const el of (sec.elements || [])) {
-          if (el.type !== 'text_block') elements.push(el)
-        }
-      }
-      allForms[f.id] = { name: f.name, elements }
-    }
-
-    function getResponses(reviewId) {
-      const rows = db.prepare('SELECT form_id, responses FROM form_responses WHERE review_id=?').all(reviewId)
-      const out = {}
-      for (const row of rows) {
-        let parsed = {}
-        try { parsed = JSON.parse(row.responses) } catch {}
-        out[row.form_id] = parsed
-      }
-      return out
-    }
-
-    const mediaTypes = db.prepare('SELECT * FROM media_types WHERE project_id=?').all(projectId)
-    const buckets = [...mediaTypes, { id: null, name: '(Untyped)' }]
-    const encounters = db.prepare('SELECT * FROM encounters WHERE project_id=? ORDER BY name').all(projectId)
-
-    for (const mt of buckets) {
-      const tabForms = mt.id
-        ? db.prepare(`
-            SELECT DISTINCT f.id, f.name FROM workspace_tabs wt
-            JOIN forms f ON wt.ref_id = f.id
-            WHERE wt.media_type_id=? AND wt.tab_type='form'
-          `).all(mt.id)
-        : []
-
-      const qCols = []
-      for (const tf of tabForms) {
-        const form = allForms[tf.id]
-        if (!form) continue
-        for (const el of form.elements) {
-          qCols.push({ formId: tf.id, formName: form.name, elId: el.id, label: el.label || el.id })
-        }
-      }
-
-      const reviewRows = []
-      const tsRows = []
-      const qHeaders = qCols.map(c => `[${c.formName}] ${c.label}`)
-      const allCols = [...FIXED, ...qHeaders]
-
-      for (const enc of encounters) {
-        const condition = mt.id === null ? 'mf.media_type_id IS NULL' : 'mf.media_type_id = ?'
-        const params = mt.id === null ? [enc.id] : [enc.id, mt.id]
-        const mediaFiles = db.prepare(
-          `SELECT mf.* FROM media_files mf WHERE mf.encounter_id=? AND ${condition} ORDER BY mf.name`
-        ).all(...params)
-
-        for (const mf of mediaFiles) {
-          const reviews = db.prepare('SELECT * FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(mf.id)
-          for (const rev of reviews) {
-            const responses = getResponses(rev.id)
-            const row = {
-              'Encounter': enc.name, 'Media File': mf.name, 'Reviewer': rev.reviewer_name,
-              'Status': rev.status, 'Created At': rev.created_at, 'Submitted At': rev.submitted_at || '',
-              'Review Notes': rev.notes || '',
-            }
-            for (const qc of qCols) {
-              const val = (responses[qc.formId] || {})[qc.elId]
-              row[`[${qc.formName}] ${qc.label}`] = val == null ? '' : Array.isArray(val) ? val.join('; ') : String(val)
-            }
-            reviewRows.push(row)
-            for (const ts of db.prepare('SELECT * FROM timestamps WHERE review_id=? ORDER BY time_seconds').all(rev.id)) {
-              tsRows.push({
-                'Encounter': enc.name, 'Media File': mf.name, 'Reviewer': rev.reviewer_name,
-                'Time': fmtTime(ts.time_seconds), 'Time (seconds)': ts.time_seconds,
-                'Tag': ts.tag_label || '', 'Notes': ts.notes || '',
-              })
-            }
-          }
-        }
-      }
-
-      if (reviewRows.length === 0 && tsRows.length === 0) continue
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(reviewRows, { header: allCols }), sheetName(mt.name, 'Reviews'))
-      if (tsRows.length > 0) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tsRows), sheetName(mt.name, 'Timestamps'))
-    }
-
-    XLSX.writeFile(wb, filePath)
+    require('xlsx').writeFile(wb, filePath)
     return filePath
   })
 
@@ -622,5 +509,4 @@ module.exports = function (ipcMain) {
   })
 
   module.exports.unlockedProjects = unlockedProjects
-  module.exports.isOwner = isOwner
 }

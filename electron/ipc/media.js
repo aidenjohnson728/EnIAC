@@ -3,7 +3,7 @@ const { dialog } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
-const { bumpAndSync } = require('../sync')
+const { bumpAndSync, recordMediaTombstone } = require('../sync')
 const { getBaseFolder, setBaseFolder, resolveLink, upsertLink } = require('../mediaLinks')
 
 const VIDEO_EXTS = ['.mp4', '.mp3', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.wav', '.ogg']
@@ -228,9 +228,38 @@ module.exports = function (ipcMain) {
     const db = getDb()
     // FK cascade: media_file → reviews → timestamps/form_responses
     backupDb('pre-delete-media')
+    recordMediaTombstone(db, projectId, mediaFileId)
     db.prepare('DELETE FROM media_files WHERE id=?').run(mediaFileId)
     bumpAndSync(db, projectId)
     return true
+  })
+
+  // Bulk delete — one backup + one transaction + one sync for the whole batch.
+  ipcMain.handle('media:bulkDelete', (_, projectId, ids) => {
+    const db = getDb()
+    if (!Array.isArray(ids) || ids.length === 0) return { deleted: 0 }
+    backupDb('pre-bulk-delete-media')
+    db.transaction(() => {
+      for (const id of ids) {
+        recordMediaTombstone(db, projectId, id)
+        db.prepare('DELETE FROM media_files WHERE id=?').run(id)
+      }
+    })()
+    bumpAndSync(db, projectId)
+    return { deleted: ids.length }
+  })
+
+  // Bulk media-type assignment for many files at once.
+  ipcMain.handle('media:bulkUpdateType', (_, projectId, ids, mediaTypeId) => {
+    const db = getDb()
+    if (!Array.isArray(ids) || ids.length === 0) return { updated: 0 }
+    db.transaction(() => {
+      for (const id of ids) {
+        db.prepare('UPDATE media_files SET media_type_id=? WHERE id=?').run(mediaTypeId || null, id)
+      }
+    })()
+    bumpAndSync(db, projectId)
+    return { updated: ids.length }
   })
 
   // ── File Linking ─────────────────────────────────────────────────────────────

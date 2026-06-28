@@ -203,7 +203,7 @@ async function readFile(fileId) {
   return res.text()
 }
 
-async function writeFile(folderId, fileName, content) {
+async function writeFile(folderId, fileName, content, mimeType = 'application/json') {
   const token = await ensureValidToken()
 
   // Check if file already exists
@@ -213,6 +213,9 @@ async function writeFile(folderId, fileName, content) {
   })
   const existingId = existing.files?.[0]?.id
 
+  // Binary content (Buffer) is base64-encoded so it survives the string-joined
+  // multipart body; text content is sent as-is.
+  const isBinary = Buffer.isBuffer(content)
   const boundary = `boundary_${crypto.randomBytes(8).toString('hex')}`
   const metadata = JSON.stringify(existingId ? {} : { name: fileName, parents: [folderId] })
   const multipart = [
@@ -221,9 +224,10 @@ async function writeFile(folderId, fileName, content) {
     '',
     metadata,
     `--${boundary}`,
-    'Content-Type: application/json',
+    `Content-Type: ${mimeType}`,
+    ...(isBinary ? ['Content-Transfer-Encoding: base64'] : []),
     '',
-    content,
+    isBinary ? content.toString('base64') : content,
     `--${boundary}--`,
   ].join('\r\n')
 

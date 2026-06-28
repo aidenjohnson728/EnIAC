@@ -185,11 +185,11 @@ async function readFile(fileId) {
   return res.text()
 }
 
-async function writeFile(folderId, fileName, content) {
+async function writeFile(folderId, fileName, content, mimeType = 'application/json') {
   const token = await ensureValidToken()
   const res = await fetch(`${GRAPH_BASE}/items/${folderId}:/${encodeURIComponent(fileName)}:/content?@microsoft.graph.conflictBehavior=replace`, {
     method: 'PUT',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': mimeType },
     body: content,
   })
   if (!res.ok) {

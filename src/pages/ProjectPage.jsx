@@ -12,7 +12,7 @@ import Modal from '../components/ui/Modal'
 import NewReviewModal from '../components/encounters/NewReviewModal'
 import FilterPanel from '../components/encounters/FilterPanel'
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 15
 const MEDIA_ICONS = { video: Video, document: FileText, other: File }
 
 const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316']
@@ -248,7 +248,7 @@ export default function ProjectPage() {
   if (loading) return <div className="empty-state" style={{ height: '100vh' }}><div className="spinner" /></div>
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
       {/* Top bar */}
       <div style={{
         height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between',

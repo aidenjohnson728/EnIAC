@@ -154,6 +154,16 @@ function migrate(db) {
       linked_at TEXT DEFAULT (datetime('now')),
       UNIQUE(media_file_id)
     )`,
+    // Tombstones for explicit encounter/media deletions, keyed by sync_id so the
+    // deletion propagates across machines (parallel to deleted_reviews for reviews).
+    `CREATE TABLE IF NOT EXISTS deleted_structure (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      sync_id TEXT NOT NULL,
+      deleted_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(project_id, kind, sync_id)
+    )`,
     // Indexes on the foreign keys / sync ids that every list and sync query filters on.
     // SQLite only auto-indexes PK and UNIQUE columns, so these are full-scans otherwise.
     "CREATE INDEX IF NOT EXISTS idx_encounters_project ON encounters(project_id)",
@@ -164,6 +174,7 @@ function migrate(db) {
     "CREATE INDEX IF NOT EXISTS idx_timestamps_review ON timestamps(review_id)",
     "CREATE INDEX IF NOT EXISTS idx_form_responses_review ON form_responses(review_id)",
     "CREATE INDEX IF NOT EXISTS idx_deleted_reviews_project ON deleted_reviews(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_deleted_structure_project ON deleted_structure(project_id)",
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) {}
