@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('api', {
   bulkDeleteMediaFiles: (projectId, ids) => ipcRenderer.invoke('media:bulkDelete', projectId, ids),
   bulkUpdateMediaType: (projectId, ids, mediaTypeId) => ipcRenderer.invoke('media:bulkUpdateType', projectId, ids, mediaTypeId),
   getVideoUrl: (filePath) => ipcRenderer.invoke('media:getUrl', filePath),
+  getMediaPlaybackInfo: (mediaFileId) => ipcRenderer.invoke('media:getPlaybackInfo', mediaFileId),
 
   // Reviews
   listReviews: (mediaFileId) => ipcRenderer.invoke('reviews:list', mediaFileId),

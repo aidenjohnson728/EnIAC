@@ -36,6 +36,7 @@ export const api = isElectron ? window.api : {
   bulkDeleteMediaFiles: async () => ({ deleted: 0 }),
   bulkUpdateMediaType: async () => ({ updated: 0 }),
   getVideoUrl: async (p) => p,
+  getMediaPlaybackInfo: async () => ({ status: 'not_linked', resolved_path: null, url: null, file_type: 'other' }),
   listReviews: async () => [],
   createReview: async (d) => ({ id: Date.now(), ...d, status: 'in_progress', created_at: new Date().toISOString() }),
   getReview: async () => null,

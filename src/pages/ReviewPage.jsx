@@ -43,6 +43,7 @@ export default function ReviewPage() {
 
   const [keybinds, setKeybinds] = useState([])
   const [videoUrl, setVideoUrl] = useState(null)
+  const [videoError, setVideoError] = useState('')
   const [showSubmit, setShowSubmit] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -137,24 +138,26 @@ export default function ReviewPage() {
     setMediaFile(mf)
     if (!mf?.encounter_id) { setLoading(false); return }
 
-    // Check link status — show modal if file not accessible on this machine
-    if (mf.link_status === 'not_linked' || mf.link_status === 'missing') {
-      setLinkModal(mf.link_status)
-      const enc = await api.getEncounter(mf.encounter_id)
-      if (enc) setEncProjectId(enc.project_id)
+    const [playback, enc] = await Promise.all([
+      api.getMediaPlaybackInfo(mf.id),
+      api.getEncounter(mf.encounter_id),
+    ])
+    if (!enc) { setLoading(false); return }
+    setEncProjectId(enc.project_id)
+    setVideoUrl(playback?.url || null)
+    setVideoError('')
+
+    if (!playback || playback.status !== 'linked' || !playback.url) {
+      setLinkModal(playback?.status === 'missing' ? 'missing' : 'not_linked')
       setLoading(false)
       return
     }
-    setLinkModal(null)
 
-    // Parallel: video URL + encounter
-    const [url, enc] = await Promise.all([
-      api.getVideoUrl(mf.resolved_path || mf.file_path || ''),
-      api.getEncounter(mf.encounter_id),
-    ])
-    setVideoUrl(url)
-    if (!enc) { setLoading(false); return }
-    setEncProjectId(enc.project_id)
+    setMediaFile(current => current
+      ? { ...current, file_type: playback.file_type || current.file_type, resolved_path: playback.resolved_path }
+      : current
+    )
+    setLinkModal(null)
 
     // Parallel: project + media types
     const [proj, allTypes] = await Promise.all([
@@ -443,10 +446,19 @@ export default function ReviewPage() {
                   onLoadedMetadata={e => setVideoDuration(e.target.duration)}
                   onPlay={() => setVideoPaused(false)}
                   onPause={() => setVideoPaused(true)}
+                  onError={() => setVideoError('This file could not be played. It may use a codec Electron cannot decode, or the file may be damaged.')}
                 />
               ) : (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#fff', opacity: 0.5 }}>
                   Non-video file — see workspace tabs
+                </div>
+              )}
+
+              {isVideo && videoError && (
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, pointerEvents: 'none' }}>
+                  <div style={{ maxWidth: 460, background: 'rgba(0,0,0,0.72)', color: '#fff', borderRadius: 8, padding: '12px 14px', fontSize: 13, lineHeight: 1.5 }}>
+                    {videoError}
+                  </div>
                 </div>
               )}
 

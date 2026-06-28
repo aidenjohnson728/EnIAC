@@ -1068,15 +1068,6 @@ function MediaFilesSection({
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {isOwner && (
             <>
-              <button className="btn btn-ghost btn-sm" onClick={onExportStructure} title="Export encounter/file structure to Excel">
-                Export Excel
-              </button>
-              <button className="btn btn-ghost btn-sm" onClick={handleImportFromFile} disabled={importingFile} title="Import encounter names from a spreadsheet or CSV">
-                {importingFile ? 'Reading…' : 'Import from File'}
-              </button>
-              <button className="btn btn-secondary btn-sm" onClick={() => setShowBatchAdd(true)}>
-                Batch Add
-              </button>
               <button className="btn btn-secondary btn-sm" onClick={() => { setNewEncounterName(''); setShowAddEncounter(true) }}>
                 + Add Encounter
               </button>
@@ -1086,20 +1077,20 @@ function MediaFilesSection({
       </div>
       <p className="text-secondary" style={{ marginBottom: 20, fontSize: 13 }}>
         {isOwner
-          ? 'Manage encounters and media file slots. Click a name to rename. Use the encounter selector to move a file. Scan a folder here to import encounters from disk.'
+          ? 'Import your folder structure, then manage encounters and media file slots here. Scans only add new items or relink missing ones; they do not delete existing review data.'
           : 'Assign a media type to each file slot. The type determines how many reviews are required and which tags are available.'}
       </p>
 
       {isOwner && (
         <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 16, background: 'var(--bg)', display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 20 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Add Encounters from Disk</h3>
+            <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Import or Scan Folder</h3>
             <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
-              Scan a folder to automatically create encounters and media file records from its subfolder structure. Each subfolder becomes an encounter; files inside become media files.
+              Point SDMo at your encounter folder once, then rescan it anytime new encounters or files appear. Each subfolder becomes an encounter; files inside become media files.
             </p>
           </div>
           <div className="form-field" style={{ marginBottom: 0 }}>
-            <label>Scan Folder</label>
+            <label>Source Folder</label>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <input value={mediaFolder} onChange={e => setMediaFolder(e.target.value)} placeholder="/path/to/media/folder" style={{ flex: '1 1 320px', minWidth: 240 }} />
               <button className="btn btn-secondary" style={{ flexShrink: 0 }} onClick={onSelectFolder}>
@@ -1108,19 +1099,44 @@ function MediaFilesSection({
             </div>
             <span className="text-muted text-sm" style={{ marginTop: 4 }}>Expected: ScanFolder / EncounterName / mediafile.mp4</span>
           </div>
+          <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--text-secondary)' }}>
+            Scans are additive. They create new encounters and file slots, and can relink missing files, but they do not delete encounters, files, or reviews already in the project.
+          </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn btn-secondary" onClick={async () => {
               if (!mediaFolder) return
               await api.updateProject(projectId, { ...project, media_folder: mediaFolder })
               onReload()
             }} disabled={!mediaFolder || saving}>
-              {saving ? 'Saving…' : 'Save Path'}
+              {saving ? 'Saving…' : 'Save Folder'}
             </button>
             <button className="btn btn-primary" onClick={onHandleScanFolder} disabled={!mediaFolder || saving}>
-              {saving ? 'Scanning…' : 'Scan Folder'}
+              {saving ? 'Scanning…' : 'Scan for New Encounters'}
             </button>
           </div>
           {scanResult && <ScanResultSummary scanResult={scanResult} />}
+        </div>
+      )}
+
+      {isOwner && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 16, background: 'var(--bg)', display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Manual Tools</h3>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+              Use these when you need to add or import structure outside the normal folder scan workflow.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowBatchAdd(true)}>
+              Batch Add
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={handleImportFromFile} disabled={importingFile} title="Import encounter names from a spreadsheet or CSV">
+              {importingFile ? 'Reading…' : 'Import from File'}
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={onExportStructure} title="Export encounter/file structure to Excel">
+              Export Excel
+            </button>
+          </div>
         </div>
       )}
 
@@ -1242,6 +1258,19 @@ function MediaFilesSection({
                   </div>
                 </div>
               ))}
+
+              {isOwner && (
+                <div style={{ padding: '10px 14px', background: 'var(--bg)', borderTop: (enc.media || []).length === 0 ? '1px solid var(--border)' : 'none', display: 'flex', justifyContent: 'flex-start' }}>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    style={{ fontSize: 11, padding: '2px 8px', height: 24 }}
+                    onClick={() => { setNewFileName(''); setAddFileEncounterId(enc.id); setShowAddFile(true) }}
+                    title="Add media file slot to this encounter"
+                  >
+                    + Add File
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

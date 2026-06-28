@@ -134,8 +134,9 @@ app.whenReady().then(() => {
   // corruption or accidental destructive action is recoverable.
   try { require('./db').backupDb('startup') } catch (e) { console.error('[main] startup backup failed:', e.message) }
 
-  const { setMainWindow } = require('./sync')
+  const { setMainWindow, startPeriodicAutoSync } = require('./sync')
   setMainWindow(mainWindow)
+  startPeriodicAutoSync()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -205,4 +206,9 @@ ipcMain.handle('review:notifyUpdate', (event, reviewId) => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', () => {
+  try { require('./sync').stopPeriodicAutoSync() } catch (_) {}
+  try { require('./mediaServer').stopMediaServer() } catch (_) {}
 })

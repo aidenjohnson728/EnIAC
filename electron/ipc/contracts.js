@@ -66,6 +66,7 @@ const contracts = {
   'media:bulkDelete': [isIntLike, isIdArray],
   'media:bulkUpdateType': [isIntLike, isIdArray, isOptionalIntLike],
   'media:getUrl': [isString],
+  'media:getPlaybackInfo': [isIntLike],
   'media:getBaseFolder': [isIntLike],
   'media:setBaseFolder': [isIntLike, isOptionalString],
   'media:autolink': [isIntLike],

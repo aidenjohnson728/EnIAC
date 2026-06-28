@@ -7,6 +7,7 @@ const { getSettings, getProjectName, getOrCreateUUID } = require('./settings')
 
 const SYNC_PROTOCOL_VERSION = 2
 const PROJECT_STATE_FILENAME = 'project-state.json'
+const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000
 
 // Bump when the split-config file format changes in a backward-incompatible way.
 // buildConfigExport stamps this; readers refuse configs newer than they understand.
@@ -23,6 +24,7 @@ function assertConfigCompatible(configData) {
 
 const timers = {}
 const lastSyncAt = {}
+let periodicAutoSyncTimer = null
 
 // ─── Per-project sync mutex ─────────────────────────────────────────────────────
 // Prevents two syncs for the same project from interleaving (which could drop
@@ -77,17 +79,8 @@ function emitConflicts(conflicts) {
 function scheduleSync(projectId) {
   if (timers[projectId]) clearTimeout(timers[projectId])
   timers[projectId] = setTimeout(async () => {
-    const db = getDb()
-    const project = db.prepare('SELECT sync_folder, cloud_provider, cloud_folder_id FROM projects WHERE id=?').get(projectId)
-    const uuid = getOrCreateUUID()
-    const name = getProjectName(projectId) || uuid
-
     try {
-      if (project?.sync_folder) {
-        await doLocalSync(db, projectId, project.sync_folder, uuid, name)
-      } else if (project?.cloud_provider && project?.cloud_folder_id) {
-        await doCloudSync(db, projectId, project.cloud_provider, project.cloud_folder_id, uuid, name)
-      }
+      await syncProjectIfConfigured(projectId)
     } catch (e) {
       console.error('[sync] auto-sync failed:', e.message)
     }
@@ -117,6 +110,69 @@ function bumpConfigVersion(db, projectId) {
 function bumpAndSync(db, projectId) {
   bumpConfigVersion(db, projectId)
   scheduleSync(projectId)
+}
+
+async function syncProjectIfConfigured(projectId) {
+  const db = getDb()
+  const project = db.prepare('SELECT sync_folder, cloud_provider, cloud_folder_id FROM projects WHERE id=?').get(projectId)
+  if (!project) return false
+
+  const uuid = getOrCreateUUID()
+  const name = getProjectName(projectId) || uuid
+
+  if (project.sync_folder) {
+    await doLocalSync(db, projectId, project.sync_folder, uuid, name)
+    return true
+  }
+
+  if (project.cloud_provider && project.cloud_folder_id) {
+    await doCloudSync(db, projectId, project.cloud_provider, project.cloud_folder_id, uuid, name)
+    return true
+  }
+
+  return false
+}
+
+async function runPeriodicAutoSyncPass() {
+  const db = getDb()
+  const projects = db.prepare(`
+    SELECT id
+    FROM projects
+    WHERE (sync_folder IS NOT NULL AND sync_folder != '')
+       OR (cloud_provider IS NOT NULL AND cloud_provider != '' AND cloud_folder_id IS NOT NULL AND cloud_folder_id != '')
+  `).all()
+
+  for (const project of projects) {
+    try {
+      await syncProjectIfConfigured(project.id)
+    } catch (e) {
+      console.error(`[sync] periodic auto-sync failed for project ${project.id}:`, e.message)
+    }
+  }
+}
+
+function startPeriodicAutoSync() {
+  if (periodicAutoSyncTimer) return
+
+  // Run one light startup pass shortly after launch so projects pick up remote
+  // changes even if the user never presses "Sync Now".
+  setTimeout(() => {
+    runPeriodicAutoSyncPass().catch((e) => {
+      console.error('[sync] initial periodic auto-sync failed:', e.message)
+    })
+  }, 15000)
+
+  periodicAutoSyncTimer = setInterval(() => {
+    runPeriodicAutoSyncPass().catch((e) => {
+      console.error('[sync] periodic auto-sync failed:', e.message)
+    })
+  }, AUTO_SYNC_INTERVAL_MS)
+}
+
+function stopPeriodicAutoSync() {
+  if (!periodicAutoSyncTimer) return
+  clearInterval(periodicAutoSyncTimer)
+  periodicAutoSyncTimer = null
 }
 
 // ─── Split-file builders ──────────────────────────────────────────────────────
@@ -1724,6 +1780,7 @@ module.exports = {
   recordEncounterTombstone, recordMediaTombstone, recordStructureTombstone,
   applyStructureTombstones, buildStructureTombstones,
   getLastSyncAt, markSynced, cancelSync,
+  startPeriodicAutoSync, stopPeriodicAutoSync,
   setMainWindow,
   PROJECT_STATE_FILENAME, SYNC_PROTOCOL_VERSION,
 }

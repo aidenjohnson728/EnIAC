@@ -5,6 +5,7 @@ const path = require('path')
 const crypto = require('crypto')
 const { bumpAndSync, recordMediaTombstone } = require('../sync')
 const { getBaseFolder, setBaseFolder, resolveLink, upsertLink } = require('../mediaLinks')
+const { getMediaUrl } = require('../mediaServer')
 
 const VIDEO_EXTS = ['.mp4', '.mp3', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.wav', '.ogg']
 const DOC_EXTS = ['.pdf', '.txt', '.md', '.docx']
@@ -92,15 +93,39 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('media:create', (_, projectId, encounterId, name) => {
     const db = getDb()
+    const fileType = getFileType(path.extname(name.trim()).toLowerCase())
     const result = db.prepare(
       "INSERT INTO media_files (encounter_id, name, file_path, file_type, sync_id, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))"
-    ).run(encounterId, name.trim(), '', 'other', crypto.randomUUID())
+    ).run(encounterId, name.trim(), '', fileType, crypto.randomUUID())
     bumpAndSync(db, projectId)
     return { id: result.lastInsertRowid }
   })
 
   ipcMain.handle('media:getUrl', (_, filePath) => {
-    return `localfile://${encodeURIComponent(filePath)}`
+    return `localfile://${filePath}`
+  })
+
+  ipcMain.handle('media:getPlaybackInfo', async (_, mediaFileId) => {
+    const db = getDb()
+    const file = db.prepare('SELECT id, encounter_id, file_path, file_type FROM media_files WHERE id=?').get(mediaFileId)
+    if (!file) return { status: 'not_found', resolved_path: null, url: null, file_type: 'other' }
+
+    const enc = db.prepare('SELECT project_id FROM encounters WHERE id=?').get(file.encounter_id)
+    const { status, resolved_path } = resolveLink(db, mediaFileId, enc?.project_id)
+    const resolvedFileType = resolved_path
+      ? getFileType(path.extname(resolved_path).toLowerCase())
+      : file.file_type
+
+    if (status !== 'linked' || !resolved_path) {
+      return { status, resolved_path, url: null, file_type: resolvedFileType }
+    }
+
+    return {
+      status,
+      resolved_path,
+      url: await getMediaUrl(resolved_path),
+      file_type: resolvedFileType,
+    }
   })
 
   ipcMain.handle('fs:selectFolder', async () => {
@@ -307,7 +332,10 @@ module.exports = function (ipcMain) {
           return parts.length >= 2 && parts[0].toLowerCase() === encNameLower && nameMatches(f)
         })
         if (inEncounterFolder.length === 1) {
+          const absPath = path.join(baseFolder, inEncounterFolder[0].relativePath)
           upsertLink(db, mf.id, inEncounterFolder[0].relativePath, true)
+          db.prepare("UPDATE media_files SET file_path=?, file_type=?, updated_at=datetime('now') WHERE id=?")
+            .run(absPath, getFileType(path.extname(absPath).toLowerCase()), mf.id)
           linked++
           continue
         }
@@ -315,7 +343,10 @@ module.exports = function (ipcMain) {
         // Pass 2: flat filename match across all found files
         const anywhere = allFoundFiles.filter(nameMatches)
         if (anywhere.length === 1) {
+          const absPath = path.join(baseFolder, anywhere[0].relativePath)
           upsertLink(db, mf.id, anywhere[0].relativePath, true)
+          db.prepare("UPDATE media_files SET file_path=?, file_type=?, updated_at=datetime('now') WHERE id=?")
+            .run(absPath, getFileType(path.extname(absPath).toLowerCase()), mf.id)
           linked++
         } else if (inEncounterFolder.length > 1 || anywhere.length > 1) {
           ambiguous++
@@ -345,6 +376,8 @@ module.exports = function (ipcMain) {
     }
 
     upsertLink(db, mediaFileId, storedPath, isRelative)
+    db.prepare("UPDATE media_files SET file_path=?, file_type=?, updated_at=datetime('now') WHERE id=?")
+      .run(localPath, getFileType(path.extname(localPath).toLowerCase()), mediaFileId)
     return true
   })
 
