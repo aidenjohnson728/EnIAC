@@ -196,4 +196,10 @@ function initSchema(db) {
   `)
 }
 
-module.exports = { getDb }
+// Deletes all reviews for a media file without deleting the file itself.
+// FK cascade (reviews → timestamps, form_responses) handles child rows automatically.
+function deleteReviewsForMediaFile(db, mediaFileId) {
+  db.prepare('DELETE FROM reviews WHERE media_file_id=?').run(mediaFileId)
+}
+
+module.exports = { getDb, deleteReviewsForMediaFile }

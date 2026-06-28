@@ -3,7 +3,7 @@ const { dialog } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
-const { bumpConfigVersion, scheduleSync } = require('../sync')
+const { bumpAndSync } = require('../sync')
 const { getBaseFolder, setBaseFolder, resolveLink, upsertLink } = require('../mediaLinks')
 
 const VIDEO_EXTS = ['.mp4', '.mp3', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.wav', '.ogg']
@@ -85,10 +85,18 @@ module.exports = function (ipcMain) {
     const mf = db.prepare('SELECT encounter_id FROM media_files WHERE id=?').get(id)
     const enc = mf ? db.prepare('SELECT project_id FROM encounters WHERE id=?').get(mf.encounter_id) : null
     if (enc?.project_id) {
-      bumpConfigVersion(db, enc.project_id)
-      scheduleSync(enc.project_id)
+      bumpAndSync(db, enc.project_id)
     }
     return true
+  })
+
+  ipcMain.handle('media:create', (_, projectId, encounterId, name) => {
+    const db = getDb()
+    const result = db.prepare(
+      'INSERT INTO media_files (encounter_id, name, file_path, file_type) VALUES (?, ?, ?, ?)'
+    ).run(encounterId, name.trim(), '', 'other')
+    bumpAndSync(db, projectId)
+    return { id: result.lastInsertRowid }
   })
 
   ipcMain.handle('media:getUrl', (_, filePath) => {
@@ -151,8 +159,7 @@ module.exports = function (ipcMain) {
     tx()
 
     if (encountersAdded > 0 || filesAdded > 0) {
-      bumpConfigVersion(db, projectId)
-      scheduleSync(projectId)
+      bumpAndSync(db, projectId)
     }
 
     const stillUnlinked = db.prepare(`
@@ -187,16 +194,14 @@ module.exports = function (ipcMain) {
   ipcMain.handle('media:move', (_, projectId, mediaFileId, newEncounterId) => {
     const db = getDb()
     db.prepare('UPDATE media_files SET encounter_id=? WHERE id=?').run(newEncounterId, mediaFileId)
-    bumpConfigVersion(db, projectId)
-    scheduleSync(projectId)
+    bumpAndSync(db, projectId)
     return true
   })
 
   ipcMain.handle('media:rename', (_, projectId, mediaFileId, name) => {
     const db = getDb()
     db.prepare('UPDATE media_files SET name=? WHERE id=?').run(name.trim(), mediaFileId)
-    bumpConfigVersion(db, projectId)
-    scheduleSync(projectId)
+    bumpAndSync(db, projectId)
     return true
   })
 
@@ -221,15 +226,9 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('media:deleteFile', (_, projectId, mediaFileId) => {
     const db = getDb()
-    const tx = db.transaction(() => {
-      db.prepare('DELETE FROM timestamps WHERE review_id IN (SELECT id FROM reviews WHERE media_file_id=?)').run(mediaFileId)
-      db.prepare('DELETE FROM form_responses WHERE review_id IN (SELECT id FROM reviews WHERE media_file_id=?)').run(mediaFileId)
-      db.prepare('DELETE FROM reviews WHERE media_file_id=?').run(mediaFileId)
-      db.prepare('DELETE FROM media_files WHERE id=?').run(mediaFileId)
-    })
-    tx()
-    bumpConfigVersion(db, projectId)
-    scheduleSync(projectId)
+    // FK cascade: media_file → reviews → timestamps/form_responses
+    db.prepare('DELETE FROM media_files WHERE id=?').run(mediaFileId)
+    bumpAndSync(db, projectId)
     return true
   })
 

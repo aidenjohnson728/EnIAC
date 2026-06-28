@@ -1,10 +1,35 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
-// Store wrapper functions so we can pass the exact reference to removeListener.
-// Anonymous wrappers created in .on() calls can't be removed with the original cb.
-let _configUpdateWrapper = null
-let _reviewUpdatedWrapper = null
-let _workspaceClosedWrapper = null
+// Supports multiple independent subscribers per event channel.
+// on(cb) returns a numeric id; pass that id to off(id) to remove the specific listener.
+function makeEventBridge(channel) {
+  const listeners = new Map()
+  let nextId = 0
+  let ipcWrapper = null
+
+  return {
+    on(cb) {
+      const id = ++nextId
+      listeners.set(id, cb)
+      if (!ipcWrapper) {
+        ipcWrapper = (_, ...args) => listeners.forEach(fn => fn(...args))
+        ipcRenderer.on(channel, ipcWrapper)
+      }
+      return id
+    },
+    off(id) {
+      listeners.delete(id)
+      if (listeners.size === 0 && ipcWrapper) {
+        ipcRenderer.removeListener(channel, ipcWrapper)
+        ipcWrapper = null
+      }
+    },
+  }
+}
+
+const configUpdateBridge = makeEventBridge('sync:configUpdateAvailable')
+const reviewUpdatedBridge = makeEventBridge('review:updated')
+const workspaceClosedBridge = makeEventBridge('workspace:closed')
 
 contextBridge.exposeInMainWorld('api', {
   // Projects
@@ -21,6 +46,10 @@ contextBridge.exposeInMainWorld('api', {
   renameEncounter: (projectId, encounterId, name) => ipcRenderer.invoke('encounters:rename', projectId, encounterId, name),
   countEncounterReviews: (encounterId) => ipcRenderer.invoke('encounters:countReviews', encounterId),
   deleteEncounter: (projectId, encounterId) => ipcRenderer.invoke('encounters:delete', projectId, encounterId),
+  batchCreateEncounters: (projectId, names, slots) => ipcRenderer.invoke('encounters:batchCreate', projectId, names, slots),
+  exportStructure: (projectId) => ipcRenderer.invoke('encounters:exportStructure', projectId),
+  previewImport: (projectId) => ipcRenderer.invoke('encounters:previewImport', projectId),
+  applyImport: (projectId, toCreate, toAddFiles) => ipcRenderer.invoke('encounters:applyImport', projectId, toCreate, toAddFiles),
 
   // Media
   listMediaFiles: (encounterId) => ipcRenderer.invoke('media:list', encounterId),
@@ -29,6 +58,7 @@ contextBridge.exposeInMainWorld('api', {
   countMediaReviews: (mediaFileId) => ipcRenderer.invoke('media:countReviews', mediaFileId),
   moveMediaFile: (projectId, mediaFileId, newEncounterId) => ipcRenderer.invoke('media:move', projectId, mediaFileId, newEncounterId),
   renameMediaFile: (projectId, mediaFileId, name) => ipcRenderer.invoke('media:rename', projectId, mediaFileId, name),
+  createMediaFile: (projectId, encounterId, name) => ipcRenderer.invoke('media:create', projectId, encounterId, name),
   deleteMediaFile: (projectId, mediaFileId) => ipcRenderer.invoke('media:deleteFile', projectId, mediaFileId),
   getVideoUrl: (filePath) => ipcRenderer.invoke('media:getUrl', filePath),
 
@@ -71,6 +101,7 @@ contextBridge.exposeInMainWorld('api', {
   getCloudFolderName: (projectId) => ipcRenderer.invoke('app:getCloudFolderName', projectId),
   fetchProjectStructure: (projectId) => ipcRenderer.invoke('project:fetchStructure', projectId),
   checkManifest: (projectId) => ipcRenderer.invoke('project:checkManifest', projectId),
+
   // Owner password
   setOwnerPassword: (projectId, password) => ipcRenderer.invoke('project:setPassword', projectId, password),
   verifyOwnerPassword: (projectId, password) => ipcRenderer.invoke('project:verifyPassword', projectId, password),
@@ -87,17 +118,10 @@ contextBridge.exposeInMainWorld('api', {
   joinFromCloudFolder: (provider, folderId, folderName) => ipcRenderer.invoke('sync:joinFromCloudFolder', provider, folderId, folderName),
   exportExcel: (projectId) => ipcRenderer.invoke('export:excel', projectId),
   syncAcceptConfigUpdate: (projectId, configData) => ipcRenderer.invoke('sync:acceptConfigUpdate', projectId, configData),
-  onConfigUpdateAvailable: (cb) => {
-    if (_configUpdateWrapper) ipcRenderer.removeListener('sync:configUpdateAvailable', _configUpdateWrapper)
-    _configUpdateWrapper = (_, d) => cb(d)
-    ipcRenderer.on('sync:configUpdateAvailable', _configUpdateWrapper)
-  },
-  offConfigUpdateAvailable: () => {
-    if (_configUpdateWrapper) {
-      ipcRenderer.removeListener('sync:configUpdateAvailable', _configUpdateWrapper)
-      _configUpdateWrapper = null
-    }
-  },
+
+  // Event: project config updated by owner on another machine (returns subscription id)
+  onConfigUpdateAvailable: (cb) => configUpdateBridge.on(cb),
+  offConfigUpdateAvailable: (id) => configUpdateBridge.off(id),
 
   // Cloud sync
   cloudConnectOneDrive: () => ipcRenderer.invoke('cloud:connectOneDrive'),
@@ -130,27 +154,12 @@ contextBridge.exposeInMainWorld('api', {
   openWorkspaceWindow: (url) => ipcRenderer.invoke('window:openWorkspace', url),
   closeWorkspaceWindow: (reviewId) => ipcRenderer.invoke('window:closeWorkspace', reviewId),
   notifyReviewUpdate: (reviewId) => ipcRenderer.invoke('review:notifyUpdate', reviewId),
-  onReviewUpdated: (cb) => {
-    if (_reviewUpdatedWrapper) ipcRenderer.removeListener('review:updated', _reviewUpdatedWrapper)
-    _reviewUpdatedWrapper = (_, id) => cb(id)
-    ipcRenderer.on('review:updated', _reviewUpdatedWrapper)
-  },
-  offReviewUpdated: () => {
-    if (_reviewUpdatedWrapper) {
-      ipcRenderer.removeListener('review:updated', _reviewUpdatedWrapper)
-      _reviewUpdatedWrapper = null
-    }
-  },
-  onWorkspaceClosed: (cb) => {
-    if (_workspaceClosedWrapper) ipcRenderer.removeListener('workspace:closed', _workspaceClosedWrapper)
-    _workspaceClosedWrapper = (_, id) => cb(id)
-    ipcRenderer.on('workspace:closed', _workspaceClosedWrapper)
-  },
-  offWorkspaceClosed: () => {
-    if (_workspaceClosedWrapper) {
-      ipcRenderer.removeListener('workspace:closed', _workspaceClosedWrapper)
-      _workspaceClosedWrapper = null
-    }
-  },
 
+  // Event: review data changed in another window (returns subscription id)
+  onReviewUpdated: (cb) => reviewUpdatedBridge.on(cb),
+  offReviewUpdated: (id) => reviewUpdatedBridge.off(id),
+
+  // Event: pop-out workspace window closed (returns subscription id)
+  onWorkspaceClosed: (cb) => workspaceClosedBridge.on(cb),
+  offWorkspaceClosed: (id) => workspaceClosedBridge.off(id),
 })

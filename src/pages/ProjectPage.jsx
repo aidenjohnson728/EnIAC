@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   ChevronLeft, Settings, Filter, ChevronDown, ChevronRight,
@@ -7,11 +7,16 @@ import {
   LayoutList, BarChart2, Activity, LineChart
 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
+import { SETUP_SECTIONS } from '../lib/setupSections'
 import Modal from '../components/ui/Modal'
 import NewReviewModal from '../components/encounters/NewReviewModal'
 import FilterPanel from '../components/encounters/FilterPanel'
 
+const PAGE_SIZE = 20
 const MEDIA_ICONS = { video: Video, document: FileText, other: File }
+
+const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316']
+function colorFor(name) { let h = 0; for (const c of (name || '')) h = (h * 31 + c.charCodeAt(0)) & 0xffff; return COLORS[h % COLORS.length] }
 
 export default function ProjectPage() {
   const { projectId } = useParams()
@@ -38,6 +43,12 @@ export default function ProjectPage() {
   const [nameInput, setNameInput] = useState('')
   const [mediaHealth, setMediaHealth] = useState(null)
   const [activePage, setActivePage] = useState('encounters')
+  const [currentPage, setCurrentPage] = useState(1)
+  const [autolinking, setAutolinking] = useState(false)
+  const [linkSaving, setLinkSaving] = useState(null)
+  const [showAutolinkModal, setShowAutolinkModal] = useState(false)
+  const [autolinkFolder, setAutolinkFolder] = useState('')
+  const [autolinkResult, setAutolinkResult] = useState(null)
 
   useEffect(() => { load() }, [projectId, location.pathname])
 
@@ -61,8 +72,8 @@ export default function ProjectPage() {
     const handler = (data) => {
       if (String(data.projectId) === String(projectId)) setPendingConfigData(data.configData)
     }
-    api.onConfigUpdateAvailable(handler)
-    return () => api.offConfigUpdateAvailable(handler)
+    const subId = api.onConfigUpdateAvailable(handler)
+    return () => api.offConfigUpdateAvailable(subId)
   }, [projectId])
 
   async function load() {
@@ -168,7 +179,53 @@ export default function ProjectPage() {
     return result
   }
 
-  const filtered = applyFilters(encounters)
+  const filtered = useMemo(() => applyFilters(encounters), [encounters, filters, search])
+
+  useEffect(() => setCurrentPage(1), [search, filters])
+
+  async function handleOpenAutolinkModal() {
+    const folder = await api.getBaseFolder(projectId)
+    setAutolinkFolder(folder || '')
+    setAutolinkResult(null)
+    setShowAutolinkModal(true)
+  }
+
+  async function handleRunAutolink() {
+    if (autolinkFolder) await api.setBaseFolder(Number(projectId), autolinkFolder)
+    setAutolinking(true)
+    const result = await api.autolink(projectId)
+    setAutolinking(false)
+    setAutolinkResult(result)
+    const [encs, health] = await Promise.all([api.listEncounters(projectId), api.mediaHealthCheck(projectId)])
+    setEncounters(encs)
+    setMediaHealth(health)
+  }
+
+  async function handleManualLink(mediaFileId) {
+    setLinkSaving(mediaFileId)
+    const filePath = await api.browseMediaFile(mediaFileId)
+    if (filePath) {
+      await api.setMediaLink(mediaFileId, projectId, filePath)
+      const [encs, health] = await Promise.all([api.listEncounters(projectId), api.mediaHealthCheck(projectId)])
+      setEncounters(encs)
+      setMediaHealth(health)
+    }
+    setLinkSaving(null)
+  }
+
+  async function handleMarkNA(mediaFileId) {
+    await api.markMediaNotApplicable(mediaFileId)
+    const [encs, health] = await Promise.all([api.listEncounters(projectId), api.mediaHealthCheck(projectId)])
+    setEncounters(encs)
+    setMediaHealth(health)
+  }
+
+  async function handleClearLink(mediaFileId) {
+    await api.clearMediaLink(mediaFileId)
+    const [encs, health] = await Promise.all([api.listEncounters(projectId), api.mediaHealthCheck(projectId)])
+    setEncounters(encs)
+    setMediaHealth(health)
+  }
 
   async function handleSaveFile() {
     const p = await api.saveProjectFile(projectId)
@@ -263,13 +320,13 @@ export default function ProjectPage() {
       {syncStatus.syncMode === 'local' && syncStatus.syncFolderExists === false && (
         <div style={{ background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#92400e' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
-          Sync folder not found — check the path in <button className="btn btn-ghost btn-sm" style={{ color: '#92400e', textDecoration: 'underline', padding: '0 4px' }} onClick={() => navigate(`/project/${projectId}/setup?section=6`)}>Setup → Sync</button>
+          Sync folder not found — check the path in <button className="btn btn-ghost btn-sm" style={{ color: '#92400e', textDecoration: 'underline', padding: '0 4px' }} onClick={() => navigate(`/project/${projectId}/setup?section=${SETUP_SECTIONS.SYNC}`)}>Setup → Sync</button>
         </div>
       )}
       {syncStatus.syncMode === 'cloud' && syncStatus.tokenExpired && (
         <div style={{ background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#92400e' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
-          Cloud connection expired — reconnect in <button className="btn btn-ghost btn-sm" style={{ color: '#92400e', textDecoration: 'underline', padding: '0 4px' }} onClick={() => navigate(`/project/${projectId}/setup?section=6`)}>Setup → Sync</button>
+          Cloud connection expired — reconnect in <button className="btn btn-ghost btn-sm" style={{ color: '#92400e', textDecoration: 'underline', padding: '0 4px' }} onClick={() => navigate(`/project/${projectId}/setup?section=${SETUP_SECTIONS.SYNC}`)}>Setup → Sync</button>
         </div>
       )}
       {pendingConfigData && (
@@ -350,7 +407,7 @@ export default function ProjectPage() {
                 {mediaHealth.unlinked + mediaHealth.broken} of {mediaHealth.total} media file{mediaHealth.total !== 1 ? 's' : ''} {mediaHealth.broken > 0 && mediaHealth.unlinked > 0 ? 'are not linked or missing' : mediaHealth.broken > 0 ? 'cannot be found on disk' : 'are not linked on this machine'}.
                 {!mediaHealth.hasBaseFolder ? ' Set a base folder in Settings → Media Folder.' : ' Go to Settings → Media Folder to auto-link or manually locate files.'}
               </span>
-              <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => navigate(`/project/${projectId}/setup?section=4`)}>Fix</button>
+              <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => navigate(`/project/${projectId}/setup?section=${SETUP_SECTIONS.FILES}`)}>Fix</button>
             </div>
           )}
 
@@ -361,10 +418,14 @@ export default function ProjectPage() {
                 <div>
                   <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Encounters</h1>
                   <p className="text-secondary text-sm" style={{ marginTop: 3 }}>
-                    {encounters.length} encounter{encounters.length !== 1 ? 's' : ''} · {encounters.filter(e => e.completed).length} complete
+                    {filtered.length} encounter{filtered.length !== 1 ? 's' : ''}{filtered.length !== encounters.length ? ` (filtered from ${encounters.length})` : ''} · {encounters.filter(e => e.completed).length} complete
                   </p>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
+                  <button className="btn btn-secondary btn-sm" onClick={handleOpenAutolinkModal} disabled={autolinking}>
+                    <RefreshCw size={13} style={{ animation: autolinking ? 'spin 1s linear infinite' : 'none' }} />
+                    {autolinking ? 'Linking…' : 'Auto-link Files'}
+                  </button>
                   <div style={{ position: 'relative' }}>
                     <Search size={13} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
                     <input placeholder="Search encounters…" value={search} onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 28, width: 200, height: 32, fontSize: 13 }} />
@@ -380,14 +441,17 @@ export default function ProjectPage() {
                 <div className="empty-state">
                   <FolderOpenIcon />
                   <p>No encounters found</p>
-                  {encounters.length === 0 && <p className="text-sm">Set up a media folder in <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/project/${projectId}/setup`)}>Setup</button></p>}
+                  {encounters.length === 0 && <p className="text-sm">Add encounters in <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/project/${projectId}/setup?section=${SETUP_SECTIONS.ENCOUNTERS}`)}>Setup → Encounters</button></p>}
                 </div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {filtered.map(enc => (
-                    <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} />
-                  ))}
-                </div>
+                <>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE).map(enc => (
+                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onManualLink={handleManualLink} onMarkNA={handleMarkNA} onClearLink={handleClearLink} linkSaving={linkSaving} />
+                    ))}
+                  </div>
+                  <Pagination currentPage={currentPage} totalPages={Math.ceil(filtered.length / PAGE_SIZE)} total={filtered.length} pageSize={PAGE_SIZE} onPageChange={setCurrentPage} />
+                </>
               )}
             </>
           )}
@@ -416,6 +480,76 @@ export default function ProjectPage() {
         }
       >
         <p>Delete the review by <strong>{deleteReviewTarget?.reviewer_name}</strong>? All timestamps and form responses in this review will be permanently removed.</p>
+      </Modal>
+
+      <Modal
+        open={showAutolinkModal}
+        onClose={() => { if (!autolinking) { setShowAutolinkModal(false); setAutolinkResult(null) } }}
+        title="Auto-link Files"
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => { setShowAutolinkModal(false); setAutolinkResult(null) }} disabled={autolinking}>
+              {autolinkResult ? 'Close' : 'Cancel'}
+            </button>
+            {!autolinkResult && (
+              <button className="btn btn-primary" onClick={handleRunAutolink} disabled={autolinking || !autolinkFolder}>
+                <RefreshCw size={13} style={{ animation: autolinking ? 'spin 1s linear infinite' : 'none' }} />
+                {autolinking ? 'Linking…' : 'Auto-link'}
+              </button>
+            )}
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {!autolinkResult ? (
+            <>
+              <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                <strong style={{ color: 'var(--text)', display: 'block', marginBottom: 4 }}>How auto-link works</strong>
+                Auto-link searches a folder (and all its subfolders) for files whose names match the media slots in this project. Matching is done by filename — the file name on disk must match the slot name in the project exactly (case-insensitive). Already-linked files are skipped.
+                <div style={{ marginTop: 8, fontFamily: 'monospace', fontSize: 11, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, padding: '6px 8px', lineHeight: 1.7 }}>
+                  Slot: <strong>consult_video.mp4</strong><br />
+                  Match: <strong>/your/folder/Patient001/consult_video.mp4</strong> ✓<br />
+                  No match: <strong>/your/folder/ConsultVideo.mp4</strong> ✗
+                </div>
+              </div>
+              <div className="form-field" style={{ margin: 0 }}>
+                <label>Base Folder</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    value={autolinkFolder}
+                    onChange={e => setAutolinkFolder(e.target.value)}
+                    placeholder="/path/to/your/media/folder"
+                    style={{ flex: 1 }}
+                  />
+                  <button className="btn btn-secondary" style={{ flexShrink: 0 }}
+                    onClick={async () => { const p = await api.selectFolder(); if (p) setAutolinkFolder(p) }}>
+                    Browse
+                  </button>
+                </div>
+                <span className="text-muted text-sm" style={{ marginTop: 4 }}>
+                  The folder (and subfolders) to search. This is saved per project so you only set it once.
+                </span>
+              </div>
+            </>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {autolinkResult.error ? (
+                <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b91c1c' }}>
+                  {autolinkResult.error}
+                </div>
+              ) : (
+                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {autolinkResult.linked > 0
+                    ? <span style={{ color: 'var(--success)', fontWeight: 600 }}>✓ {autolinkResult.linked} file{autolinkResult.linked !== 1 ? 's' : ''} linked</span>
+                    : <span style={{ color: 'var(--text-muted)' }}>No new files linked</span>}
+                  {autolinkResult.skipped > 0 && <span style={{ color: 'var(--text-muted)' }}>· {autolinkResult.skipped} already linked (skipped)</span>}
+                  {autolinkResult.ambiguous > 0 && <span style={{ color: '#d97706' }}>· {autolinkResult.ambiguous} ambiguous — multiple files matched the same name, link manually using the button on each file</span>}
+                  {autolinkResult.notFound > 0 && <span style={{ color: 'var(--text-muted)' }}>· {autolinkResult.notFound} not found in folder</span>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </Modal>
 
       {newReview && (
@@ -469,7 +603,26 @@ function FolderOpenIcon() {
   )
 }
 
-function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onAddReview, onOpenReview, onDeleteReview }) {
+function Pagination({ currentPage, totalPages, total, pageSize, onPageChange }) {
+  if (totalPages <= 1) return null
+  const start = (currentPage - 1) * pageSize + 1
+  const end = Math.min(currentPage * pageSize, total)
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, justifyContent: 'center', marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+      <button className="btn btn-ghost btn-sm" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 1}>
+        ← Prev
+      </button>
+      <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+        {start}–{end} of {total}
+      </span>
+      <button className="btn btn-ghost btn-sm" onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === totalPages}>
+        Next →
+      </button>
+    </div>
+  )
+}
+
+function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onManualLink, onMarkNA, onClearLink, linkSaving }) {
   const completedMedia = encounter.media?.filter(m => {
     if (!m.reviews_required) return m.reviews?.some(r => r.status === 'submitted')
     return m.reviews_completed >= m.reviews_required
@@ -517,6 +670,10 @@ function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onAddReview, 
               onAddReview={() => onAddReview(mf)}
               onOpenReview={onOpenReview}
               onDeleteReview={onDeleteReview}
+              onManualLink={onManualLink}
+              onMarkNA={onMarkNA}
+              onClearLink={onClearLink}
+              linkSaving={linkSaving}
             />
           ))}
           {encounter.media?.length === 0 && (
@@ -535,11 +692,13 @@ function linkStatusBadge(status) {
   return <span style={{ fontSize: 10, fontWeight: 600, color: '#d97706', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 3, padding: '1px 5px' }}>Not linked</span>
 }
 
-function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview }) {
+function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onManualLink, onMarkNA, onClearLink, linkSaving }) {
   const Icon = MEDIA_ICONS[mediaFile.file_type] || File
   const required = mediaFile.reviews_required
   const completed = mediaFile.reviews_completed || 0
   const mediaType = mediaTypes.find(t => t.id === mediaFile.media_type_id)
+  const status = mediaFile.link_status
+  const busy = linkSaving === mediaFile.id
 
   return (
     <div style={{
@@ -551,7 +710,31 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <Icon size={14} color="var(--text-secondary)" style={{ flexShrink: 0 }} />
           <span style={{ fontWeight: 500, fontSize: 13 }} className="truncate">{mediaFile.name}</span>
-          {linkStatusBadge(mediaFile.link_status)}
+          {linkStatusBadge(status)}
+          {status !== 'linked' && status !== 'not_applicable' && (
+            <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
+              onClick={() => onManualLink(mediaFile.id)} disabled={busy}>
+              {busy ? '…' : status === 'missing' ? 'Locate' : 'Link'}
+            </button>
+          )}
+          {status === 'linked' && (
+            <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
+              onClick={() => onManualLink(mediaFile.id)} disabled={busy}>
+              {busy ? '…' : 'Relink'}
+            </button>
+          )}
+          {status !== 'not_applicable' && (
+            <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, color: 'var(--text-muted)', flexShrink: 0 }}
+              onClick={() => onMarkNA(mediaFile.id)} title="Mark as not applicable">
+              N/A
+            </button>
+          )}
+          {status === 'not_applicable' && (
+            <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
+              onClick={() => onClearLink(mediaFile.id)}>
+              Clear
+            </button>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           {mediaType && (
@@ -744,8 +927,7 @@ function ActivityView({ encounters }) {
     return (name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
   }
 
-  const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316']
-  function colorFor(name) { let h = 0; for (const c of (name || '')) h = (h * 31 + c.charCodeAt(0)) & 0xffff; return COLORS[h % COLORS.length] }
+
 
   const groups = groupByDate(events)
 

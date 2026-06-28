@@ -11,6 +11,10 @@ import { api, formatTime } from '../lib/api'
 import FormRenderer from '../components/forms/FormRenderer'
 import Modal from '../components/ui/Modal'
 
+function parseFormResponses(rev) {
+  return Object.fromEntries((rev.form_responses || []).map(fr => [fr.form_id, fr.responses]))
+}
+
 export default function ReviewPage() {
   const { reviewId } = useParams()
   const navigate = useNavigate()
@@ -53,14 +57,11 @@ export default function ReviewPage() {
 
   useEffect(() => { load() }, [reviewId])
 
-  // Single function that refreshes submitted + form data from DB
   function refreshReviewData(id) {
     api.getReview(id).then(rev => {
       if (!rev) return
       setSubmitted(rev.status === 'submitted')
-      const respMap = {}
-      for (const fr of (rev.form_responses || [])) respMap[fr.form_id] = fr.responses
-      setFormResponses(respMap)
+      setFormResponses(parseFormResponses(rev))
     })
   }
 
@@ -73,11 +74,11 @@ export default function ReviewPage() {
       if (String(closedId) === String(reviewId)) setWorkspaceMinimized(false)
       // Data refresh comes via the review:updated event emitted alongside workspace:closed in main.js
     }
-    api.onReviewUpdated(onReviewUpdated)
-    api.onWorkspaceClosed(onWorkspaceClosed)
+    const subReview = api.onReviewUpdated(onReviewUpdated)
+    const subWorkspace = api.onWorkspaceClosed(onWorkspaceClosed)
     return () => {
-      api.offReviewUpdated()
-      api.offWorkspaceClosed()
+      api.offReviewUpdated(subReview)
+      api.offWorkspaceClosed(subWorkspace)
       api.closeWorkspaceWindow(reviewId)
     }
   }, [reviewId])
@@ -85,7 +86,7 @@ export default function ReviewPage() {
   // Sync fullscreen state when user exits via Escape
   useEffect(() => {
     async function checkFs() {
-      const fs = await window.api.isFullscreen()
+      const fs = await api.isFullscreen()
       if (!fs && isFullscreen) { setIsFullscreen(false); setVideoExpanded(false) }
     }
     window.addEventListener('resize', checkFs)
@@ -96,7 +97,7 @@ export default function ReviewPage() {
     const entering = !isFullscreen
     setIsFullscreen(entering)
     setVideoExpanded(entering)
-    await window.api.setFullscreen(entering)
+    await api.setFullscreen(entering)
   }
 
   async function handlePopOut() {
@@ -130,9 +131,7 @@ export default function ReviewPage() {
     setReview(rev)
     setSubmitted(rev.status === 'submitted')
     setTimestamps(rev.timestamps || [])
-    const respMap = {}
-    for (const fr of (rev.form_responses || [])) respMap[fr.form_id] = fr.responses
-    setFormResponses(respMap)
+    setFormResponses(parseFormResponses(rev))
 
     const mf = await api.getMediaFile(rev.media_file_id)
     setMediaFile(mf)

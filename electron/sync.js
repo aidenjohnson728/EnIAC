@@ -8,6 +8,10 @@ const { getSettings, getProjectName, getOrCreateUUID } = require('./settings')
 const timers = {}
 const lastSyncAt = {}
 
+function safeJsonParse(str, fallback) {
+  try { return JSON.parse(str) } catch { return fallback }
+}
+
 // ─── Main window reference (set by main.js so we can push events to renderer) ─
 let _mainWindow = null
 function setMainWindow(win) { _mainWindow = win }
@@ -54,12 +58,16 @@ function bumpConfigVersion(db, projectId) {
   db.prepare("UPDATE projects SET config_version = config_version + 1, updated_at = datetime('now') WHERE id=?").run(projectId)
 }
 
+function bumpAndSync(db, projectId) {
+  bumpConfigVersion(db, projectId)
+  scheduleSync(projectId)
+}
+
 // ─── Split-file builders ──────────────────────────────────────────────────────
 
 function buildConfigExport(db, projectId) {
   const project = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId)
-  let keybinds = []
-  try { keybinds = JSON.parse(project.keybinds || '[]') } catch {}
+  const keybinds = safeJsonParse(project.keybinds, [])
 
   const forms = db.prepare('SELECT * FROM forms WHERE project_id=?').all(projectId).map(f => ({
     name: f.name,
@@ -74,16 +82,20 @@ function buildConfigExport(db, projectId) {
     return { name: i.name, content_type: i.content_type || 'markdown', content: i.content || '', pdf_data }
   })
 
+  const formNames = Object.fromEntries(
+    db.prepare('SELECT id, name FROM forms WHERE project_id=?').all(projectId).map(f => [f.id, f.name])
+  )
+  const instructionNames = Object.fromEntries(
+    db.prepare('SELECT id, name FROM instructions WHERE project_id=?').all(projectId).map(i => [i.id, i.name])
+  )
+
   const mediaTypes = db.prepare('SELECT * FROM media_types WHERE project_id=?').all(projectId).map(mt => {
     const tags = db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=?').all(mt.id)
     const rawTabs = db.prepare('SELECT * FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order').all(mt.id)
     const tabs = rawTabs.map(tab => {
       let refName = null
-      if (tab.tab_type === 'form') {
-        refName = db.prepare('SELECT name FROM forms WHERE id=?').get(tab.ref_id)?.name || null
-      } else if (tab.tab_type === 'instruction') {
-        refName = db.prepare('SELECT name FROM instructions WHERE id=?').get(tab.ref_id)?.name || null
-      }
+      if (tab.tab_type === 'form') refName = formNames[tab.ref_id] || null
+      else if (tab.tab_type === 'instruction') refName = instructionNames[tab.ref_id] || null
       return { tab_type: tab.tab_type, ref_name: refName, label: tab.label, sort_order: tab.sort_order }
     })
     return {
@@ -181,17 +193,12 @@ function buildReviewExport(db, projectId, reviewerUuid, reviewerName) {
   }
 }
 
-// ─── Split-file mergers ───────────────────────────────────────────────────────
+// ─── Shared config apply transaction ─────────────────────────────────────────
+// Single authoritative implementation used by mergeConfigImport and replaceStructureFromConfig.
+// Adding a new synced entity means updating this one function only.
 
-function mergeConfigImport(db, projectId, configData, { force } = {}) {
-  if (!configData?.sdmo) throw new Error('Not a valid SDMo config file')
-
-  const local = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)
+function _applyConfigTransaction(db, projectId, configData) {
   const incomingVersion = configData.config_version || 1
-
-  if (incomingVersion > (local?.config_version || 1) && !force) {
-    return { needsConfigPrompt: true, configData, incomingVersion }
-  }
 
   const tx = db.transaction(() => {
     if (configData.project) {
@@ -302,7 +309,8 @@ function mergeConfigImport(db, projectId, configData, { force } = {}) {
       }
     }
 
-    // PI config is authoritative for structure — remove local encounters/files not in the config
+    // Config is authoritative for structure — remove local encounters/files not in the config.
+    // FK cascade (encounters → media_files → reviews → timestamps/form_responses) handles cleanup.
     const configSyncIds = (configData.encounters || []).map(e => e.sync_id).filter(Boolean)
     const configNames = (configData.encounters || []).map(e => e.name)
     const localEncs = db.prepare('SELECT id, sync_id, name FROM encounters WHERE project_id=?').all(projectId)
@@ -311,19 +319,10 @@ function mergeConfigImport(db, projectId, configData, { force } = {}) {
         ? configSyncIds.includes(localEnc.sync_id)
         : configNames.includes(localEnc.name)
       if (!inConfig) {
-        // Cascade delete: timestamps → form_responses → reviews → media_files → encounter
-        const fileIds = db.prepare('SELECT id FROM media_files WHERE encounter_id=?').all(localEnc.id).map(f => f.id)
-        for (const fid of fileIds) {
-          db.prepare('DELETE FROM timestamps WHERE review_id IN (SELECT id FROM reviews WHERE media_file_id=?)').run(fid)
-          db.prepare('DELETE FROM form_responses WHERE review_id IN (SELECT id FROM reviews WHERE media_file_id=?)').run(fid)
-          db.prepare('DELETE FROM reviews WHERE media_file_id=?').run(fid)
-        }
-        db.prepare('DELETE FROM media_files WHERE encounter_id=?').run(localEnc.id)
         db.prepare('DELETE FROM encounters WHERE id=?').run(localEnc.id)
       }
     }
 
-    // Remove local media files not in the config (handles file deletions by PI)
     const configMediaSyncIds = (configData.encounters || []).flatMap(e => (e.media || []).map(m => m.sync_id)).filter(Boolean)
     const remainingFiles = db.prepare(`
       SELECT mf.id, mf.sync_id, mf.name, e.name as enc_name FROM media_files mf
@@ -331,19 +330,31 @@ function mergeConfigImport(db, projectId, configData, { force } = {}) {
     `).all(projectId)
     for (const f of remainingFiles) {
       const encInConfig = (configData.encounters || []).find(e => e.name === f.enc_name || configSyncIds.includes(f.sync_id))
-      if (!encInConfig) continue // encounter already handled above
+      if (!encInConfig) continue
       const mediaInConfig = f.sync_id
         ? configMediaSyncIds.includes(f.sync_id)
         : (encInConfig.media || []).some(m => m.name === f.name)
       if (!mediaInConfig) {
-        db.prepare('DELETE FROM timestamps WHERE review_id IN (SELECT id FROM reviews WHERE media_file_id=?)').run(f.id)
-        db.prepare('DELETE FROM form_responses WHERE review_id IN (SELECT id FROM reviews WHERE media_file_id=?)').run(f.id)
-        db.prepare('DELETE FROM reviews WHERE media_file_id=?').run(f.id)
         db.prepare('DELETE FROM media_files WHERE id=?').run(f.id)
       }
     }
   })
   tx()
+}
+
+// ─── Split-file mergers ───────────────────────────────────────────────────────
+
+function mergeConfigImport(db, projectId, configData, { force } = {}) {
+  if (!configData?.sdmo) throw new Error('Not a valid SDMo config file')
+
+  const local = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)
+  const incomingVersion = configData.config_version || 1
+
+  if (incomingVersion > (local?.config_version || 1) && !force) {
+    return { needsConfigPrompt: true, configData, incomingVersion }
+  }
+
+  _applyConfigTransaction(db, projectId, configData)
   return { applied: true }
 }
 
@@ -466,160 +477,56 @@ function readLocalManifest(syncFolder) {
 // ─── Cloud-authoritative structure replacement ────────────────────────────────
 
 function replaceStructureFromConfig(db, projectId, configData) {
-  console.log(`[replaceStructure] called for project ${projectId}, config_version=${configData?.config_version}`)
   if (!configData?.sdmo) throw new Error('Not a valid SDMo config file')
+  _applyConfigTransaction(db, projectId, configData)
+}
 
-  const tx = db.transaction(() => {
-    if (configData.project) {
-      const kbJson = JSON.stringify(configData.project.keybinds || [])
-      const incomingHash = configData.project.owner_password_hash || null
-      const localHash = db.prepare('SELECT owner_password_hash FROM projects WHERE id=?').get(projectId)?.owner_password_hash || null
-      const hashToUse = incomingHash || localHash
-      db.prepare("UPDATE projects SET name=?, description=?, owner_password_hash=?, keybinds=?, config_version=?, updated_at=datetime('now') WHERE id=?")
-        .run(configData.project.name || '', configData.project.description || '', hashToUse, kbJson, configData.config_version || 1, projectId)
-    }
+// ─── Config sync helpers (used by both do*Sync and fetchStructure) ────────────
 
-    for (const f of (configData.forms || [])) {
-      const schema = typeof f.schema === 'string' ? f.schema : JSON.stringify(f.schema)
-      const existing = db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, f.name)
-      if (existing) {
-        db.prepare("UPDATE forms SET schema=?, updated_at=datetime('now') WHERE id=?").run(schema, existing.id)
-      } else {
-        db.prepare('INSERT INTO forms (project_id, name, schema) VALUES (?,?,?)').run(projectId, f.name, schema)
+function syncConfigLocal(db, projectId, syncFolder) {
+  const localVersion = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)?.config_version || 0
+  const manifest = readLocalManifest(syncFolder)
+  const folderVersion = manifest?.config_version || 0
+  const configPath = path.join(syncFolder, 'project-config.json')
+
+  if (folderVersion > localVersion) {
+    if (fs.existsSync(configPath)) {
+      const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+      if ((configData.config_version || 0) > localVersion) {
+        replaceStructureFromConfig(db, projectId, configData)
       }
     }
+  } else if (localVersion > folderVersion) {
+    const configData = buildConfigExport(db, projectId)
+    fs.writeFileSync(configPath, JSON.stringify(configData, null, 2))
+    fs.writeFileSync(path.join(syncFolder, 'manifest.json'), JSON.stringify(buildManifest(db, projectId)))
+  }
+}
 
-    for (const i of (configData.instructions || [])) {
-      let filePath = null
-      if (i.content_type === 'pdf' && i.pdf_data) {
-        const destDir = path.join(app.getPath('userData'), 'projects', String(projectId))
-        fs.mkdirSync(destDir, { recursive: true })
-        const existingFile = db.prepare('SELECT file_path FROM instructions WHERE project_id=? AND name=?').get(projectId, i.name)
-        filePath = existingFile?.file_path || path.join(destDir, `${Date.now()}-${i.name}.pdf`)
-        fs.writeFileSync(filePath, Buffer.from(i.pdf_data, 'base64'))
-      }
-      const existing = db.prepare('SELECT id FROM instructions WHERE project_id=? AND name=?').get(projectId, i.name)
-      if (existing) {
-        db.prepare('UPDATE instructions SET content=?, content_type=?, file_path=? WHERE id=?')
-          .run(i.content || '', i.content_type || 'markdown', filePath, existing.id)
-      } else {
-        db.prepare('INSERT INTO instructions (project_id, name, content, content_type, file_path) VALUES (?,?,?,?,?)')
-          .run(projectId, i.name, i.content || '', i.content_type || 'markdown', filePath)
+async function syncConfigCloud(db, projectId, adapter, folderId, allFiles) {
+  const localVersion = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)?.config_version || 0
+  const manifestFile = allFiles.find(f => f.name === 'manifest.json')
+  let cloudVersion = 0
+  if (manifestFile) {
+    try { cloudVersion = JSON.parse(await adapter.readFile(manifestFile.id)).config_version || 0 } catch {}
+  }
+
+  if (cloudVersion > localVersion) {
+    const configFile = allFiles.find(f => f.name === 'project-config.json')
+    if (configFile) {
+      const configData = JSON.parse(await adapter.readFile(configFile.id))
+      if ((configData.config_version || 0) > localVersion) {
+        replaceStructureFromConfig(db, projectId, configData)
       }
     }
-
-    for (const mt of (configData.media_types || [])) {
-      let mtId
-      const existing = db.prepare('SELECT id FROM media_types WHERE project_id=? AND name=?').get(projectId, mt.name)
-      if (existing) {
-        db.prepare('UPDATE media_types SET reviews_required=?, allow_custom_tags=?, color=? WHERE id=?')
-          .run(mt.reviews_required, mt.allow_custom_tags ? 1 : 0, mt.color, existing.id)
-        mtId = existing.id
-      } else {
-        const r = db.prepare('INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color) VALUES (?,?,?,?,?)')
-          .run(projectId, mt.name, mt.reviews_required || 1, mt.allow_custom_tags ? 1 : 0, mt.color || '#6366f1')
-        mtId = r.lastInsertRowid
-      }
-      db.prepare('DELETE FROM timestamp_tags WHERE media_type_id=?').run(mtId)
-      for (const tag of (mt.tags || [])) {
-        db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)').run(mtId, tag.label, tag.color || '#6366f1', tag.description || '')
-      }
-      db.prepare('DELETE FROM workspace_tabs WHERE media_type_id=?').run(mtId)
-      for (let i = 0; i < (mt.workspace_tabs || []).length; i++) {
-        const tab = mt.workspace_tabs[i]
-        let refId = null
-        if (tab.tab_type === 'form' && tab.ref_name) {
-          refId = db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, tab.ref_name)?.id || null
-        } else if (tab.tab_type === 'instruction' && tab.ref_name) {
-          refId = db.prepare('SELECT id FROM instructions WHERE project_id=? AND name=?').get(projectId, tab.ref_name)?.id || null
-        }
-        if (refId != null) {
-          db.prepare('INSERT INTO workspace_tabs (media_type_id, tab_type, ref_id, label, sort_order) VALUES (?,?,?,?,?)').run(mtId, tab.tab_type, refId, tab.label, i)
-        }
-      }
-    }
-
-    for (const enc of (configData.encounters || [])) {
-      let localEnc = enc.sync_id
-        ? db.prepare('SELECT id FROM encounters WHERE project_id=? AND sync_id=?').get(projectId, enc.sync_id)
-        : null
-      if (!localEnc) {
-        localEnc = db.prepare('SELECT id FROM encounters WHERE project_id=? AND name=?').get(projectId, enc.name)
-      }
-      if (localEnc) {
-        db.prepare('UPDATE encounters SET name=?, sync_id=COALESCE(?,sync_id) WHERE id=?')
-          .run(enc.name, enc.sync_id || null, localEnc.id)
-      } else {
-        const r = db.prepare("INSERT INTO encounters (project_id, name, folder_path, sync_id) VALUES (?,?,?,?)")
-          .run(projectId, enc.name, '', enc.sync_id || crypto.randomUUID())
-        localEnc = { id: r.lastInsertRowid }
-      }
-      for (const media of (enc.media || [])) {
-        let localMedia = media.sync_id
-          ? db.prepare('SELECT id FROM media_files WHERE sync_id=?').get(media.sync_id)
-          : null
-        if (!localMedia) {
-          localMedia = db.prepare('SELECT id FROM media_files WHERE encounter_id=? AND name=?').get(localEnc.id, media.name)
-        }
-        const mt = media.media_type_name
-          ? db.prepare('SELECT id FROM media_types WHERE project_id=? AND name=?').get(projectId, media.media_type_name)
-          : null
-        if (!localMedia) {
-          db.prepare("INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id) VALUES (?,?,?,?,?,?)")
-            .run(localEnc.id, media.name, '', media.file_type || 'video', mt?.id || null, media.sync_id || crypto.randomUUID())
-        } else {
-          // Update encounter_id (moves), name, media type, sync_id — but NOT file_path
-          db.prepare('UPDATE media_files SET encounter_id=?, name=?, media_type_id=?, sync_id=COALESCE(?,sync_id) WHERE id=?')
-            .run(localEnc.id, media.name, mt?.id || null, media.sync_id || null, localMedia.id)
-        }
-      }
-    }
-
-    // Delete local encounters not present in config
-    const configSyncIds = (configData.encounters || []).map(e => e.sync_id).filter(Boolean)
-    const configNames = (configData.encounters || []).map(e => e.name)
-    const localEncs = db.prepare('SELECT id, sync_id, name FROM encounters WHERE project_id=?').all(projectId)
-    for (const localEnc of localEncs) {
-      const inConfig = localEnc.sync_id
-        ? configSyncIds.includes(localEnc.sync_id)
-        : configNames.includes(localEnc.name)
-      if (!inConfig) {
-        const fileIds = db.prepare('SELECT id FROM media_files WHERE encounter_id=?').all(localEnc.id).map(f => f.id)
-        for (const fid of fileIds) {
-          db.prepare('DELETE FROM timestamps WHERE review_id IN (SELECT id FROM reviews WHERE media_file_id=?)').run(fid)
-          db.prepare('DELETE FROM form_responses WHERE review_id IN (SELECT id FROM reviews WHERE media_file_id=?)').run(fid)
-          db.prepare('DELETE FROM reviews WHERE media_file_id=?').run(fid)
-        }
-        db.prepare('DELETE FROM media_files WHERE encounter_id=?').run(localEnc.id)
-        db.prepare('DELETE FROM encounters WHERE id=?').run(localEnc.id)
-      }
-    }
-
-    // Delete local media files not present in config
-    const configMediaSyncIds = (configData.encounters || []).flatMap(e => (e.media || []).map(m => m.sync_id)).filter(Boolean)
-    const remainingFiles = db.prepare(`
-      SELECT mf.id, mf.sync_id, mf.name, e.name as enc_name FROM media_files mf
-      JOIN encounters e ON mf.encounter_id = e.id WHERE e.project_id=?
-    `).all(projectId)
-    for (const f of remainingFiles) {
-      const encInConfig = (configData.encounters || []).find(e => e.name === f.enc_name || configSyncIds.includes(f.sync_id))
-      if (!encInConfig) continue
-      const mediaInConfig = f.sync_id
-        ? configMediaSyncIds.includes(f.sync_id)
-        : (encInConfig.media || []).some(m => m.name === f.name)
-      if (!mediaInConfig) {
-        db.prepare('DELETE FROM timestamps WHERE review_id IN (SELECT id FROM reviews WHERE media_file_id=?)').run(f.id)
-        db.prepare('DELETE FROM form_responses WHERE review_id IN (SELECT id FROM reviews WHERE media_file_id=?)').run(f.id)
-        db.prepare('DELETE FROM reviews WHERE media_file_id=?').run(f.id)
-        db.prepare('DELETE FROM media_files WHERE id=?').run(f.id)
-      }
-    }
-  })
-  tx()
+  } else if (localVersion > cloudVersion) {
+    const configData = buildConfigExport(db, projectId)
+    await adapter.writeFile(folderId, 'project-config.json', JSON.stringify(configData, null, 2))
+    await adapter.writeFile(folderId, 'manifest.json', JSON.stringify(buildManifest(db, projectId)))
+  }
 }
 
 // ─── Local folder sync ────────────────────────────────────────────────────────
-
 
 async function doLocalSync(db, projectId, syncFolder, uuid, name) {
   fs.mkdirSync(path.join(syncFolder, 'reviews'), { recursive: true })
@@ -636,33 +543,11 @@ async function doLocalSync(db, projectId, syncFolder, uuid, name) {
     }
   }
 
-  // 2. Config — check manifest first (cheap), pull if cloud is newer, push if local is newer
-  const localVersion = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)?.config_version || 0
-  const manifest = readLocalManifest(syncFolder)
-  const folderVersion = manifest?.config_version || 0
-  const configPath = path.join(syncFolder, 'project-config.json')
-
-  if (folderVersion > localVersion) {
-    // Cloud is newer — pull it
-    if (fs.existsSync(configPath)) {
-      try {
-        const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'))
-        if ((configData.config_version || 0) > localVersion) {
-          replaceStructureFromConfig(db, projectId, configData)
-        }
-      } catch (e) {
-        console.error('[sync] config replace failed:', e.message)
-      }
-    }
-  } else if (localVersion > folderVersion) {
-    // Local is newer — push it (this machine made structural changes)
-    try {
-      const configData = buildConfigExport(db, projectId)
-      fs.writeFileSync(configPath, JSON.stringify(configData, null, 2))
-      fs.writeFileSync(path.join(syncFolder, 'manifest.json'), JSON.stringify(buildManifest(db, projectId)))
-    } catch (e) {
-      console.error('[sync] failed to push config:', e.message)
-    }
+  // 2. Config
+  try {
+    syncConfigLocal(db, projectId, syncFolder)
+  } catch (e) {
+    console.error('[sync] config sync failed:', e.message)
   }
 
   // 3. Peer reviews
@@ -681,7 +566,7 @@ async function doLocalSync(db, projectId, syncFolder, uuid, name) {
   const ownReviews = buildReviewExport(db, projectId, uuid, name)
   fs.writeFileSync(path.join(reviewsDir, `${uuid}.json`), JSON.stringify(ownReviews, null, 2))
 
-  // 6. Write merged tombstones
+  // 5. Write merged tombstones
   fs.writeFileSync(tombstonePath, JSON.stringify({ tombstones: mergedTombstones }, null, 2))
 
   markSynced(projectId)
@@ -692,8 +577,6 @@ async function doLocalSync(db, projectId, syncFolder, uuid, name) {
 async function doCloudSync(db, projectId, provider, folderId, uuid, name) {
   const { getAdapter } = require('./cloud/cloudSync')
   const adapter = getAdapter(provider)
-
-  const localVersion = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)?.config_version || 0
 
   // Ensure reviews subfolder exists; list root folder files once for all lookups
   const [reviewsFolderId, allFiles] = await Promise.all([
@@ -719,35 +602,11 @@ async function doCloudSync(db, projectId, provider, folderId, uuid, name) {
     }
   }
 
-  // 2. Config — check manifest first (cheap), pull if cloud newer, push if local newer
-  const manifestFile = allFiles.find(f => f.name === 'manifest.json')
-  let cloudVersion = 0
-  if (manifestFile) {
-    try { cloudVersion = JSON.parse(await adapter.readFile(manifestFile.id)).config_version || 0 } catch {}
-  }
-
-  if (cloudVersion > localVersion) {
-    // Cloud is newer — pull it
-    const configFile = allFiles.find(f => f.name === 'project-config.json')
-    if (configFile) {
-      try {
-        const configData = JSON.parse(await adapter.readFile(configFile.id))
-        if ((configData.config_version || 0) > localVersion) {
-          replaceStructureFromConfig(db, projectId, configData)
-        }
-      } catch (e) {
-        console.error('[sync] cloud config replace failed:', e.message)
-      }
-    }
-  } else if (localVersion > cloudVersion) {
-    // Local is newer — push it (this machine made structural changes)
-    try {
-      const configData = buildConfigExport(db, projectId)
-      await adapter.writeFile(folderId, 'project-config.json', JSON.stringify(configData, null, 2))
-      await adapter.writeFile(folderId, 'manifest.json', JSON.stringify(buildManifest(db, projectId)))
-    } catch (e) {
-      console.error('[sync] failed to push config:', e.message)
-    }
+  // 2. Config
+  try {
+    await syncConfigCloud(db, projectId, adapter, folderId, allFiles)
+  } catch (e) {
+    console.error('[sync] cloud config sync failed:', e.message)
   }
 
   // 3. Peer reviews
@@ -776,8 +635,7 @@ async function doCloudSync(db, projectId, provider, folderId, uuid, name) {
 
 function buildExport(db, projectId) {
   const project = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId)
-  let keybinds = []
-  try { keybinds = JSON.parse(project.keybinds || '[]') } catch {}
+  const keybinds = safeJsonParse(project.keybinds, [])
 
   const forms = db.prepare('SELECT * FROM forms WHERE project_id=?').all(projectId).map(f => ({
     name: f.name,
@@ -1021,12 +879,14 @@ function getLastSyncAt(projectId) { return lastSyncAt[projectId] || null }
 function markSynced(projectId) { lastSyncAt[projectId] = Date.now() }
 
 module.exports = {
+  safeJsonParse,
   scheduleSync, scheduleSyncForReview,
+  bumpConfigVersion, bumpAndSync,
   buildExport, mergeImport, createFromImport,
   buildConfigExport, buildReviewExport,
   mergeConfigImport, mergeReviewFile,
   replaceStructureFromConfig,
-  bumpConfigVersion,
+  syncConfigLocal, syncConfigCloud,
   buildManifest, readLocalManifest,
   doLocalSync, doCloudSync,
   getLastSyncAt, markSynced,

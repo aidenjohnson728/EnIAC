@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { ChevronLeft, Plus, FolderOpen, ChevronRight, Trash2, Copy, Edit2, Check, Lock, Unlock, Cloud, HardDrive, X, RefreshCw, AlertTriangle, User } from 'lucide-react'
 import { api } from '../lib/api'
@@ -7,7 +7,7 @@ import MediaTypeEditor from '../components/setup/MediaTypeEditor'
 import InstructionEditor from '../components/setup/InstructionEditor'
 import Modal from '../components/ui/Modal'
 
-const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Media Folder', 'Media Files', 'Sync', 'Keybinds', 'Access', 'Deleted Reviews']
+const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Deleted Reviews']
 
 export default function SetupPage() {
   const { projectId } = useParams()
@@ -276,6 +276,20 @@ export default function SetupPage() {
     load()
   }
 
+  async function handleCreateMediaFile(encounterId, name) {
+    await api.createMediaFile(projectId, encounterId, name)
+    load()
+  }
+
+  async function handleBatchCreate(names, slots) {
+    await api.batchCreateEncounters(projectId, names, slots)
+    load()
+  }
+
+  async function handleExportStructure() {
+    await api.exportStructure(projectId)
+  }
+
   async function handleScanFolder() {
     if (!mediaFolder) return
     setSaving(true)
@@ -511,7 +525,7 @@ export default function SetupPage() {
             />
           )}
 
-          {section === 5 && (
+          {section === 4 && (
             <MediaFilesSection
               encounters={encounters}
               mediaTypes={mediaTypes}
@@ -519,6 +533,9 @@ export default function SetupPage() {
               projectId={projectId}
               onReload={load}
               onTypeChange={load}
+              onAddFile={handleCreateMediaFile}
+              onBatchCreate={handleBatchCreate}
+              onExportStructure={handleExportStructure}
             />
           )}
 
@@ -658,9 +675,9 @@ export default function SetupPage() {
             </div>
           )}
 
-          {section === 4 && (
+          {section === 5 && (
             <div style={{ maxWidth: 600 }}>
-              <h2 style={{ marginBottom: 6 }}>Media Folder</h2>
+              <h2 style={{ marginBottom: 6 }}>Files</h2>
               <p className="text-secondary" style={{ marginBottom: 24, fontSize: 13 }}>
                 Link your local media files to this project. The app reads files directly — nothing is copied or uploaded.
               </p>
@@ -975,12 +992,19 @@ function DeletedReviewsSection({ projectId }) {
   )
 }
 
-function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload, onTypeChange }) {
+function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload, onTypeChange, onAddFile, onBatchCreate, onExportStructure }) {
   const [renaming, setRenaming] = useState(null) // { type: 'encounter'|'file', id, projectId, name }
   const [deleteTarget, setDeleteTarget] = useState(null) // { type, id, name, reviewCount }
   const [deleteLoading, setDeleteLoading] = useState(false)
   const [showAddEncounter, setShowAddEncounter] = useState(false)
   const [newEncounterName, setNewEncounterName] = useState('')
+  const [showAddFile, setShowAddFile] = useState(false)
+  const [addFileEncounterId, setAddFileEncounterId] = useState(null)
+  const [newFileName, setNewFileName] = useState('')
+  const [showBatchAdd, setShowBatchAdd] = useState(false)
+  const [importPreview, setImportPreview] = useState(null)
+  const [importingFile, setImportingFile] = useState(false)
+  const [applyingImport, setApplyingImport] = useState(false)
   const isOwner = !locked
 
   async function handleTypeChange(mediaFile, newVal) {
@@ -1027,6 +1051,35 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
     onReload()
   }
 
+  async function handleAddFile() {
+    if (!newFileName.trim() || !addFileEncounterId) return
+    await onAddFile(addFileEncounterId, newFileName.trim())
+    setNewFileName('')
+    setShowAddFile(false)
+    setAddFileEncounterId(null)
+  }
+
+  async function handleImportFromFile() {
+    setImportingFile(true)
+    const preview = await api.previewImport(projectId)
+    setImportingFile(false)
+    if (preview) setImportPreview(preview)
+  }
+
+  async function handleApplyImport() {
+    if (!importPreview) return
+    setApplyingImport(true)
+    try {
+      await api.applyImport(projectId, importPreview.toCreate, importPreview.toAddFiles)
+      setImportPreview(null)
+      onReload()
+    } catch (err) {
+      console.error('Import failed:', err)
+    } finally {
+      setApplyingImport(false)
+    }
+  }
+
   async function handleMove(mediaFileId, newEncounterId) {
     await api.moveMediaFile(projectId, mediaFileId, parseInt(newEncounterId))
     onReload()
@@ -1041,20 +1094,35 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
   return (
     <div style={{ maxWidth: 700 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-        <h2 style={{ margin: 0 }}>Media Files</h2>
-        {isOwner && (
-          <button className="btn btn-secondary btn-sm" onClick={() => { setNewEncounterName(''); setShowAddEncounter(true) }}>+ Add Encounter</button>
-        )}
+        <h2 style={{ margin: 0 }}>Encounters</h2>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {isOwner && (
+            <>
+              <button className="btn btn-ghost btn-sm" onClick={onExportStructure} title="Export encounter/file structure to Excel">
+                Export Excel
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={handleImportFromFile} disabled={importingFile} title="Import encounter names from a spreadsheet or CSV">
+                {importingFile ? 'Reading…' : 'Import from File'}
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setShowBatchAdd(true)}>
+                Batch Add
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={() => { setNewEncounterName(''); setShowAddEncounter(true) }}>
+                + Add Encounter
+              </button>
+            </>
+          )}
+        </div>
       </div>
       <p className="text-secondary" style={{ marginBottom: 20, fontSize: 13 }}>
         {isOwner
-          ? 'Manage encounters and files. Click a name to rename. Use the encounter selector to move a file. Use Media Folder → Scan to add new encounters from disk.'
-          : 'Assign a media type to each file. The type determines how many reviews are required and which tags are available.'}
+          ? 'Manage encounters and media file slots. Click a name to rename. Use the encounter selector to move a file. Use Files → Scan to import encounters from a folder on disk.'
+          : 'Assign a media type to each file slot. The type determines how many reviews are required and which tags are available.'}
       </p>
 
       {encounters.length === 0 ? (
         <div className="empty-state" style={{ background: 'var(--bg-secondary)', borderRadius: 8, padding: '40px 20px' }}>
-          <p className="text-sm">{isOwner ? 'No encounters yet. Scan a media folder or click "+ Add Encounter" above.' : 'No encounters yet.'}</p>
+          <p className="text-sm">{isOwner ? 'No encounters yet. Use "+ Add Encounter", "Batch Add", or scan a folder in the Files tab.' : 'No encounters yet.'}</p>
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1076,11 +1144,18 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
                   >{enc.name}</span>
                 )}
                 {isOwner && (
-                  <button className="btn btn-ghost btn-icon btn-sm" title="Delete encounter"
-                    onClick={() => handleDeleteClick('encounter', enc)}
-                    style={{ color: 'var(--danger)', opacity: 0.6, flexShrink: 0 }}>
-                    <TrashIcon />
-                  </button>
+                  <>
+                    <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
+                      onClick={() => { setNewFileName(''); setAddFileEncounterId(enc.id); setShowAddFile(true) }}
+                      title="Add media file slot to this encounter">
+                      + File
+                    </button>
+                    <button className="btn btn-ghost btn-icon btn-sm" title="Delete encounter"
+                      onClick={() => handleDeleteClick('encounter', enc)}
+                      style={{ color: 'var(--danger)', opacity: 0.6, flexShrink: 0 }}>
+                      <TrashIcon />
+                    </button>
+                  </>
                 )}
               </div>
 
@@ -1179,6 +1254,51 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
             onChange={e => setNewEncounterName(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleAddEncounter()}
           />
+        </div>
+      </Modal>
+
+      {showBatchAdd && (
+        <BatchAddModal
+          mediaTypes={mediaTypes}
+          onClose={() => setShowBatchAdd(false)}
+          onConfirm={async (names, slots) => { setShowBatchAdd(false); await onBatchCreate(names, slots) }}
+        />
+      )}
+
+      {importPreview && (
+        <ImportStructureModal
+          preview={importPreview}
+          applying={applyingImport}
+          onClose={() => setImportPreview(null)}
+          onConfirm={handleApplyImport}
+        />
+      )}
+
+      <Modal
+        open={showAddFile}
+        onClose={() => setShowAddFile(false)}
+        title="Add Media File Slot"
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setShowAddFile(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleAddFile} disabled={!newFileName.trim()}>Add</button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            Creates an empty media slot. Link it to a file on disk in the Files tab or from the project page.
+          </p>
+          <div className="form-field">
+            <label>File Name</label>
+            <input
+              autoFocus
+              placeholder="e.g. consult_video.mp4"
+              value={newFileName}
+              onChange={e => setNewFileName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAddFile()}
+            />
+          </div>
         </div>
       </Modal>
     </div>
@@ -1309,8 +1429,8 @@ function OverviewSection() {
         {block('📋', '1 · Forms', 'Build the survey forms coders fill out for each review. Forms are made of sections and questions (text, number, multiple choice, etc.). Multiple forms can be assigned to one media type.')}
         {block('📄', '2 · Instructions', 'Write guidance pages in Markdown, or attach a PDF. These appear as tabs in the reviewer workspace so coders can reference them while watching a video.')}
         {block('🎬', '3 · Media Types', 'Define categories of media — e.g. "Consultation Video" or "Debrief Audio". Each type sets which forms and instructions appear in the workspace, what timestamp tags are available, how many reviews are required per file, and the review layout.')}
-        {block('📁', '4 · Media Folder', 'Point to the folder on your machine that contains encounter subfolders. The app scans it and creates encounters automatically. Files are never copied or uploaded — the app reads them directly from their original location.')}
-        {block('🎥', '5 · Media Files', 'After scanning, assign a media type to each video or PDF. The type determines the workspace the coder sees when they open that file for review.')}
+        {block('📁', '4 · Encounters', 'Create and manage encounters and their media file slots. Add encounters manually, scan a folder to import structure automatically, or batch-add many at once. Assign media types to each file slot here.')}
+        {block('🔗', '5 · Files', 'Link your local copies of media files to this project. Set a base folder and auto-link, or locate individual files manually. Everyone must do this on their own machine since file paths are device-specific.')}
         {block('🔄', '6 · Sync', 'Connect to a shared folder (OneDrive, Dropbox, Google Drive, or a network share). Each reviewer\'s data is saved as a separate file — no conflicts. Sync also distributes any changes you make here in Settings to all teammates.')}
         {block('⌨️', '7 · Keybinds', 'Optional keyboard shortcuts for adding timestamps while a video plays. Useful for frequently used tags.')}
         {block('🔒', '8 · Access', 'Set an owner password to prevent coders from accidentally changing project settings. Anyone with the password can unlock.')}
@@ -1674,6 +1794,277 @@ function SetupSection({ title, description, items, onNew, onEdit, onDuplicate, o
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function ImportStructureModal({ preview, applying, onClose, onConfirm }) {
+  const { toCreate = [], toAddFiles = [] } = preview
+  const totalNewEnc = toCreate.length
+  const totalNewFiles = toCreate.reduce((s, e) => s + e.files.length, 0)
+  const totalAddFiles = toAddFiles.reduce((s, e) => s + e.files.length, 0)
+  const hasChanges = totalNewEnc > 0 || totalAddFiles > 0
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      <div className="card" style={{ width: 540, maxHeight: '80vh', display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: '18px 22px 14px', borderBottom: '1px solid var(--border)' }}>
+          <h3 style={{ margin: '0 0 2px' }}>Import Structure Preview</h3>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+            Only new encounters and missing media files will be created. Existing records are untouched.
+          </p>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 22px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {!hasChanges && (
+            <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+              Everything in this file already exists in the project. Nothing to import.
+            </div>
+          )}
+
+          {toCreate.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+                New Encounters ({toCreate.length})
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {toCreate.map((enc, i) => (
+                  <div key={i} style={{ padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 7, background: 'var(--bg)' }}>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{enc.encName}</div>
+                    {enc.files.length > 0 && (
+                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3 }}>
+                        {enc.files.map(f => f.fileName + (f.mediaTypeName ? ` (${f.mediaTypeName})` : '')).join(', ')}
+                      </div>
+                    )}
+                    {enc.files.length === 0 && (
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 3 }}>No media files</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {toAddFiles.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+                Files Added to Existing Encounters ({totalAddFiles})
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {toAddFiles.map((enc, i) => (
+                  <div key={i} style={{ padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 7, background: 'var(--bg)' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 3 }}>{enc.encName}</div>
+                    <div style={{ fontSize: 12 }}>
+                      {enc.files.map(f => f.fileName + (f.mediaTypeName ? ` (${f.mediaTypeName})` : '')).join(', ')}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding: '14px 22px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+          {hasChanges && (
+            <span style={{ flex: 1, fontSize: 12, color: 'var(--text-muted)' }}>
+              {[totalNewEnc > 0 && `${totalNewEnc} encounter${totalNewEnc !== 1 ? 's' : ''}`, (totalNewFiles + totalAddFiles) > 0 && `${totalNewFiles + totalAddFiles} media file${totalNewFiles + totalAddFiles !== 1 ? 's' : ''}`].filter(Boolean).join(' + ')} will be created
+            </span>
+          )}
+          <button className="btn btn-secondary" onClick={onClose} disabled={applying}>Cancel</button>
+          <button className="btn btn-primary" onClick={onConfirm} disabled={!hasChanges || applying}>
+            {applying ? 'Creating…' : hasChanges ? 'Import' : 'Nothing to Import'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BatchAddModal({ mediaTypes, onClose, onConfirm }) {
+  const [mode, setMode] = useState('sequential')
+  const [prefix, setPrefix] = useState('Encounter')
+  const [startNum, setStartNum] = useState(1)
+  const [count, setCount] = useState(10)
+  const [customNames, setCustomNames] = useState('')
+  const [slots, setSlots] = useState(() =>
+    mediaTypes.map(t => ({ mediaTypeId: t.id, typeName: t.name, perEncounter: 1, enabled: true }))
+  )
+
+  const names = useMemo(() => {
+    if (mode === 'custom') return customNames.split('\n').map(n => n.trim()).filter(Boolean)
+    const pad = String(startNum + count - 1).length
+    return Array.from({ length: count }, (_, i) =>
+      `${prefix} ${String(startNum + i).padStart(pad, '0')}`
+    )
+  }, [mode, prefix, startNum, count, customNames])
+
+  const expandedSlots = useMemo(() => {
+    const result = []
+    for (const s of slots) {
+      if (!s.enabled) continue
+      const n = Math.max(1, s.perEncounter)
+      for (let i = 1; i <= n; i++) {
+        result.push({ name: n === 1 ? s.typeName : `${s.typeName} ${i}`, mediaTypeId: s.mediaTypeId })
+      }
+    }
+    return result
+  }, [slots])
+
+  function updateSlot(idx, changes) {
+    setSlots(prev => prev.map((s, i) => i === idx ? { ...s, ...changes } : s))
+  }
+
+  const canCreate = names.length > 0
+
+  const nameSummary = names.length === 0
+    ? 'No encounters to create'
+    : names.length <= 4
+      ? names.join(', ')
+      : `${names.slice(0, 3).join(', ')} … ${names[names.length - 1]}`
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      <div className="card" style={{ width: 520, maxHeight: '85vh', display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
+
+        {/* Header */}
+        <div style={{ padding: '18px 22px 14px', borderBottom: '1px solid var(--border)' }}>
+          <h3 style={{ margin: '0 0 2px' }}>Batch Add Encounters</h3>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+            Create multiple encounters at once. File slots will be the same for each.
+          </p>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: 22 }}>
+
+          {/* ── Step 1: Names ── */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+              Step 1 · Encounter Names
+            </div>
+
+            {/* Mode toggle */}
+            <div style={{ display: 'flex', gap: 0, border: '1px solid var(--border)', borderRadius: 7, overflow: 'hidden', width: 'fit-content', marginBottom: 14 }}>
+              {[['sequential', 'Sequential'], ['custom', 'Custom list']].map(([id, label]) => (
+                <button key={id} onClick={() => setMode(id)} style={{
+                  padding: '5px 14px', fontSize: 12, fontWeight: mode === id ? 600 : 400,
+                  border: 'none', cursor: 'pointer', fontFamily: 'var(--font)',
+                  background: mode === id ? 'var(--accent)' : 'transparent',
+                  color: mode === id ? '#fff' : 'var(--text-secondary)',
+                }}>{label}</button>
+              ))}
+            </div>
+
+            {mode === 'sequential' ? (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 100px', gap: 10 }}>
+                <div className="form-field" style={{ margin: 0 }}>
+                  <label style={{ fontSize: 11 }}>Prefix</label>
+                  <input value={prefix} onChange={e => setPrefix(e.target.value)} placeholder="Patient" />
+                </div>
+                <div className="form-field" style={{ margin: 0 }}>
+                  <label style={{ fontSize: 11 }}>Start #</label>
+                  <input type="number" min={1} value={startNum} onChange={e => setStartNum(Math.max(1, parseInt(e.target.value) || 1))} />
+                </div>
+                <div className="form-field" style={{ margin: 0 }}>
+                  <label style={{ fontSize: 11 }}>Count</label>
+                  <input type="number" min={1} max={500} value={count} onChange={e => setCount(Math.min(500, Math.max(1, parseInt(e.target.value) || 1)))} />
+                </div>
+              </div>
+            ) : (
+              <div className="form-field" style={{ margin: 0 }}>
+                <label style={{ fontSize: 11 }}>One name per line</label>
+                <textarea
+                  value={customNames}
+                  onChange={e => setCustomNames(e.target.value)}
+                  placeholder={"Patient 001\nPatient 002\nPatient 003"}
+                  rows={5}
+                  style={{ fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
+                />
+              </div>
+            )}
+
+            {names.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-secondary)', borderRadius: 6, padding: '6px 10px' }}>
+                <strong>{names.length} encounter{names.length !== 1 ? 's' : ''}</strong>: {nameSummary}
+              </div>
+            )}
+          </div>
+
+          {/* ── Step 2: Media slots ── */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+              Step 2 · Media Slots Per Encounter
+            </div>
+            {slots.length === 0 ? (
+              <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                No media types defined yet. You can add slots later from the Encounters tab after creating media types in Settings → Media Types.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {slots.map((s, i) => (
+                  <label key={s.mediaTypeId} style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8,
+                    background: 'var(--bg)', cursor: 'pointer',
+                    opacity: s.enabled ? 1 : 0.45,
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={s.enabled}
+                      onChange={e => updateSlot(i, { enabled: e.target.checked })}
+                      style={{ flexShrink: 0, width: 15, height: 15 }}
+                    />
+                    <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{s.typeName}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        {s.perEncounter === 1 ? '1 slot' : `${s.perEncounter} slots`}
+                      </span>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                        <button
+                          type="button"
+                          onClick={e => { e.preventDefault(); if (s.enabled) updateSlot(i, { perEncounter: Math.min(10, s.perEncounter + 1) }) }}
+                          disabled={!s.enabled || s.perEncounter >= 10}
+                          style={{ width: 22, height: 16, padding: 0, border: '1px solid var(--border)', borderRadius: '3px 3px 0 0', background: 'var(--bg-secondary)', cursor: 'pointer', fontSize: 10, lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        >▲</button>
+                        <button
+                          type="button"
+                          onClick={e => { e.preventDefault(); if (s.enabled) updateSlot(i, { perEncounter: Math.max(1, s.perEncounter - 1) }) }}
+                          disabled={!s.enabled || s.perEncounter <= 1}
+                          style={{ width: 22, height: 16, padding: 0, border: '1px solid var(--border)', borderTop: 'none', borderRadius: '0 0 3px 3px', background: 'var(--bg-secondary)', cursor: 'pointer', fontSize: 10, lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        >▼</button>
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+            {expandedSlots.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-secondary)', borderRadius: 6, padding: '6px 10px' }}>
+                Each encounter will have <strong>{expandedSlots.length} slot{expandedSlots.length !== 1 ? 's' : ''}</strong>: {expandedSlots.map(s => s.name).join(', ')}
+              </div>
+            )}
+            {expandedSlots.length === 0 && slots.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                No slots selected — encounters will be created with no media files attached.
+              </div>
+            )}
+          </div>
+
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: '14px 22px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+          {canCreate && (
+            <span style={{ flex: 1, fontSize: 12, color: 'var(--text-muted)' }}>
+              {names.length} encounter{names.length !== 1 ? 's' : ''} × {expandedSlots.length} slot{expandedSlots.length !== 1 ? 's' : ''} = {names.length * expandedSlots.length} media records
+            </span>
+          )}
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={() => onConfirm(names, expandedSlots)} disabled={!canCreate}>
+            Create {names.length > 0 ? `${names.length} Encounter${names.length !== 1 ? 's' : ''}` : ''}
+          </button>
+        </div>
+
+      </div>
     </div>
   )
 }

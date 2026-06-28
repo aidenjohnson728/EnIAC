@@ -13,17 +13,34 @@ export default function FormRenderer({ schema, responses, onSave, readOnly }) {
   const [activeSection, setActiveSection] = useState(null)
   const sectionRefs = useRef({})
 
-  useEffect(() => { setValues(responses || {}) }, [responses])
-
   const valuesRef = useRef(values)
-  useEffect(() => { valuesRef.current = values }, [values])
+  useEffect(() => {
+    const v = responses || {}
+    setValues(v)
+    valuesRef.current = v
+  }, [responses])
+
+  const saveTimerRef = useRef(null)
+  const onSaveRef = useRef(onSave)
+  useEffect(() => { onSaveRef.current = onSave }, [onSave])
 
   const handleChange = useCallback((qId, val) => {
     const next = { ...valuesRef.current, [qId]: val }
     valuesRef.current = next
     setValues(next)
-    onSave(next)
-  }, [onSave])
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null
+      onSaveRef.current(next)
+    }, 300)
+  }, [])
+
+  useEffect(() => () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      onSaveRef.current(valuesRef.current)
+    }
+  }, [])
 
   function jumpTo(sectionId) {
     setActiveSection(sectionId)

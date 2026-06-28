@@ -7,12 +7,22 @@ const { getSettings, saveSettings, getProjectName, getOrCreateUUID, setProjectNa
 const {
   buildExport, mergeImport, createFromImport,
   doLocalSync, doCloudSync,
-  mergeConfigImport, bumpConfigVersion,
-  scheduleSync, markSynced, getLastSyncAt,
+  syncConfigLocal, syncConfigCloud,
+  mergeConfigImport, bumpConfigVersion, bumpAndSync,
+  markSynced, getLastSyncAt,
+  safeJsonParse,
 } = require('../sync')
 
 // In-memory unlock sessions — cleared on app restart
 const unlockedProjects = new Set()
+
+// PI for a project means either: unlocked this session, or owns it persistently via settings.
+// Use this instead of unlockedProjects.has() for any PI-gated logic.
+function isOwner(projectId) {
+  if (unlockedProjects.has(Number(projectId))) return true
+  const s = getSettings()
+  return (s.owner_projects || []).includes(String(projectId))
+}
 
 function hashPassword(pw) {
   return createHash('sha256').update(pw).digest('hex')
@@ -29,7 +39,7 @@ module.exports = function (ipcMain) {
     const db = getDb()
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
     if (!project) return null
-    try { project.keybinds = JSON.parse(project.keybinds || '[]') } catch { project.keybinds = [] }
+    project.keybinds = safeJsonParse(project.keybinds, [])
     project.has_password = !!project.owner_password_hash
     project.is_unlocked = !project.owner_password_hash || unlockedProjects.has(id)
     delete project.owner_password_hash
@@ -44,8 +54,7 @@ module.exports = function (ipcMain) {
     const db = getDb()
     const hash = password ? hashPassword(password) : null
     db.prepare('UPDATE projects SET owner_password_hash=? WHERE id=?').run(hash, projectId)
-    bumpConfigVersion(db, projectId)
-    scheduleSync(projectId)
+    bumpAndSync(db, projectId)
     if (hash) {
       unlockedProjects.add(projectId)
       // Persist ownership so PI status survives app restarts
@@ -97,7 +106,7 @@ module.exports = function (ipcMain) {
     db.prepare(
       "UPDATE projects SET name=?, description=?, media_folder=?, keybinds=?, sync_folder=?, owner_name=?, updated_at=datetime('now') WHERE id=?"
     ).run(data.name, data.description, data.media_folder, keybinds, data.sync_folder || null, data.owner_name || null, id)
-    bumpConfigVersion(db, id); scheduleSync(id)
+    bumpAndSync(db, id)
     return true
   })
 
@@ -353,7 +362,7 @@ module.exports = function (ipcMain) {
         const tab = data.workspace_tabs[i]
         insertTab.run(data.id, tab.tab_type, tab.ref_id, tab.label, i)
       }
-      bumpConfigVersion(db, projectId); scheduleSync(projectId)
+      bumpAndSync(db, projectId)
       return data.id
     } else {
       const r = db.prepare('INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color) VALUES (?,?,?,?,?)')
@@ -366,7 +375,7 @@ module.exports = function (ipcMain) {
         const tab = data.workspace_tabs[i]
         insertTab.run(mediaTypeId, tab.tab_type, tab.ref_id, tab.label, i)
       }
-      bumpConfigVersion(db, projectId); scheduleSync(projectId)
+      bumpAndSync(db, projectId)
       return mediaTypeId
     }
   })
@@ -384,7 +393,7 @@ module.exports = function (ipcMain) {
   ipcMain.handle('setup:deleteMediaType', (_, projectId, id) => {
     const db = getDb()
     db.prepare('DELETE FROM media_types WHERE id=?').run(id)
-    bumpConfigVersion(db, projectId); scheduleSync(projectId)
+    bumpAndSync(db, projectId)
     return true
   })
 
@@ -404,11 +413,11 @@ module.exports = function (ipcMain) {
     const schema = typeof data.schema === 'string' ? data.schema : JSON.stringify(data.schema)
     if (data.id) {
       db.prepare("UPDATE forms SET name=?, schema=?, updated_at=datetime('now') WHERE id=?").run(data.name, schema, data.id)
-      bumpConfigVersion(db, projectId); scheduleSync(projectId)
+      bumpAndSync(db, projectId)
       return data.id
     } else {
       const r = db.prepare('INSERT INTO forms (project_id, name, schema) VALUES (?,?,?)').run(projectId, data.name, schema)
-      bumpConfigVersion(db, projectId); scheduleSync(projectId)
+      bumpAndSync(db, projectId)
       return r.lastInsertRowid
     }
   })
@@ -422,7 +431,7 @@ module.exports = function (ipcMain) {
   ipcMain.handle('setup:deleteForm', (_, projectId, id) => {
     const db = getDb()
     db.prepare('DELETE FROM forms WHERE id=?').run(id)
-    bumpConfigVersion(db, projectId); scheduleSync(projectId)
+    bumpAndSync(db, projectId)
     return true
   })
 
@@ -444,12 +453,12 @@ module.exports = function (ipcMain) {
     if (data.id) {
       db.prepare('UPDATE instructions SET name=?, content=?, content_type=?, file_path=? WHERE id=?')
         .run(data.name, data.content || '', data.content_type || 'markdown', data.file_path || null, data.id)
-      bumpConfigVersion(db, projectId); scheduleSync(projectId)
+      bumpAndSync(db, projectId)
       return data.id
     } else {
       const r = db.prepare('INSERT INTO instructions (project_id, name, content, content_type, file_path) VALUES (?,?,?,?,?)')
         .run(projectId, data.name, data.content || '', data.content_type || 'markdown', data.file_path || null)
-      bumpConfigVersion(db, projectId); scheduleSync(projectId)
+      bumpAndSync(db, projectId)
       return r.lastInsertRowid
     }
   })
@@ -457,7 +466,7 @@ module.exports = function (ipcMain) {
   ipcMain.handle('setup:deleteInstruction', (_, projectId, id) => {
     const db = getDb()
     db.prepare('DELETE FROM instructions WHERE id=?').run(id)
-    bumpConfigVersion(db, projectId); scheduleSync(projectId)
+    bumpAndSync(db, projectId)
     return true
   })
 
@@ -587,51 +596,17 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('project:fetchStructure', async (_, projectId) => {
     const db = getDb()
-    const project = db.prepare('SELECT sync_folder, cloud_provider, cloud_folder_id, config_version FROM projects WHERE id=?').get(projectId)
+    const project = db.prepare('SELECT sync_folder, cloud_provider, cloud_folder_id FROM projects WHERE id=?').get(projectId)
     if (!project) return { ok: false, error: 'Project not found' }
-
-    const localVersion = project.config_version || 0
 
     try {
       if (project.sync_folder) {
-        const { readLocalManifest, replaceStructureFromConfig, buildConfigExport, buildManifest } = require('../sync')
-        const manifest = readLocalManifest(project.sync_folder)
-        const folderVersion = manifest?.config_version || 0
-        const configPath = path.join(project.sync_folder, 'project-config.json')
-        if (folderVersion > localVersion) {
-          // Cloud is newer — pull
-          if (fs.existsSync(configPath)) {
-            const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'))
-            if ((configData.config_version || 0) > localVersion) replaceStructureFromConfig(db, projectId, configData)
-          }
-        } else if (localVersion > folderVersion) {
-          // Local is newer — push
-          fs.writeFileSync(configPath, JSON.stringify(buildConfigExport(db, projectId), null, 2))
-          fs.writeFileSync(path.join(project.sync_folder, 'manifest.json'), JSON.stringify(buildManifest(db, projectId)))
-        }
+        syncConfigLocal(db, projectId, project.sync_folder)
       } else if (project.cloud_provider && project.cloud_folder_id) {
         const { getAdapter } = require('../cloud/cloudSync')
-        const { replaceStructureFromConfig, buildConfigExport, buildManifest } = require('../sync')
         const adapter = getAdapter(project.cloud_provider)
         const files = await adapter.listFiles(project.cloud_folder_id)
-        const manifestFile = files.find(f => f.name === 'manifest.json')
-        let cloudVersion = 0
-        if (manifestFile) {
-          try { cloudVersion = JSON.parse(await adapter.readFile(manifestFile.id)).config_version || 0 } catch {}
-        }
-        if (cloudVersion > localVersion) {
-          // Cloud is newer — pull
-          const configFile = files.find(f => f.name === 'project-config.json')
-          if (configFile) {
-            const configData = JSON.parse(await adapter.readFile(configFile.id))
-            if ((configData.config_version || 0) > localVersion) replaceStructureFromConfig(db, projectId, configData)
-          }
-        } else if (localVersion > cloudVersion) {
-          // Local is newer — push
-          const configData = buildConfigExport(db, projectId)
-          await adapter.writeFile(project.cloud_folder_id, 'project-config.json', JSON.stringify(configData, null, 2))
-          await adapter.writeFile(project.cloud_folder_id, 'manifest.json', JSON.stringify(buildManifest(db, projectId)))
-        }
+        await syncConfigCloud(db, projectId, adapter, project.cloud_folder_id, files)
       }
       return { ok: true }
     } catch (e) {
@@ -640,6 +615,6 @@ module.exports = function (ipcMain) {
     }
   })
 
-  // Export unlockedProjects for use in sync.js
   module.exports.unlockedProjects = unlockedProjects
+  module.exports.isOwner = isOwner
 }
