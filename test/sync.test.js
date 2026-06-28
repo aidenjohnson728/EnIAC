@@ -4,6 +4,8 @@ const os = require('os')
 const path = require('path')
 const { test } = require('./_harness')
 const sync = require('../electron/sync')
+const snapshots = require('../electron/services/snapshots')
+const structure = require('../electron/services/structure')
 const {
   makeDb, createProject, addForm, addMediaType, addWorkspaceTab,
   addEncounter, addMedia, addReview,
@@ -392,17 +394,17 @@ test('structure tombstone: a stale config cannot resurrect a tombstoned encounte
 
 // ─── Reviews report workbook (auto-uploaded .xlsx) ──────────────────────────────
 
-test('reviews report: builds a workbook with a per-media-type Reviews sheet incl. form responses', () => {
+test('reviews report: builds readable wide sheets plus normalized research sheets', () => {
   const db = makeDb()
   const p = createProject(db, 'P')
   const formId = addForm(db, p, 'Intake', {
     sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'text', label: 'Outcome' }] }],
-  })
-  const mtId = addMediaType(db, p, 'Video')
+  }, { sync_id: 'form-intake' })
+  const mtId = addMediaType(db, p, 'Video', { sync_id: 'mt-video' })
   addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
-  const enc = addEncounter(db, p, 'Patient 1')
-  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId })
-  const rev = addReview(db, media.id, 'Alice', { status: 'submitted' })
+  const enc = addEncounter(db, p, 'Patient 1', 'enc-patient-1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId, sync_id: 'media-visit' })
+  const rev = addReview(db, media.id, 'Alice', { status: 'submitted', review_sync_id: 'review-1' })
   db.prepare('INSERT INTO form_responses (review_id, form_id, responses) VALUES (?,?,?)')
     .run(rev.id, formId, JSON.stringify({ q1: 'Improved' }))
   db.prepare('INSERT INTO timestamps (review_id, time_seconds, tag_label, notes) VALUES (?,?,?,?)')
@@ -410,6 +412,7 @@ test('reviews report: builds a workbook with a per-media-type Reviews sheet incl
 
   const wb = sync.buildReviewsWorkbook(db, p)
   assert.ok(wb, 'expected a workbook')
+  assert.deepStrictEqual(wb.SheetNames.slice(0, 6), ['README', 'Codebook', 'Reviews', 'Responses_Long', 'Media_Files', 'Timestamps'])
   assert.ok(wb.SheetNames.includes('Video Reviews'), 'has reviews sheet')
   assert.ok(wb.SheetNames.includes('Video Timestamps'), 'has timestamps sheet')
 
@@ -420,6 +423,27 @@ test('reviews report: builds a workbook with a per-media-type Reviews sheet incl
   assert.strictEqual(rows[0]['[Intake] Outcome'], 'Improved')
   const ts = XLSX.utils.sheet_to_json(wb.Sheets['Video Timestamps'])
   assert.strictEqual(ts[0].Time, '1:05')
+
+  const reviews = XLSX.utils.sheet_to_json(wb.Sheets.Reviews)
+  assert.strictEqual(reviews[0]['Review ID'], 'review-1')
+  assert.strictEqual(reviews[0]['Media File ID'], 'media-visit')
+  assert.strictEqual(reviews[0]['Media Type ID'], 'mt-video')
+
+  const responses = XLSX.utils.sheet_to_json(wb.Sheets.Responses_Long)
+  assert.strictEqual(responses.length, 1)
+  assert.strictEqual(responses[0]['Review ID'], 'review-1')
+  assert.strictEqual(responses[0]['Form ID'], 'form-intake')
+  assert.strictEqual(responses[0]['Question ID'], 'q1')
+  assert.strictEqual(responses[0].Value, 'Improved')
+
+  const codebook = XLSX.utils.sheet_to_json(wb.Sheets.Codebook)
+  assert.strictEqual(codebook[0]['Form ID'], 'form-intake')
+  assert.strictEqual(codebook[0]['Question ID'], 'q1')
+  assert.strictEqual(codebook[0]['Column Header'], '[Intake] Outcome')
+
+  const allTs = XLSX.utils.sheet_to_json(wb.Sheets.Timestamps)
+  assert.strictEqual(allTs[0]['Time (seconds)'], 65)
+  assert.strictEqual(allTs[0].Time, '1:05')
   db.close()
 })
 
@@ -435,6 +459,261 @@ test('reviews report: soft-deleted reviews are excluded; no reviews → null wor
   const rev = addReview(db, media.id, 'Bob')
   db.prepare("UPDATE reviews SET deleted_at=? WHERE id=?").run(new Date().toISOString(), rev.id)
   assert.strictEqual(sync.buildReviewsWorkbook(db, p), null, 'only deleted reviews → null')
+  db.close()
+})
+
+test('review snapshots: export preserves old question labels after form edits', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const formId = addForm(db, p, 'Intake', {
+    sections: [{ id: 's1', title: 'Baseline', elements: [{ id: 'q1', type: 'short_answer', label: 'Original label' }] }],
+  }, { sync_id: 'form-intake' })
+  const mtId = addMediaType(db, p, 'Video', { sync_id: 'mt-video' })
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1', 'enc-1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId, sync_id: 'media-1' })
+  const snap = snapshots.buildWorkspaceSnapshot(db, media.id)
+  const rev = addReview(db, media.id, 'Alice', { review_sync_id: 'review-1' })
+  db.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+    .run(JSON.stringify(snap), snap.media_type.sync_id, snap.media_type.version, rev.id)
+  db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+    .run(rev.id, formId, JSON.stringify({ q1: 'answer' }), snap.forms[String(formId)].sync_id, snap.forms[String(formId)].version, JSON.stringify(snap.forms[String(formId)]))
+
+  db.prepare("UPDATE forms SET schema=?, schema_version=schema_version+1, updated_at=datetime('now') WHERE id=?")
+    .run(JSON.stringify({ sections: [{ id: 's1', title: 'Baseline', elements: [{ id: 'q1', type: 'short_answer', label: 'Renamed later' }] }] }), formId)
+
+  const XLSX = require('xlsx')
+  const wb = sync.buildReviewsWorkbook(db, p)
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets.Responses_Long)
+  assert.strictEqual(rows[0]['Question Label'], 'Original label')
+  assert.strictEqual(rows[0].Value, 'answer')
+  db.close()
+})
+
+test('review snapshots: wide sheet + codebook keep answers to questions removed by a later form edit', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const formId = addForm(db, p, 'Intake', {
+    sections: [{ id: 's1', title: 'Baseline', elements: [
+      { id: 'q1', type: 'short_answer', label: 'Outcome' },
+      { id: 'q2', type: 'short_answer', label: 'Dropped question' },
+    ] }],
+  }, { sync_id: 'form-intake' })
+  const mtId = addMediaType(db, p, 'Video', { sync_id: 'mt-video' })
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1', 'enc-1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId, sync_id: 'media-1' })
+  const snap = snapshots.buildWorkspaceSnapshot(db, media.id)
+  const rev = addReview(db, media.id, 'Alice', { review_sync_id: 'review-1' })
+  db.prepare('UPDATE reviews SET workspace_snapshot=? WHERE id=?').run(JSON.stringify(snap), rev.id)
+  db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+    .run(rev.id, formId, JSON.stringify({ q1: 'Improved', q2: 'Old answer' }),
+      snap.forms[String(formId)].sync_id, snap.forms[String(formId)].version, JSON.stringify(snap.forms[String(formId)]))
+
+  // Edit the form to remove q2 entirely.
+  db.prepare("UPDATE forms SET schema=?, schema_version=schema_version+1, updated_at=datetime('now') WHERE id=?")
+    .run(JSON.stringify({ sections: [{ id: 's1', title: 'Baseline', elements: [{ id: 'q1', type: 'short_answer', label: 'Outcome' }] }] }), formId)
+
+  const XLSX = require('xlsx')
+  const wb = sync.buildReviewsWorkbook(db, p)
+
+  const wide = XLSX.utils.sheet_to_json(wb.Sheets['Video Reviews'])
+  assert.strictEqual(wide[0]['[Intake] Outcome'], 'Improved', 'live question still present')
+  assert.strictEqual(wide[0]['[Intake] Dropped question (removed)'], 'Old answer', 'removed question answer is not dropped')
+
+  const codebook = XLSX.utils.sheet_to_json(wb.Sheets.Codebook)
+  const liveRow = codebook.find(r => r['Question ID'] === 'q1')
+  const removedRow = codebook.find(r => r['Question ID'] === 'q2')
+  assert.strictEqual(liveRow['In Current Form'], 'Yes')
+  assert.ok(removedRow, 'codebook documents the removed question')
+  assert.strictEqual(removedRow['In Current Form'], 'No')
+  db.close()
+})
+
+test('structure: deleting a form with responses archives it instead of cascading data loss', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const formId = addForm(db, p, 'Intake', { sections: [] }, { sync_id: 'form-intake' })
+  const mtId = addMediaType(db, p, 'Video')
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId })
+  const rev = addReview(db, media.id, 'Alice')
+  db.prepare('INSERT INTO form_responses (review_id, form_id, responses) VALUES (?,?,?)')
+    .run(rev.id, formId, JSON.stringify({ q1: 'kept' }))
+
+  structure.deleteForm(db, p, formId)
+
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM forms WHERE id=?').get(formId).n, 1)
+  assert.ok(db.prepare('SELECT archived_at FROM forms WHERE id=?').get(formId).archived_at)
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM form_responses WHERE review_id=?').get(rev.id).n, 1)
+  assert.strictEqual(db.prepare("SELECT COUNT(*) n FROM workspace_tabs WHERE tab_type='form' AND ref_id=?").get(formId).n, 0)
+  db.close()
+})
+
+test('version history: form edits can be restored as a new latest version', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const formId = addForm(db, p, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'Old label' }] }],
+  }, { sync_id: 'form-intake' })
+
+  structure.saveForm(db, p, {
+    id: formId,
+    name: 'Intake',
+    schema: { sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'New label' }] }] },
+  })
+  let history = structure.listVersionHistory(db, p, 'form', formId)
+  assert.strictEqual(history[0].version, 2)
+  assert.strictEqual(history.find(v => v.version === 1).schema.sections[0].elements[0].label, 'Old label')
+
+  const restored = structure.restoreVersion(db, p, 'form', formId, 1)
+  assert.strictEqual(restored.current_version, 3)
+  const current = db.prepare('SELECT schema_version, schema FROM forms WHERE id=?').get(formId)
+  assert.strictEqual(current.schema_version, 3)
+  assert.strictEqual(JSON.parse(current.schema).sections[0].elements[0].label, 'Old label')
+  history = structure.listVersionHistory(db, p, 'form', formId)
+  assert.ok(history.find(v => v.version === 2))
+  db.close()
+})
+
+test('version history: form history is preserved through project-state sync', () => {
+  const a = makeDb()
+  const b = makeDb()
+  const pa = createProject(a, 'P')
+  const pb = createProject(b, 'P')
+  const formA = addForm(a, pa, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'Old label' }] }],
+  }, { sync_id: 'form-intake' })
+  addForm(b, pb, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'Old label' }] }],
+  }, { sync_id: 'form-intake' })
+
+  structure.saveForm(a, pa, {
+    id: formA,
+    name: 'Intake',
+    schema: { sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'New label' }] }] },
+  })
+  const state = sync.buildProjectStateExport(a, pa)
+  sync.mergeProjectStateImport(b, pb, state, { merge: true })
+
+  const formB = b.prepare('SELECT id FROM forms WHERE sync_id=?').get('form-intake')
+  const history = structure.listVersionHistory(b, pb, 'form', formB.id)
+  assert.strictEqual(history[0].version, 2)
+  assert.strictEqual(history.find(v => v.version === 1).schema.sections[0].elements[0].label, 'Old label')
+  a.close()
+  b.close()
+})
+
+test('version history: media type edits restore tags and workspace tabs', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const formId = addForm(db, p, 'Intake', { sections: [] }, { sync_id: 'form-intake' })
+  const mtId = addMediaType(db, p, 'Video', {
+    sync_id: 'mt-video',
+    tags: [{ label: 'Old Tag', color: '#111111', description: 'old' }],
+  })
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Old Tab', sort_order: 0 })
+
+  structure.saveMediaType(db, p, {
+    id: mtId,
+    name: 'Video',
+    reviews_required: 2,
+    allow_custom_tags: 1,
+    color: '#222222',
+    tags: [{ label: 'New Tag', color: '#222222', description: 'new' }],
+    workspace_tabs: [],
+  })
+  const history = structure.listVersionHistory(db, p, 'mediaType', mtId)
+  assert.strictEqual(history[0].version, 2)
+  assert.strictEqual(history.find(v => v.version === 1).config.tags[0].label, 'Old Tag')
+
+  const restored = structure.restoreVersion(db, p, 'mediaType', mtId, 1)
+  assert.strictEqual(restored.current_version, 3)
+  const mt = db.prepare('SELECT config_version, reviews_required, allow_custom_tags, color FROM media_types WHERE id=?').get(mtId)
+  assert.strictEqual(mt.config_version, 3)
+  assert.strictEqual(mt.reviews_required, 1)
+  assert.strictEqual(mt.allow_custom_tags, 0)
+  assert.strictEqual(mt.color, '#6366f1')
+  assert.strictEqual(db.prepare('SELECT label FROM timestamp_tags WHERE media_type_id=?').get(mtId).label, 'Old Tag')
+  assert.strictEqual(db.prepare('SELECT label FROM workspace_tabs WHERE media_type_id=?').get(mtId).label, 'Old Tab')
+  db.close()
+})
+
+test('review migration: updates drafts to current snapshots without touching submitted reviews', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const formId = addForm(db, p, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'Old label' }] }],
+  }, { sync_id: 'form-intake' })
+  const mtId = addMediaType(db, p, 'Video', { sync_id: 'mt-video' })
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId })
+  const oldSnap = snapshots.buildWorkspaceSnapshot(db, media.id)
+  const draft = addReview(db, media.id, 'Alice', { status: 'in_progress' })
+  const submitted = addReview(db, media.id, 'Bob', { status: 'submitted' })
+  for (const rev of [draft, submitted]) {
+    db.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+      .run(JSON.stringify(oldSnap), oldSnap.media_type.sync_id, oldSnap.media_type.version, rev.id)
+    db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+      .run(rev.id, formId, JSON.stringify({ q1: 'kept' }), 'form-intake', 1, JSON.stringify(oldSnap.forms[String(formId)]))
+  }
+
+  structure.saveForm(db, p, {
+    id: formId,
+    name: 'Intake',
+    schema: { sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'New label' }] }] },
+  })
+  const result = snapshots.migrateStructureReviews(db, p, 'form', formId, 'drafts')
+
+  assert.strictEqual(result.updated, 1)
+  const draftFr = db.prepare('SELECT form_version, form_snapshot, responses FROM form_responses WHERE review_id=?').get(draft.id)
+  const submittedFr = db.prepare('SELECT form_version, form_snapshot FROM form_responses WHERE review_id=?').get(submitted.id)
+  assert.strictEqual(draftFr.form_version, 2)
+  assert.strictEqual(JSON.parse(draftFr.form_snapshot).schema.sections[0].elements[0].label, 'New label')
+  assert.strictEqual(JSON.parse(draftFr.responses).q1, 'kept')
+  assert.strictEqual(submittedFr.form_version, 1)
+  db.close()
+})
+
+test('review migration: apply-all wins over stale synced review state without conflict', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const formId = addForm(db, p, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'Old label' }] }],
+  }, { sync_id: 'form-intake' })
+  const mtId = addMediaType(db, p, 'Video', { sync_id: 'mt-video' })
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1', 'enc-1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { sync_id: 'media-1', media_type_id: mtId })
+  const oldSnap = snapshots.buildWorkspaceSnapshot(db, media.id)
+  const review = addReview(db, media.id, 'Alice', {
+    status: 'submitted',
+    review_sync_id: 'review-1',
+    created_at: '2024-01-01T00:00:00.000Z',
+    submitted_at: '2024-01-01T00:00:00.000Z',
+  })
+  db.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+    .run(JSON.stringify(oldSnap), oldSnap.media_type.sync_id, oldSnap.media_type.version, review.id)
+  db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot, updated_at) VALUES (?,?,?,?,?,?,?)')
+    .run(review.id, formId, JSON.stringify({ q1: 'kept' }), 'form-intake', 1, JSON.stringify(oldSnap.forms[String(formId)]), '2024-01-01T00:00:00.000Z')
+  const staleState = sync.buildProjectStateExport(db, p)
+
+  structure.saveForm(db, p, {
+    id: formId,
+    name: 'Intake',
+    schema: { sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'New label' }] }] },
+  })
+  const result = snapshots.migrateStructureReviews(db, p, 'form', formId, 'all')
+  assert.strictEqual(result.updated, 1)
+
+  const mergeResult = sync.mergeProjectStateImport(db, p, staleState, { merge: true })
+  assert.strictEqual(mergeResult.conflicts.length, 0)
+  const fr = db.prepare('SELECT form_version, form_snapshot, responses FROM form_responses WHERE review_id=?').get(review.id)
+  assert.strictEqual(fr.form_version, 2)
+  assert.strictEqual(JSON.parse(fr.form_snapshot).schema.sections[0].elements[0].label, 'New label')
+  assert.strictEqual(JSON.parse(fr.responses).q1, 'kept')
   db.close()
 })
 
@@ -637,7 +916,7 @@ test('doLocalSync: two machines exchange full project state through a shared fol
 
   assert.ok(fs.existsSync(path.join(folder, sync.PROJECT_STATE_FILENAME)), 'project state written')
   assert.ok(fs.existsSync(path.join(folder, 'manifest.json')), 'manifest written')
-  assert.ok(fs.existsSync(path.join(folder, sync.REVIEWS_REPORT_FILENAME)), 'xlsx report written')
+  assert.ok(!fs.existsSync(path.join(folder, 'reviews-export.xlsx')), 'xlsx report is NOT auto-written during sync')
   const state = JSON.parse(fs.readFileSync(path.join(folder, sync.PROJECT_STATE_FILENAME), 'utf8'))
   assert.strictEqual(state.protocol_version, sync.SYNC_PROTOCOL_VERSION)
   assert.strictEqual(state.forms.length, 1)

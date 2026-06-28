@@ -31,11 +31,14 @@ const configUpdateBridge = makeEventBridge('sync:configUpdateAvailable')
 const reviewUpdatedBridge = makeEventBridge('review:updated')
 const workspaceClosedBridge = makeEventBridge('workspace:closed')
 const syncConflictBridge = makeEventBridge('sync:conflict')
+const syncOfflineBridge = makeEventBridge('sync:offline')
+const syncOnlineBridge = makeEventBridge('sync:online')
 
 contextBridge.exposeInMainWorld('api', {
   // Projects
   listProjects: () => ipcRenderer.invoke('projects:list'),
   createProject: (data) => ipcRenderer.invoke('projects:create', data),
+  createSampleProject: () => ipcRenderer.invoke('projects:createSample'),
   getProject: (id) => ipcRenderer.invoke('projects:get', id),
   updateProject: (id, data) => ipcRenderer.invoke('projects:update', id, data),
   deleteProject: (id) => ipcRenderer.invoke('projects:delete', id),
@@ -92,6 +95,10 @@ contextBridge.exposeInMainWorld('api', {
   getForm: (id) => ipcRenderer.invoke('setup:getForm', id),
   countFormResponses: (id) => ipcRenderer.invoke('setup:countFormResponses', id),
   deleteForm: (projectId, id) => ipcRenderer.invoke('setup:deleteForm', projectId, id),
+  previewStructureMigration: (projectId, data) => ipcRenderer.invoke('setup:previewStructureMigration', projectId, data),
+  migrateStructureReviews: (projectId, data) => ipcRenderer.invoke('setup:migrateStructureReviews', projectId, data),
+  listVersionHistory: (projectId, data) => ipcRenderer.invoke('setup:listVersionHistory', projectId, data),
+  restoreVersion: (projectId, data) => ipcRenderer.invoke('setup:restoreVersion', projectId, data),
   saveInstruction: (projectId, data) => ipcRenderer.invoke('setup:saveInstruction', projectId, data),
   listInstructions: (projectId) => ipcRenderer.invoke('setup:listInstructions', projectId),
   deleteInstruction: (projectId, id) => ipcRenderer.invoke('setup:deleteInstruction', projectId, id),
@@ -110,6 +117,7 @@ contextBridge.exposeInMainWorld('api', {
   // Owner password
   setOwnerPassword: (projectId, password) => ipcRenderer.invoke('project:setPassword', projectId, password),
   verifyOwnerPassword: (projectId, password) => ipcRenderer.invoke('project:verifyPassword', projectId, password),
+  isProjectUnlocked: (projectId) => ipcRenderer.invoke('project:isUnlocked', projectId),
   lockProject: (projectId) => ipcRenderer.invoke('project:lock', projectId),
 
   // Sync
@@ -131,6 +139,12 @@ contextBridge.exposeInMainWorld('api', {
   // Event: a structural edit conflicted with another machine's during sync (LWW-resolved)
   onSyncConflict: (cb) => syncConflictBridge.on(cb),
   offSyncConflict: (id) => syncConflictBridge.off(id),
+
+  // Events: cloud sync lost/regained internet connectivity
+  onSyncOffline: (cb) => syncOfflineBridge.on(cb),
+  offSyncOffline: (id) => syncOfflineBridge.off(id),
+  onSyncOnline: (cb) => syncOnlineBridge.on(cb),
+  offSyncOnline: (id) => syncOnlineBridge.off(id),
 
   // Cloud sync
   cloudConnectOneDrive: () => ipcRenderer.invoke('cloud:connectOneDrive'),

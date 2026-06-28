@@ -4,15 +4,67 @@ import {
   ChevronLeft, Settings, Filter, ChevronDown, ChevronRight,
   Video, FileText, File, Plus, CheckCircle2, Circle,
   Search, X, Play, RefreshCw, Share2, FolderDown, AlertTriangle, Cloud, User,
-  LayoutList, BarChart2, Activity, LineChart
+  LayoutList, BarChart2, Activity, LineChart, HelpCircle
 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import { SETUP_SECTIONS } from '../lib/setupSections'
 import Modal from '../components/ui/Modal'
 import NewReviewModal from '../components/encounters/NewReviewModal'
 import FilterPanel from '../components/encounters/FilterPanel'
+import useTour from '../components/ui/useTour'
 
 const PAGE_SIZE = 15
+
+const PROJECT_TOUR_STEPS = [
+  {
+    targetId: 'tut-proj-nav',
+    placement: 'right',
+    title: 'Your Project',
+    body: 'Welcome to your project. Encounters are listed in the main area. Use this sidebar to switch between Encounters, Progress, and Activity views. Settings live at the bottom.',
+  },
+  {
+    targetId: 'tut-proj-encounters',
+    placement: 'bottom',
+    title: 'Encounters',
+    body: 'Each encounter represents one patient or session. Click any encounter card to expand it and see its media files. The project structure is synced to the cloud; the actual video files stay on your own computer.',
+  },
+  {
+    targetId: 'tut-proj-mediatype',
+    placement: 'bottom',
+    title: 'Media Types',
+    body: 'This badge shows the media type — a template that defines which forms and timestamp tags are available during review. You set up media types in Settings.',
+  },
+  {
+    targetId: 'tut-proj-addreview',
+    placement: 'top',
+    title: 'Add Review',
+    body: 'Click "Add review" to start coding this media file. You\'ll be taken to the review page where you can watch the video, log timestamps, and fill out the coding form.',
+  },
+  {
+    targetId: 'tut-proj-health',
+    placement: 'bottom',
+    title: 'Unlinked Files',
+    body: "The project structure lives in the cloud — but the actual video files live on your computer. Any file SDMo can't find on this machine is flagged here. Click Fix or use the Link / Locate buttons on each file to connect them.",
+  },
+  {
+    targetId: 'tut-proj-autolink',
+    placement: 'bottom',
+    title: 'Auto-link Files',
+    body: 'Have all your videos in one folder? Auto-link scans it (and subfolders) and links every file whose name matches a slot in the project — no manual locating needed. Each teammate does this once on their own machine.',
+  },
+  {
+    targetId: 'tut-proj-sync',
+    placement: 'bottom',
+    title: 'Sync',
+    body: "Sync Now pushes your reviews to the shared folder and pulls down your teammates' latest work. Each reviewer's data is a separate file, so there are no conflicts.",
+  },
+  {
+    targetId: 'tut-proj-export',
+    placement: 'bottom',
+    title: 'Exporting Data',
+    body: 'Export all reviews and timestamps to Excel at any time — organized by media type, one row per review. Snapshots preserve the exact form version each review was coded against.',
+  },
+]
 const MEDIA_ICONS = { video: Video, document: FileText, other: File }
 
 const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316']
@@ -49,6 +101,14 @@ export default function ProjectPage() {
   const [showAutolinkModal, setShowAutolinkModal] = useState(false)
   const [autolinkFolder, setAutolinkFolder] = useState('')
   const [autolinkResult, setAutolinkResult] = useState(null)
+  const [syncOffline, setSyncOffline] = useState(false)
+  const tour = useTour(PROJECT_TOUR_STEPS, 'sdmo_tour_project_v1', {
+    ready: !loading && encounters.length > 0,
+    onStart: useCallback(() => {
+      // Expand the first encounter so media-type and add-review anchors are in the DOM.
+      if (encounters[0]) setExpanded(e => ({ ...e, [encounters[0].id]: true }))
+    }, [encounters]),
+  })
 
   useEffect(() => { load() }, [projectId, location.pathname])
 
@@ -86,6 +146,26 @@ export default function ProjectPage() {
     }
     const subId = api.onSyncConflict(handler)
     return () => api.offSyncConflict(subId)
+  }, [projectId])
+
+  useEffect(() => {
+    const handler = (data) => {
+      if (String(data?.projectId) !== String(projectId)) return
+      setSyncOffline(true)
+    }
+    const subId = api.onSyncOffline(handler)
+    return () => api.offSyncOffline(subId)
+  }, [projectId])
+
+  useEffect(() => {
+    const handler = (data) => {
+      if (String(data?.projectId) !== String(projectId)) return
+      setSyncOffline(false)
+      showToast('Internet restored — back online and syncing.')
+      api.getSyncStatus(projectId).then(setSyncStatus)
+    }
+    const subId = api.onSyncOnline(handler)
+    return () => api.offSyncOnline(subId)
   }, [projectId])
 
   async function load() {
@@ -286,7 +366,7 @@ export default function ProjectPage() {
             {reviewerName || 'Set your name'}
           </button>
           {(syncStatus.syncMode === 'local' || syncStatus.syncMode === 'cloud') && (
-            <button className="btn btn-ghost btn-sm" onClick={handleSyncNow} disabled={syncing} title="Sync now">
+            <button id="tut-proj-sync" className="btn btn-ghost btn-sm" onClick={handleSyncNow} disabled={syncing} title="Sync now">
               {syncStatus.syncMode === 'cloud' ? <Cloud size={13} style={{ animation: syncing ? 'spin 1s linear infinite' : 'none' }} /> : <RefreshCw size={13} style={{ animation: syncing ? 'spin 1s linear infinite' : 'none' }} />}
               {syncing ? 'Syncing…' : 'Sync Now'}
               {syncStatus.lastSyncAt && !syncing && (
@@ -300,8 +380,11 @@ export default function ProjectPage() {
           <button className="btn btn-ghost btn-sm" onClick={handleSaveFile} title="Save project file to share with teammates">
             <Share2 size={13} /> Share File
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={() => api.exportExcel(projectId)} title="Export all reviews and timestamps to Excel">
+          <button id="tut-proj-export" className="btn btn-ghost btn-sm" onClick={() => api.exportExcel(projectId)} title="Export all reviews and timestamps to Excel">
             <FileText size={13} /> Export Excel
+          </button>
+          <button className="btn btn-ghost btn-icon btn-sm" onClick={tour.start} title="Show tutorial">
+            <HelpCircle size={15} />
           </button>
         </div>
       </div>
@@ -320,6 +403,12 @@ export default function ProjectPage() {
       )}
 
       {/* Warning banners */}
+      {syncOffline && syncStatus.syncMode === 'cloud' && (
+        <div style={{ background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#92400e' }}>
+          <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+          No internet — working in local mode. Retrying every 5 minutes.
+        </div>
+      )}
       {syncError && (
         <div style={{ background: '#fef2f2', borderBottom: '1px solid #fecaca', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#b91c1c' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
@@ -373,7 +462,7 @@ export default function ProjectPage() {
           </div>
 
           {/* Nav items */}
-          <div style={{ padding: '2px 6px', display: 'flex', flexDirection: 'column', gap: 1 }}>
+          <div id="tut-proj-nav" style={{ padding: '2px 6px', display: 'flex', flexDirection: 'column', gap: 1 }}>
             {[
               { id: 'encounters', icon: LayoutList, label: 'Encounters' },
               { id: 'progress',   icon: BarChart2,  label: 'Progress' },
@@ -413,7 +502,7 @@ export default function ProjectPage() {
 
           {/* Media health warning — shown on all views */}
           {mediaHealth && (mediaHealth.unlinked + mediaHealth.broken) > 0 && (
-            <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 14px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+            <div id="tut-proj-health" style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 14px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
               <AlertTriangle size={15} style={{ color: '#d97706', flexShrink: 0 }} />
               <span style={{ color: '#92400e', flex: 1 }}>
                 {mediaHealth.unlinked + mediaHealth.broken} of {mediaHealth.total} media file{mediaHealth.total !== 1 ? 's' : ''} {mediaHealth.broken > 0 && mediaHealth.unlinked > 0 ? 'are not linked or missing' : mediaHealth.broken > 0 ? 'cannot be found on disk' : 'are not linked on this machine'}.
@@ -427,14 +516,14 @@ export default function ProjectPage() {
           {activePage === 'encounters' && (
             <>
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24 }}>
-                <div>
+                <div id="tut-proj-encounters">
                   <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Encounters</h1>
                   <p className="text-secondary text-sm" style={{ marginTop: 3 }}>
                     {filtered.length} encounter{filtered.length !== 1 ? 's' : ''}{filtered.length !== encounters.length ? ` (filtered from ${encounters.length})` : ''} · {encounters.filter(e => e.completed).length} complete
                   </p>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <button className="btn btn-secondary btn-sm" onClick={handleOpenAutolinkModal} disabled={autolinking}>
+                  <button id="tut-proj-autolink" className="btn btn-secondary btn-sm" onClick={handleOpenAutolinkModal} disabled={autolinking}>
                     <RefreshCw size={13} style={{ animation: autolinking ? 'spin 1s linear infinite' : 'none' }} />
                     {autolinking ? 'Linking…' : 'Auto-link Files'}
                   </button>
@@ -457,7 +546,7 @@ export default function ProjectPage() {
                 </div>
               ) : (
                 <>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div id="tut-proj-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE).map(enc => (
                       <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onManualLink={handleManualLink} onMarkNA={handleMarkNA} onClearLink={handleClearLink} linkSaving={linkSaving} />
                     ))}
@@ -603,6 +692,8 @@ export default function ProjectPage() {
           </div>
         </div>
       </Modal>
+
+      {tour.node}
     </div>
   )
 }
@@ -674,7 +765,7 @@ function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onAddReview, 
       {/* Media list */}
       {expanded && (
         <div style={{ borderTop: '1px solid var(--border)', background: 'var(--bg)' }}>
-          {(encounter.media || []).map(mf => (
+          {(encounter.media || []).map((mf, idx) => (
             <MediaRow
               key={mf.id}
               mediaFile={mf}
@@ -686,6 +777,7 @@ function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onAddReview, 
               onMarkNA={onMarkNA}
               onClearLink={onClearLink}
               linkSaving={linkSaving}
+              isFirst={idx === 0}
             />
           ))}
           {encounter.media?.length === 0 && (
@@ -704,7 +796,7 @@ function linkStatusBadge(status) {
   return <span style={{ fontSize: 10, fontWeight: 600, color: '#d97706', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 3, padding: '1px 5px' }}>Not linked</span>
 }
 
-function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onManualLink, onMarkNA, onClearLink, linkSaving }) {
+function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onManualLink, onMarkNA, onClearLink, linkSaving, isFirst }) {
   const Icon = MEDIA_ICONS[mediaFile.file_type] || File
   const required = mediaFile.reviews_required
   const completed = mediaFile.reviews_completed || 0
@@ -713,7 +805,7 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
   const busy = linkSaving === mediaFile.id
 
   return (
-    <div style={{
+    <div id={isFirst ? 'tut-proj-mediarow' : undefined} style={{
       padding: '12px 20px 12px 40px',
       borderBottom: '1px solid var(--border)',
       display: 'flex', flexDirection: 'column', gap: 8,
@@ -750,7 +842,7 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           {mediaType && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-secondary)', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 4, padding: '2px 7px' }}>
+            <span id={isFirst ? 'tut-proj-mediatype' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-secondary)', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 4, padding: '2px 7px' }}>
               <span style={{ width: 7, height: 7, borderRadius: '50%', background: mediaType.color, flexShrink: 0 }} />
               {mediaType.name}
             </span>
@@ -791,7 +883,7 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
             </button>
           </span>
         ))}
-        <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22 }} onClick={onAddReview}>
+        <button id={isFirst ? 'tut-proj-addreview' : undefined} className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22 }} onClick={onAddReview}>
           <Plus size={11} /> Add review
         </button>
       </div>

@@ -1,12 +1,18 @@
 import { useState } from 'react'
 import { ChevronLeft, Plus, Trash2, GripVertical } from 'lucide-react'
 import { api } from '../../lib/api'
+import Modal from '../ui/Modal'
 
 const COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6']
 const TAG_COLORS = ['#6366f1','#0ea5e9','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#06b6d4','#84cc16','#a855f7']
 function randomTagColor() { return TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)] }
+function friendlySaveError(e) {
+  const msg = e?.message || ''
+  if (msg.includes('Project is locked')) return 'Project is locked. Go back to Setup and unlock the project before saving changes.'
+  return msg || 'Save failed.'
+}
 
-export default function MediaTypeEditor({ projectId, mediaType, forms, instructions, onSave, onCancel }) {
+export default function MediaTypeEditor({ projectId, mediaType, forms, instructions, onSave, onCancel, onLocked }) {
   const [name, setName] = useState(mediaType.name || '')
   const [reviewsRequired, setReviewsRequired] = useState(mediaType.reviews_required ?? 1)
   const [requireCompletion, setRequireCompletion] = useState(mediaType.reviews_required != null)
@@ -14,6 +20,15 @@ export default function MediaTypeEditor({ projectId, mediaType, forms, instructi
   const [tags, setTags] = useState(mediaType.tags || [])
   const [workspaceTabs, setWorkspaceTabs] = useState(mediaType.workspace_tabs || [])
   const [saving, setSaving] = useState(false)
+  const [migrationPreview, setMigrationPreview] = useState(null)
+  const [saveError, setSaveError] = useState('')
+
+  async function ensureUnlocked() {
+    const unlocked = await api.isProjectUnlocked(projectId)
+    if (unlocked) return true
+    onLocked?.()
+    return false
+  }
 
   function addTag() { setTags(t => [...t, { label: '', color: randomTagColor(), description: '' }]) }
   function updateTag(i, changes) { setTags(t => t.map((tag, j) => j === i ? { ...tag, ...changes } : tag)) }
@@ -24,19 +39,54 @@ export default function MediaTypeEditor({ projectId, mediaType, forms, instructi
   }
   function removeTab(i) { setWorkspaceTabs(t => t.filter((_, j) => j !== i)) }
 
-  async function handleSave() {
+  async function doSave(scope = 'future') {
     if (!name.trim()) return
     setSaving(true)
-    await api.saveMediaType(projectId, {
-      id: mediaType.id || undefined,
-      name: name.trim(),
-      reviews_required: requireCompletion ? reviewsRequired : null,
-      allow_custom_tags: true,
-      color,
-      tags,
-      workspace_tabs: workspaceTabs,
-    })
-    onSave()
+    setSaveError('')
+    try {
+      if (!(await ensureUnlocked())) return
+      const savedId = await api.saveMediaType(projectId, {
+        id: mediaType.id || undefined,
+        name: name.trim(),
+        reviews_required: requireCompletion ? reviewsRequired : null,
+        allow_custom_tags: true,
+        color,
+        tags,
+        workspace_tabs: workspaceTabs,
+      })
+      if (scope !== 'future' && savedId) {
+        await api.migrateStructureReviews(projectId, { kind: 'mediaType', id: savedId, scope })
+      }
+      onSave()
+    } catch (e) {
+      console.error('[MediaTypeEditor] save failed:', e)
+      setSaveError(friendlySaveError(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleSave() {
+    if (!name.trim()) return
+    if (mediaType.id) {
+      setSaving(true)
+      setSaveError('')
+      try {
+        if (!(await ensureUnlocked())) return
+        const preview = await api.previewStructureMigration(projectId, { kind: 'mediaType', id: mediaType.id, scope: 'all' })
+        if ((preview?.total || 0) > 0) {
+          setMigrationPreview(preview)
+          return
+        }
+      } catch (e) {
+        console.error('[MediaTypeEditor] migration preview failed:', e)
+        setSaveError(friendlySaveError(e))
+        return
+      } finally {
+        setSaving(false)
+      }
+    }
+    doSave('future')
   }
 
   return (
@@ -65,6 +115,11 @@ export default function MediaTypeEditor({ projectId, mediaType, forms, instructi
 
       <div style={{ flex: 1, overflow: 'auto', padding: '28px 32px' }}>
         <div style={{ maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 28 }}>
+          {saveError && !migrationPreview && (
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px', color: '#991b1b', fontSize: 13 }}>
+              {saveError}
+            </div>
+          )}
 
           {/* Color */}
           <section>
@@ -183,6 +238,48 @@ export default function MediaTypeEditor({ projectId, mediaType, forms, instructi
 
         </div>
       </div>
+
+      <Modal
+        open={!!migrationPreview}
+        onClose={() => !saving && setMigrationPreview(null)}
+        title="Apply Media Type Changes?"
+        size="modal-lg"
+        footer={
+          <>
+            <button className="btn btn-secondary" disabled={saving} onClick={() => setMigrationPreview(null)}>Cancel</button>
+            <button className="btn btn-secondary" disabled={saving} onClick={() => doSave('future')}>
+              Future Reviews Only
+            </button>
+            <button className="btn btn-primary" disabled={saving || (migrationPreview?.drafts || 0) === 0} onClick={() => doSave('drafts')}>
+              Update Drafts
+            </button>
+            <button className="btn btn-danger" disabled={saving} onClick={() => doSave('all')}>
+              Update All Reviews
+            </button>
+          </>
+        }
+      >
+        {migrationPreview && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13, lineHeight: 1.5 }}>
+            {saveError && (
+              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 10, color: '#991b1b' }}>
+                {saveError}
+              </div>
+            )}
+            <p style={{ margin: 0 }}>
+              This media type is already used by <strong>{migrationPreview.total}</strong> review{migrationPreview.total !== 1 ? 's' : ''}.
+              Existing reviews keep their current workspace layout and timestamp tags unless you migrate them.
+            </p>
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+              <div><strong>{migrationPreview.drafts}</strong> draft review{migrationPreview.drafts !== 1 ? 's' : ''}</div>
+              <div><strong>{migrationPreview.submitted}</strong> submitted review{migrationPreview.submitted !== 1 ? 's' : ''}</div>
+            </div>
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 12, color: '#991b1b' }}>
+              Updating all reviews changes the media type version used to interpret submitted reviews. Use it only when you intentionally want old reviews to follow the new tags and workspace layout.
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

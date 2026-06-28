@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ChevronDown, ChevronRight, Check } from 'lucide-react'
 
-export default function FormRenderer({ schema, responses, onSave, readOnly }) {
+export default function FormRenderer({ schema, responses, onSave, readOnly, timestamps = [] }) {
   const sections = schema?.sections || []
   const manySections = sections.length > 3
 
@@ -119,6 +119,7 @@ export default function FormRenderer({ schema, responses, onSave, readOnly }) {
             onAutoCollapse={() => setCollapsed(c => ({ ...c, [section.id]: true }))}
             sectionRef={el => { sectionRefs.current[section.id] = el }}
             readOnly={readOnly}
+            timestamps={timestamps}
           />
         ))}
       </div>
@@ -138,7 +139,7 @@ function countAnswered(section, values) {
   return { answered: answered.length, total: questions.length }
 }
 
-function FormSection({ section, sectionIndex, values, onChange, collapsed, onToggle, onAutoCollapse, sectionRef, readOnly }) {
+function FormSection({ section, sectionIndex, values, onChange, collapsed, onToggle, onAutoCollapse, sectionRef, readOnly, timestamps }) {
   const { answered, total } = countAnswered(section, values)
   const complete = total > 0 && answered === total
 
@@ -223,6 +224,7 @@ function FormSection({ section, sectionIndex, values, onChange, collapsed, onTog
               value={values[el.id]}
               onChange={v => onChange(el.id, v)}
               readOnly={readOnly}
+              timestamps={timestamps}
             />
           ))}
         </div>
@@ -255,9 +257,8 @@ function FocusInput({ value, onChange, placeholder, disabled }) {
       value={value || ''} onChange={onChange} placeholder={placeholder} disabled={disabled}
       onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
       style={{
-        border: 'none',
-        borderBottom: `1.5px solid ${focused ? 'var(--accent)' : 'var(--border)'}`,
-        borderRadius: 0, padding: '5px 0', background: 'transparent',
+        border: `1.5px solid ${focused ? 'var(--accent)' : 'var(--border)'}`,
+        borderRadius: 8, padding: '9px 12px', background: 'var(--bg)',
         width: '100%', outline: 'none', fontSize: 13,
         fontFamily: 'var(--font)', color: 'var(--text)', transition: 'border-color 0.15s',
       }}
@@ -363,7 +364,7 @@ function QLabel({ el }) {
   )
 }
 
-function FormElement({ el, value, onChange, readOnly }) {
+function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
   if (el.type === 'text_block') {
     return (
       <div style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.65, borderLeft: '2px solid var(--border)', paddingLeft: 10 }}>
@@ -539,5 +540,265 @@ function FormElement({ el, value, onChange, readOnly }) {
     )
   }
 
+  if (el.type === 'timestamp_select') {
+    return (
+      <div>
+        <QLabel el={el} />
+        <TimestampSelectInput timestamps={timestamps} value={value} onChange={onChange} readOnly={readOnly} />
+      </div>
+    )
+  }
+
+  if (el.type === 'table') {
+    const rows = el.rows || []
+    const columns = el.columns || []
+    const tableVal = (typeof value === 'object' && value !== null && !Array.isArray(value)) ? value : {}
+    return (
+      <div>
+        <QLabel el={el} />
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12, fontFamily: 'var(--font)' }}>
+            <thead>
+              <tr>
+                <th style={thStyle} />
+                {columns.map(col => (
+                  <th key={col.id} style={{ ...thStyle, minWidth: col.type === 'timestamp_select' ? 190 : 100 }}>
+                    {col.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((rowLabel, ri) => {
+                const rowVal = (tableVal[String(ri)] && typeof tableVal[String(ri)] === 'object') ? tableVal[String(ri)] : {}
+                return (
+                  <tr key={ri}>
+                    <td style={rowHeaderStyle}>{rowLabel}</td>
+                    {columns.map(col => (
+                      <td key={col.id} style={{ padding: '4px 6px', border: '1px solid var(--border)', verticalAlign: 'middle' }}>
+                        <TableCell
+                          col={col}
+                          value={rowVal[col.id]}
+                          onChange={v => onChange({ ...tableVal, [String(ri)]: { ...rowVal, [col.id]: v } })}
+                          readOnly={readOnly}
+                          timestamps={timestamps}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
   return null
+}
+
+const thStyle = {
+  padding: '5px 10px',
+  background: 'var(--bg-secondary)',
+  border: '1px solid var(--border)',
+  textAlign: 'left',
+  fontWeight: 600,
+  fontSize: 11,
+  color: 'var(--text-secondary)',
+  whiteSpace: 'nowrap',
+}
+
+const rowHeaderStyle = {
+  padding: '5px 10px',
+  background: 'var(--bg-secondary)',
+  border: '1px solid var(--border)',
+  fontWeight: 600,
+  fontSize: 11,
+  color: 'var(--text-secondary)',
+  whiteSpace: 'nowrap',
+}
+
+function TimestampSelectInput({ timestamps, value, onChange, readOnly, compact = false }) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+
+  function fmtTs(ts) {
+    const m = Math.floor(ts.time_seconds / 60)
+    const s = String(Math.floor(ts.time_seconds % 60)).padStart(2, '0')
+    return `${m}:${s}`
+  }
+
+  function displayText() {
+    if (!value || typeof value !== 'object') return compact ? '—' : 'Select timestamp…'
+    const time = fmtTs(value)
+    return value.tag_label ? `${time} — ${value.tag_label}` : time
+  }
+
+  const filtered = timestamps.filter(ts => {
+    if (!search) return true
+    const q = search.toLowerCase()
+    return (
+      fmtTs(ts).includes(q) ||
+      (ts.tag_label || '').toLowerCase().includes(q) ||
+      (ts.description || '').toLowerCase().includes(q) ||
+      (ts.notes || '').toLowerCase().includes(q)
+    )
+  })
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        disabled={readOnly}
+        onClick={() => !readOnly && setOpen(o => !o)}
+        style={{
+          width: '100%', textAlign: 'left',
+          padding: compact ? '4px 8px' : '7px 12px',
+          border: `1.5px solid ${open ? 'var(--accent)' : 'var(--border)'}`,
+          borderRadius: compact ? 4 : 8,
+          background: 'var(--bg)',
+          color: (value && typeof value === 'object') ? 'var(--text)' : 'var(--text-muted)',
+          fontSize: compact ? 12 : 13,
+          cursor: readOnly ? 'default' : 'pointer',
+          fontFamily: 'var(--font)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6,
+          transition: 'border-color 0.15s',
+        }}
+      >
+        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {displayText()}
+        </span>
+        <ChevronDown size={compact ? 11 : 13} style={{ flexShrink: 0, color: 'var(--text-muted)' }} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, zIndex: 9999,
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          borderRadius: 8, boxShadow: 'var(--shadow-lg)',
+          marginTop: 3, maxHeight: 260, display: 'flex', flexDirection: 'column',
+          minWidth: compact ? 240 : '100%',
+        }}>
+          <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+            <input
+              autoFocus
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search by time, tag, notes…"
+              style={{
+                width: '100%', fontSize: 12, padding: '4px 8px',
+                border: '1px solid var(--border)', borderRadius: 5,
+                background: 'var(--bg-secondary)', outline: 'none',
+                fontFamily: 'var(--font)', color: 'var(--text)', boxSizing: 'border-box',
+              }}
+            />
+          </div>
+          <div style={{ overflowY: 'auto', flex: 1 }}>
+            {value && typeof value === 'object' && (
+              <button
+                className="dropdown-item"
+                style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}
+                onClick={() => { onChange(null); setOpen(false); setSearch('') }}
+              >
+                Clear selection
+              </button>
+            )}
+            {filtered.length === 0 ? (
+              <div style={{ padding: '10px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
+                {timestamps.length === 0 ? 'No timestamps logged yet' : 'No timestamps match'}
+              </div>
+            ) : filtered.map(ts => {
+              const isSelected = value && typeof value === 'object' && value.time_seconds === ts.time_seconds
+              return (
+                <button
+                  key={ts.id != null ? ts.id : ts.time_seconds}
+                  className="dropdown-item"
+                  style={{
+                    fontSize: 12,
+                    background: isSelected ? 'var(--accent-light)' : undefined,
+                    color: isSelected ? 'var(--accent)' : undefined,
+                    fontWeight: isSelected ? 600 : undefined,
+                    display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+                  }}
+                  onClick={() => {
+                    onChange({ time_seconds: ts.time_seconds, tag_label: ts.tag_label || null })
+                    setOpen(false)
+                    setSearch('')
+                  }}
+                >
+                  <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--accent)', fontWeight: 700, flexShrink: 0 }}>
+                    {fmtTs(ts)}
+                  </span>
+                  {ts.tag_label && (
+                    <span style={{ background: 'var(--accent-light)', color: 'var(--accent)', borderRadius: 3, padding: '1px 5px', fontSize: 11, flexShrink: 0 }}>
+                      {ts.tag_label}
+                    </span>
+                  )}
+                  {(ts.description || ts.notes) && (
+                    <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                      {ts.description || ts.notes}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TableCell({ col, value, onChange, readOnly, timestamps }) {
+  const cellInputStyle = {
+    width: '100%', padding: '4px 6px', fontSize: 12,
+    border: '1px solid var(--border)', borderRadius: 4,
+    background: 'var(--bg)', color: 'var(--text)',
+    fontFamily: 'var(--font)', outline: 'none', boxSizing: 'border-box',
+  }
+  if (col.type === 'number') {
+    return (
+      <input
+        type="number"
+        value={value ?? ''}
+        disabled={readOnly}
+        onChange={e => onChange(e.target.value === '' ? null : Number(e.target.value))}
+        style={cellInputStyle}
+      />
+    )
+  }
+  if (col.type === 'select') {
+    return (
+      <select
+        value={value || ''}
+        disabled={readOnly}
+        onChange={e => onChange(e.target.value || null)}
+        style={{ ...cellInputStyle, color: value ? 'var(--text)' : 'var(--text-muted)' }}
+      >
+        <option value="">—</option>
+        {(col.options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+      </select>
+    )
+  }
+  if (col.type === 'timestamp_select') {
+    return (
+      <TimestampSelectInput timestamps={timestamps} value={value} onChange={onChange} readOnly={readOnly} compact />
+    )
+  }
+  return (
+    <input
+      type="text"
+      value={value || ''}
+      disabled={readOnly}
+      onChange={e => onChange(e.target.value || null)}
+      style={cellInputStyle}
+    />
+  )
 }

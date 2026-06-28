@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { ChevronLeft, Plus, Trash2, GripVertical, ChevronDown, ChevronRight, Copy } from 'lucide-react'
 import { api } from '../../lib/api'
+import Modal from '../ui/Modal'
 
 const ELEMENT_TYPES = [
   { type: 'short_answer', label: 'Short Answer' },
@@ -12,16 +13,39 @@ const ELEMENT_TYPES = [
   { type: 'rating', label: 'Rating (labeled)' },
   { type: 'checkbox', label: 'Checkbox' },
   { type: 'slider', label: 'Slider' },
+  { type: 'timestamp_select', label: 'Timestamp Select' },
+  { type: 'table', label: 'Table Grid' },
   { type: 'text_block', label: 'Text Block' },
 ]
 
-function newId() { return `el_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` }
+const TABLE_COL_TYPES = [
+  { type: 'text', label: 'Text' },
+  { type: 'number', label: 'Number' },
+  { type: 'select', label: 'Dropdown' },
+  { type: 'timestamp_select', label: 'Timestamp' },
+]
 
-export default function FormBuilder({ projectId, form, onSave, onCancel }) {
+function newId() { return `el_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` }
+function friendlySaveError(e) {
+  const msg = e?.message || ''
+  if (msg.includes('Project is locked')) return 'Project is locked. Go back to Setup and unlock the project before saving changes.'
+  return msg || 'Save failed.'
+}
+
+export default function FormBuilder({ projectId, form, onSave, onCancel, onLocked }) {
   const [name, setName] = useState(form.name || '')
   const [sections, setSections] = useState(form.schema?.sections || [])
   const [collapsed, setCollapsed] = useState({})
   const [saving, setSaving] = useState(false)
+  const [migrationPreview, setMigrationPreview] = useState(null)
+  const [saveError, setSaveError] = useState('')
+
+  async function ensureUnlocked() {
+    const unlocked = await api.isProjectUnlocked(projectId)
+    if (unlocked) return true
+    onLocked?.()
+    return false
+  }
 
   function addSection() {
     setSections(s => [...s, { id: newId(), title: 'New Section', description: '', elements: [] }])
@@ -62,11 +86,46 @@ export default function FormBuilder({ projectId, form, onSave, onCancel }) {
     }))
   }
 
-  async function handleSave() {
+  async function doSave(scope = 'future') {
     if (!name.trim()) return
     setSaving(true)
-    await api.saveForm(projectId, { id: form.id || undefined, name: name.trim(), schema: { sections } })
-    onSave()
+    setSaveError('')
+    try {
+      if (!(await ensureUnlocked())) return
+      const savedId = await api.saveForm(projectId, { id: form.id || undefined, name: name.trim(), schema: { sections } })
+      if (scope !== 'future' && savedId) {
+        await api.migrateStructureReviews(projectId, { kind: 'form', id: savedId, scope })
+      }
+      onSave()
+    } catch (e) {
+      console.error('[FormBuilder] save failed:', e)
+      setSaveError(friendlySaveError(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleSave() {
+    if (!name.trim()) return
+    if (form.id) {
+      setSaving(true)
+      setSaveError('')
+      try {
+        if (!(await ensureUnlocked())) return
+        const preview = await api.previewStructureMigration(projectId, { kind: 'form', id: form.id, scope: 'all' })
+        if ((preview?.total || 0) > 0) {
+          setMigrationPreview(preview)
+          return
+        }
+      } catch (e) {
+        console.error('[FormBuilder] migration preview failed:', e)
+        setSaveError(friendlySaveError(e))
+        return
+      } finally {
+        setSaving(false)
+      }
+    }
+    doSave('future')
   }
 
   return (
@@ -95,6 +154,11 @@ export default function FormBuilder({ projectId, form, onSave, onCancel }) {
 
       <div style={{ flex: 1, overflow: 'auto', padding: '28px 0' }}>
         <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 28px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {saveError && !migrationPreview && (
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px', color: '#991b1b', fontSize: 13 }}>
+              {saveError}
+            </div>
+          )}
           {sections.map(sec => (
             <SectionEditor
               key={sec.id}
@@ -114,6 +178,48 @@ export default function FormBuilder({ projectId, form, onSave, onCancel }) {
           </button>
         </div>
       </div>
+
+      <Modal
+        open={!!migrationPreview}
+        onClose={() => !saving && setMigrationPreview(null)}
+        title="Apply Form Changes?"
+        size="modal-lg"
+        footer={
+          <>
+            <button className="btn btn-secondary" disabled={saving} onClick={() => setMigrationPreview(null)}>Cancel</button>
+            <button className="btn btn-secondary" disabled={saving} onClick={() => doSave('future')}>
+              Future Reviews Only
+            </button>
+            <button className="btn btn-primary" disabled={saving || (migrationPreview?.drafts || 0) === 0} onClick={() => doSave('drafts')}>
+              Update Drafts
+            </button>
+            <button className="btn btn-danger" disabled={saving} onClick={() => doSave('all')}>
+              Update All Reviews
+            </button>
+          </>
+        }
+      >
+        {migrationPreview && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13, lineHeight: 1.5 }}>
+            {saveError && (
+              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 10, color: '#991b1b' }}>
+                {saveError}
+              </div>
+            )}
+            <p style={{ margin: 0 }}>
+              This form is already used by <strong>{migrationPreview.total}</strong> review{migrationPreview.total !== 1 ? 's' : ''}.
+              Existing reviews keep the version coders saw unless you migrate them.
+            </p>
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+              <div><strong>{migrationPreview.drafts}</strong> draft review{migrationPreview.drafts !== 1 ? 's' : ''}</div>
+              <div><strong>{migrationPreview.submitted}</strong> submitted review{migrationPreview.submitted !== 1 ? 's' : ''}</div>
+            </div>
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 12, color: '#991b1b' }}>
+              Updating all reviews changes the form version used to interpret submitted data. Answers are preserved by question ID where possible, but this should be used only when you intentionally want old reviews reinterpreted under the new form.
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }
@@ -309,6 +415,15 @@ function ElementEditor({ el, onChange, onRemove }) {
       {(el.type === 'short_answer' || el.type === 'paragraph') && (
         <input value={el.placeholder || ''} onChange={e => onChange({ placeholder: e.target.value })} placeholder="Placeholder text (optional)" style={{ fontSize: 13 }} />
       )}
+
+      {el.type === 'table' && (
+        <TableEditor
+          rows={el.rows || []}
+          columns={el.columns || []}
+          onRowsChange={rows => onChange({ rows })}
+          onColumnsChange={columns => onChange({ columns })}
+        />
+      )}
     </div>
   )
 }
@@ -325,6 +440,62 @@ function OptionsEditor({ options, onChange }) {
       <button className="btn btn-ghost btn-sm" onClick={() => onChange([...options, ''])} style={{ alignSelf: 'flex-start', fontSize: 12 }}>
         <Plus size={12} /> Add Option
       </button>
+    </div>
+  )
+}
+
+function TableEditor({ rows, columns, onRowsChange, onColumnsChange }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 6 }}>Rows</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {rows.map((row, i) => (
+            <div key={i} style={{ display: 'flex', gap: 6 }}>
+              <input
+                value={row}
+                onChange={e => { const r = [...rows]; r[i] = e.target.value; onRowsChange(r) }}
+                style={{ flex: 1, fontSize: 13 }}
+              />
+              <button className="btn btn-ghost btn-icon btn-sm" onClick={() => onRowsChange(rows.filter((_, j) => j !== i))}><Trash2 size={12} /></button>
+            </div>
+          ))}
+          <button className="btn btn-ghost btn-sm" onClick={() => onRowsChange([...rows, `Row ${rows.length + 1}`])} style={{ alignSelf: 'flex-start', fontSize: 12 }}>
+            <Plus size={12} /> Add Row
+          </button>
+        </div>
+      </div>
+      <div>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 6 }}>Columns</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {columns.map((col, i) => (
+            <div key={col.id} style={{ border: '1px solid var(--border)', borderRadius: 5, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  value={col.label}
+                  onChange={e => { const c = columns.map((cc, j) => j === i ? { ...cc, label: e.target.value } : cc); onColumnsChange(c) }}
+                  placeholder="Column header"
+                  style={{ flex: 1, fontSize: 13 }}
+                />
+                <select
+                  value={col.type}
+                  onChange={e => { const c = columns.map((cc, j) => j === i ? { ...cc, type: e.target.value, options: undefined } : cc); onColumnsChange(c) }}
+                  style={{ height: 32, fontSize: 12, width: 120, flexShrink: 0 }}
+                >
+                  {TABLE_COL_TYPES.map(ct => <option key={ct.type} value={ct.type}>{ct.label}</option>)}
+                </select>
+                <button className="btn btn-ghost btn-icon btn-sm" onClick={() => onColumnsChange(columns.filter((_, j) => j !== i))}><Trash2 size={12} /></button>
+              </div>
+              {col.type === 'select' && (
+                <OptionsEditor options={col.options || []} onChange={opts => { const c = columns.map((cc, j) => j === i ? { ...cc, options: opts } : cc); onColumnsChange(c) }} />
+              )}
+            </div>
+          ))}
+          <button className="btn btn-ghost btn-sm" onClick={() => onColumnsChange([...columns, { id: newId(), label: `Column ${columns.length + 1}`, type: 'text' }])} style={{ alignSelf: 'flex-start', fontSize: 12 }}>
+            <Plus size={12} /> Add Column
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -361,5 +532,7 @@ function makeElement(type) {
   if (type === 'checkbox') return { id: newId(), type: 'checkbox', label: '', required: false }
   if (type === 'slider') return { ...base, min: 0, max: 100, step: 1, low_label: '', high_label: '' }
   if (type === 'text_block') return { id: newId(), type: 'text_block', content: '' }
+  if (type === 'timestamp_select') return base
+  if (type === 'table') return { ...base, rows: ['Row 1', 'Row 2'], columns: [{ id: newId(), label: 'Column 1', type: 'text' }] }
   return base
 }

@@ -139,7 +139,17 @@ label { font-size: 13px; font-weight: 500; color: var(--text-secondary); display
 .modal-lg { max-width: 720px; }
 .modal-xl { max-width: 960px; }
 .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px; }
+.modal-footer {
+  display: flex; justify-content: flex-end; flex-wrap: wrap;
+  gap: 8px; margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px;
+}
+.modal-footer .btn { max-width: 100%; white-space: normal; }
+
+@media (max-width: 560px) {
+  .modal-overlay { padding: 12px; }
+  .modal-footer { flex-direction: column-reverse; align-items: stretch; }
+  .modal-footer .btn { width: 100%; justify-content: center; }
+}
 
 /* Dropdown */
 .dropdown {

@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Upload, HelpCircle, Link2, Cloud, ArrowLeft, Folder } from 'lucide-react'
+import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Upload, HelpCircle, Link2, Cloud, ArrowLeft, Folder, GraduationCap } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import Modal from '../components/ui/Modal'
-import TutorialBubble from '../components/ui/TutorialBubble'
+import useTour from '../components/ui/useTour'
 
 const TUTORIAL_KEY = 'sdmo_tutorial_v1'
 
@@ -55,7 +55,7 @@ export default function HomePage() {
   const [joinCloudLoading, setJoinCloudLoading] = useState(false)
   const [joinError, setJoinError] = useState(null)
   const [joinLoading, setJoinLoading] = useState(false)
-  const [tutorialStep, setTutorialStep] = useState(null) // null = hidden
+  const tour = useTour(TUTORIAL_STEPS, TUTORIAL_KEY)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -64,23 +64,11 @@ export default function HomePage() {
       setReviewerName(s.reviewer_name || null)
       if (!s.reviewer_name) setShowIdentity(true)
     })
-    if (!localStorage.getItem(TUTORIAL_KEY)) {
-      setTimeout(() => setTutorialStep(0), 600)
-    }
   }, [])
 
-  function startTutorial() { setTutorialStep(0) }
-  function nextTutorialStep() {
-    if (tutorialStep >= TUTORIAL_STEPS.length - 1) {
-      localStorage.setItem(TUTORIAL_KEY, '1')
-      setTutorialStep(null)
-    } else {
-      setTutorialStep(s => s + 1)
-    }
-  }
-  function skipTutorial() {
-    localStorage.setItem(TUTORIAL_KEY, '1')
-    setTutorialStep(null)
+  async function handleTrySample() {
+    const result = await api.createSampleProject()
+    if (result?.id) navigate(`/project/${result.id}`)
   }
 
   async function handleSaveName() {
@@ -248,10 +236,13 @@ export default function HomePage() {
           <button className="btn btn-secondary btn-sm" onClick={handleImportProject} title="Import a project from a .json export file">
             <Upload size={14} /> Import File
           </button>
+          <button className="btn btn-secondary btn-sm" onClick={handleTrySample} title="Open a ready-made example project with a guided walkthrough">
+            <GraduationCap size={14} /> Sample Project
+          </button>
           <button id="tut-new" className="btn btn-primary btn-sm" onClick={() => setShowCreate(true)}>
             <Plus size={14} /> New Project
           </button>
-          <button id="tut-help" className="btn btn-ghost btn-icon btn-sm" onClick={startTutorial} title="Show tutorial">
+          <button id="tut-help" className="btn btn-ghost btn-icon btn-sm" onClick={tour.start} title="Show tutorial">
             <HelpCircle size={15} />
           </button>
         </div>
@@ -275,9 +266,17 @@ export default function HomePage() {
               <p style={{ fontWeight: 500, color: 'var(--text-secondary)' }}>No projects yet</p>
               <p className="text-sm" style={{ marginTop: 4 }}>Create a project to get started</p>
             </div>
-            <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-              <Plus size={14} /> Create Project
-            </button>
+            <p className="text-sm" style={{ marginTop: -2, color: 'var(--text-muted)' }}>
+              New to SDMo? Open the sample project for a guided walkthrough.
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-secondary" onClick={handleTrySample}>
+                <GraduationCap size={14} /> Try Sample Project
+              </button>
+              <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
+                <Plus size={14} /> Create Project
+              </button>
+            </div>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -605,15 +604,7 @@ export default function HomePage() {
       })()}
 
       {/* Tutorial */}
-      {tutorialStep !== null && TUTORIAL_STEPS[tutorialStep] && (
-        <TutorialBubble
-          {...TUTORIAL_STEPS[tutorialStep]}
-          step={tutorialStep + 1}
-          total={TUTORIAL_STEPS.length}
-          onNext={nextTutorialStep}
-          onSkip={skipTutorial}
-        />
-      )}
+      {tour.node}
 
       {/* Post-import folder setup */}
       {importedProject && (() => {

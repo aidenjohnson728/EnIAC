@@ -15,6 +15,8 @@ const {
   safeJsonParse,
 } = require('../sync')
 const structureService = require('../services/structure')
+const snapshotService = require('../services/snapshots')
+const { seedSampleProject } = require('../services/sampleProject')
 
 // In-memory unlock sessions — cleared on app restart. A project is "unlocked"
 // when its password has been entered this session (or it has no password).
@@ -25,6 +27,13 @@ function hashPassword(pw) {
   return createHash('sha256').update(pw).digest('hex')
 }
 
+function requireUnlocked(db, projectId) {
+  const pid = Number(projectId)
+  const project = db.prepare('SELECT owner_password_hash FROM projects WHERE id=?').get(projectId)
+  if (project?.owner_password_hash && !unlockedProjects.has(pid)) {
+    throw new Error('Project is locked')
+  }
+}
 
 module.exports = function (ipcMain) {
   ipcMain.handle('projects:list', () => {
@@ -38,7 +47,7 @@ module.exports = function (ipcMain) {
     if (!project) return null
     project.keybinds = safeJsonParse(project.keybinds, [])
     project.has_password = !!project.owner_password_hash
-    project.is_unlocked = !project.owner_password_hash || unlockedProjects.has(id)
+    project.is_unlocked = !project.owner_password_hash || unlockedProjects.has(Number(id))
     delete project.owner_password_hash
     const mediaTypes = db.prepare('SELECT * FROM media_types WHERE project_id = ?').all(id)
     const forms = db.prepare('SELECT id, name, created_at FROM forms WHERE project_id = ?').all(id)
@@ -53,9 +62,9 @@ module.exports = function (ipcMain) {
     db.prepare('UPDATE projects SET owner_password_hash=? WHERE id=?').run(hash, projectId)
     bumpAndSync(db, projectId)
     if (hash) {
-      unlockedProjects.add(projectId)
+      unlockedProjects.add(Number(projectId))
     } else {
-      unlockedProjects.delete(projectId)
+      unlockedProjects.delete(Number(projectId))
     }
     return true
   })
@@ -63,21 +72,21 @@ module.exports = function (ipcMain) {
   ipcMain.handle('project:verifyPassword', (_, projectId, password) => {
     const db = getDb()
     const project = db.prepare('SELECT owner_password_hash FROM projects WHERE id=?').get(projectId)
-    if (!project?.owner_password_hash) { unlockedProjects.add(projectId); return true }
+    if (!project?.owner_password_hash) { unlockedProjects.add(Number(projectId)); return true }
     const match = hashPassword(password) === project.owner_password_hash
-    if (match) unlockedProjects.add(projectId)
+    if (match) unlockedProjects.add(Number(projectId))
     return match
   })
 
   ipcMain.handle('project:lock', (_, projectId) => {
-    unlockedProjects.delete(projectId)
+    unlockedProjects.delete(Number(projectId))
     return true
   })
 
   ipcMain.handle('project:isUnlocked', (_, projectId) => {
     const db = getDb()
     const project = db.prepare('SELECT owner_password_hash FROM projects WHERE id=?').get(projectId)
-    return !project?.owner_password_hash || unlockedProjects.has(projectId)
+    return !project?.owner_password_hash || unlockedProjects.has(Number(projectId))
   })
 
   ipcMain.handle('projects:create', (_, data) => {
@@ -86,6 +95,10 @@ module.exports = function (ipcMain) {
     const projectId = result.lastInsertRowid
     if (data.reviewer_name) setProjectName(projectId, data.reviewer_name)
     return { id: projectId, ...data }
+  })
+
+  ipcMain.handle('projects:createSample', () => {
+    return seedSampleProject(getDb())
   })
 
   ipcMain.handle('projects:update', (_, id, data) => {
@@ -154,7 +167,7 @@ module.exports = function (ipcMain) {
       tokenExpired,
       lastSyncAt: getLastSyncAt(projectId),
       hasPassword: !!project?.owner_password_hash,
-      isUnlocked: !project?.owner_password_hash || unlockedProjects.has(projectId),
+      isUnlocked: !project?.owner_password_hash || unlockedProjects.has(Number(projectId)),
     }
   })
 
@@ -243,6 +256,7 @@ module.exports = function (ipcMain) {
   // Setup: media types
   ipcMain.handle('setup:saveMediaType', (_, projectId, data) => {
     const db = getDb()
+    requireUnlocked(db, projectId)
     return structureService.saveMediaType(db, projectId, data)
   })
 
@@ -258,12 +272,13 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('setup:deleteMediaType', (_, projectId, id) => {
     const db = getDb()
+    requireUnlocked(db, projectId)
     return structureService.deleteMediaType(db, projectId, id)
   })
 
   ipcMain.handle('setup:listMediaTypes', (_, projectId) => {
     const db = getDb()
-    const types = db.prepare('SELECT * FROM media_types WHERE project_id=?').all(projectId)
+    const types = db.prepare('SELECT * FROM media_types WHERE project_id=? AND archived_at IS NULL').all(projectId)
     for (const t of types) {
       t.tags = db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=?').all(t.id)
       t.workspace_tabs = db.prepare('SELECT * FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order').all(t.id)
@@ -274,6 +289,7 @@ module.exports = function (ipcMain) {
   // Setup: forms
   ipcMain.handle('setup:saveForm', (_, projectId, data) => {
     const db = getDb()
+    requireUnlocked(db, projectId)
     return structureService.saveForm(db, projectId, data)
   })
 
@@ -285,12 +301,38 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('setup:deleteForm', (_, projectId, id) => {
     const db = getDb()
+    requireUnlocked(db, projectId)
     return structureService.deleteForm(db, projectId, id)
+  })
+
+  ipcMain.handle('setup:previewStructureMigration', (_, projectId, data) => {
+    const db = getDb()
+    return snapshotService.previewStructureMigration(db, projectId, data.kind, data.id, data.scope || 'drafts')
+  })
+
+  ipcMain.handle('setup:migrateStructureReviews', (_, projectId, data) => {
+    const db = getDb()
+    requireUnlocked(db, projectId)
+    const result = snapshotService.migrateStructureReviews(db, projectId, data.kind, data.id, data.scope || 'drafts')
+    const { scheduleSync } = require('../sync')
+    scheduleSync(projectId)
+    return result
+  })
+
+  ipcMain.handle('setup:listVersionHistory', (_, projectId, data) => {
+    const db = getDb()
+    return structureService.listVersionHistory(db, projectId, data.kind, data.id)
+  })
+
+  ipcMain.handle('setup:restoreVersion', (_, projectId, data) => {
+    const db = getDb()
+    requireUnlocked(db, projectId)
+    return structureService.restoreVersion(db, projectId, data.kind, data.id, data.version)
   })
 
   ipcMain.handle('setup:listForms', (_, projectId) => {
     const db = getDb()
-    return db.prepare('SELECT id, name, created_at FROM forms WHERE project_id=?').all(projectId)
+    return db.prepare('SELECT id, name, created_at, schema_version FROM forms WHERE project_id=? AND archived_at IS NULL').all(projectId)
   })
 
   ipcMain.handle('setup:getForm', (_, id) => {
@@ -303,11 +345,13 @@ module.exports = function (ipcMain) {
   // Setup: instructions
   ipcMain.handle('setup:saveInstruction', (_, projectId, data) => {
     const db = getDb()
+    requireUnlocked(db, projectId)
     return structureService.saveInstruction(db, projectId, data)
   })
 
   ipcMain.handle('setup:deleteInstruction', (_, projectId, id) => {
     const db = getDb()
+    requireUnlocked(db, projectId)
     return structureService.deleteInstruction(db, projectId, id)
   })
 
@@ -317,6 +361,8 @@ module.exports = function (ipcMain) {
   })
 
   ipcMain.handle('setup:uploadPdf', async (_, projectId) => {
+    const db = getDb()
+    requireUnlocked(db, projectId)
     const { filePaths } = await dialog.showOpenDialog({
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
       properties: ['openFile'],

@@ -200,6 +200,42 @@ function migrate(db) {
     "CREATE INDEX IF NOT EXISTS idx_form_responses_review ON form_responses(review_id)",
     "CREATE INDEX IF NOT EXISTS idx_deleted_reviews_project ON deleted_reviews(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_deleted_structure_project ON deleted_structure(project_id)",
+    // Research-instrument versioning / review-time snapshots. These columns let
+    // reviews keep the exact workspace/forms coders saw even if setup changes later.
+    "ALTER TABLE forms ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE forms ADD COLUMN archived_at TEXT",
+    "ALTER TABLE media_types ADD COLUMN config_version INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE media_types ADD COLUMN archived_at TEXT",
+    "ALTER TABLE reviews ADD COLUMN media_type_sync_id TEXT",
+    "ALTER TABLE reviews ADD COLUMN media_type_version INTEGER",
+    "ALTER TABLE reviews ADD COLUMN workspace_snapshot TEXT",
+    "ALTER TABLE form_responses ADD COLUMN form_sync_id TEXT",
+    "ALTER TABLE form_responses ADD COLUMN form_version INTEGER",
+    "ALTER TABLE form_responses ADD COLUMN form_snapshot TEXT",
+    `CREATE TABLE IF NOT EXISTS form_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      form_sync_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      schema TEXT NOT NULL,
+      source_updated_at TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(project_id, form_sync_id, version)
+    )`,
+    `CREATE TABLE IF NOT EXISTS media_type_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      media_type_sync_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      config TEXT NOT NULL,
+      source_updated_at TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(project_id, media_type_sync_id, version)
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_form_versions_lookup ON form_versions(project_id, form_sync_id)",
+    "CREATE INDEX IF NOT EXISTS idx_media_type_versions_lookup ON media_type_versions(project_id, media_type_sync_id)",
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) {}
@@ -308,6 +344,33 @@ function initSchema(db) {
       responses TEXT NOT NULL DEFAULT '{}',
       updated_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS form_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      form_sync_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      schema TEXT NOT NULL,
+      source_updated_at TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(project_id, form_sync_id, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS media_type_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      media_type_sync_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      config TEXT NOT NULL,
+      source_updated_at TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(project_id, media_type_sync_id, version)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_form_versions_lookup ON form_versions(project_id, form_sync_id);
+    CREATE INDEX IF NOT EXISTS idx_media_type_versions_lookup ON media_type_versions(project_id, media_type_sync_id);
   `)
 }
 

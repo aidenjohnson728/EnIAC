@@ -104,7 +104,8 @@
       "Bash(npm test *)",
       "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).scripts, null, 2\\)\\)\")",
       "Bash(ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron test/run.js)",
-      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('electron', \\(p.devDependencies||{}\\).electron, '| better-sqlite3', \\(p.dependencies||{}\\)['better-sqlite3']||\\(p.devDependencies||{}\\)['better-sqlite3']\\)\")"
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('electron', \\(p.devDependencies||{}\\).electron, '| better-sqlite3', \\(p.dependencies||{}\\)['better-sqlite3']||\\(p.devDependencies||{}\\)['better-sqlite3']\\)\")",
+      "Bash(node -e \"console.log\\(require\\('xlsx/package.json'\\).version\\)\")"
     ]
   }
 }

@@ -300,27 +300,32 @@ In the UI, this is used to show the "New configuration available" banner when a 
 
 ## Part 3: The Database Schema
 
-The database has these tables (all defined in `electron/db.js`):
+The database has these tables (all defined in `electron/db.js`). `initSchema` creates the base tables with `CREATE TABLE IF NOT EXISTS`; the `migrations` array adds every column/index/table that came later, each statement wrapped in try/catch so re-running is harmless. **Important:** never edit `initSchema` to change an existing table — add a new `ALTER TABLE`/`CREATE TABLE` to the `migrations` array instead. Data transforms (not shape changes) go in `runDataMigrations`, gated by `PRAGMA user_version` so each runs exactly once.
 
 ### `projects`
 The top-level table. One row per project on this machine.
 
-Key columns: `name`, `description`, `media_folder` (local path to the media folder), `sync_folder` (local folder path for sync), `cloud_provider` (`'onedrive'` or `'googledrive'` or null), `cloud_folder_id` (the cloud folder's ID), `config_version` (integer, incremented on every structural change), `owner_password_hash` (SHA-256 hash of the admin password), `keybinds` (JSON array of keyboard shortcut mappings).
+Key columns: `name`, `description`, `media_folder` (local path to the media folder), `sync_folder` (local folder path for sync), `cloud_provider` (`'onedrive'` or `'googledrive'` or null), `cloud_folder_id` (the cloud folder's ID), `config_version` (integer; **legacy back-compat only** — see Part 5, no longer gates who wins a sync), `owner_password_hash` (SHA-256 hash of the admin password), `keybinds` (JSON array of keyboard shortcut mappings).
 
 ### `encounters`
 One row per encounter (patient visit / session).
 
-Key columns: `project_id` (FK to projects), `name`, `folder_path` (local path matched during media scan), `sync_id` (stable UUID used to identify this encounter across machines even if renamed).
+Key columns: `project_id` (FK to projects), `name`, `folder_path` (local path matched during media scan), `sync_id` (stable UUID used to identify this encounter across machines even if renamed), `updated_at` (per-entity modification clock for sync — NULL on old rows, readers fall back to `created_at`).
 
 ### `media_files`
 One row per media file (video, PDF, etc.) within an encounter.
 
-Key columns: `encounter_id` (FK to encounters), `name`, `file_path` (absolute local path to the file — empty string if not yet linked on this machine), `file_type` (`'video'`, `'document'`, `'other'`), `media_type_id` (FK to media_types, determines which tags and forms appear), `sync_id` (stable UUID).
+Key columns: `encounter_id` (FK to encounters), `name`, `file_path` (legacy/seed path — current path resolution is per-machine via `media_file_links`, below), `file_type` (`'video'`, `'audio'`, `'document'`, `'other'`), `media_type_id` (FK to media_types, determines which tags and forms appear), `sync_id` (stable UUID), `updated_at`.
+
+### `media_file_links`
+**Per-machine** file path resolution — this table is NOT synced. Each machine records where it found a given media file locally, so the absolute path never has to travel between machines.
+
+Key columns: `media_file_id` (FK, UNIQUE), `local_path`, `is_relative` (resolved against the machine's media base folder when set), `not_applicable` (the user marked this file as intentionally absent here). `electron/mediaLinks.js` owns this: `resolveLink()` returns `{ status, resolved_path }` and `upsertLink()` records a match. `db.js`'s `seedMediaLinks()` backfills links from any existing `file_path` that still exists on disk.
 
 ### `media_types`
-Defines categories of media files — e.g., "Video" or "Audio Interview."
+Defines categories of media files — e.g., "Video" or "Audio Interview." **Versioned.**
 
-Key columns: `project_id`, `name`, `reviews_required` (how many completed reviews count as "done"), `allow_custom_tags`, `color` (hex color for UI display).
+Key columns: `project_id`, `name`, `reviews_required` (how many completed reviews count as "done"), `allow_custom_tags`, `color` (hex color for UI display), `config_version` (bumped on every edit), `archived_at` (set instead of hard-deleting when reviews reference it), `sync_id`, `updated_at`.
 
 ### `timestamp_tags`
 The clickable tag buttons that appear in the review page sidebar.
@@ -328,24 +333,29 @@ The clickable tag buttons that appear in the review page sidebar.
 Key columns: `media_type_id` (FK — tags belong to a media type), `label`, `color`, `description`.
 
 ### `workspace_tabs`
-Which forms and instructions appear as tabs in the review page workspace panel.
+Which forms and instructions appear as tabs in the review workspace.
 
-Key columns: `media_type_id`, `tab_type` (`'form'` or `'instruction'`), `ref_id` (FK to forms or instructions table), `label`, `sort_order`.
+Key columns: `media_type_id`, `tab_type` (`'form'` or `'instruction'`), `ref_id` (local FK to forms or instructions table), `label`, `sort_order`. Because `ref_id` is a local database id, the synced representation carries the referenced item's `sync_id`/name and each machine re-resolves it to its own local id.
 
 ### `forms`
-Structured questionnaires coders fill out during a review.
+Structured questionnaires coders fill out during a review. **Versioned.**
 
-Key columns: `project_id`, `name`, `schema` (JSON string defining sections and fields — see Part 4 for the schema format).
+Key columns: `project_id`, `name`, `schema` (JSON string defining sections and elements — see Part 4 for the format), `schema_version` (bumped on every edit), `archived_at` (set instead of hard-deleting when responses reference it), `sync_id`, `updated_at`.
 
 ### `instructions`
 Reference documents coders can view while reviewing.
 
-Key columns: `project_id`, `name`, `content_type` (`'markdown'` or `'pdf'`), `content` (markdown text), `file_path` (path to PDF file if applicable).
+Key columns: `project_id`, `name`, `content_type` (`'markdown'` or `'pdf'`), `content` (markdown text), `file_path` (path to PDF file if applicable), `sync_id`, `updated_at`.
+
+### `form_versions` and `media_type_versions`
+History tables. Whenever a form or media type is edited, the *prior* state is captured here before the live row is overwritten, so any earlier version can be inspected or restored.
+
+`form_versions` columns: `project_id`, `form_sync_id`, `version`, `name`, `schema` (JSON), `source_updated_at`, `created_at`, `UNIQUE(project_id, form_sync_id, version)`. `media_type_versions` mirrors it with a `config` JSON (tags + workspace tabs) instead of `schema`. `electron/services/structure.js` writes these with `INSERT OR IGNORE`.
 
 ### `reviews`
 One row per coder per media file — the core unit of work.
 
-Key columns: `media_file_id` (FK), `reviewer_name`, `reviewer_uuid` (the UUID of the machine that created this review), `review_sync_id` (stable UUID for this specific review — used for precise sync matching and deletion targeting), `status` (`'in_progress'` or `'submitted'`), `notes`, `created_at`, `submitted_at`, `deleted_at` (null unless soft-deleted).
+Key columns: `media_file_id` (FK), `reviewer_name`, `reviewer_uuid` (the UUID of the machine that created this review), `review_sync_id` (stable UUID for this specific review — used for precise sync matching and deletion targeting), `status` (`'in_progress'` or `'submitted'`), `notes`, `created_at`, `submitted_at`, `deleted_at` (null unless soft-deleted), `restored_at`. **Snapshot columns:** `workspace_snapshot` (JSON of the exact media type, tags, workspace tabs, and full form schemas the coder saw — captured at review time), `media_type_sync_id`, `media_type_version`.
 
 ### `timestamps`
 Individual timestamped observations logged during a review.
@@ -355,14 +365,15 @@ Key columns: `review_id` (FK), `time_seconds` (float — the video time in secon
 ### `form_responses`
 A coder's answers to a form within a review.
 
-Key columns: `review_id`, `form_id`, `responses` (JSON object keyed by field UUID: `{ "field-uuid": value }`). One row per (review, form) pair — the entire response object is stored and replaced on every save.
+Key columns: `review_id`, `form_id`, `responses` (JSON object keyed by element UUID: `{ "element-uuid": value }`). One row per (review, form) pair — the entire response object is stored and replaced on every save. **Snapshot columns:** `form_sync_id`, `form_version`, `form_snapshot` (JSON of the form's schema as it was when answered — this is what makes the Excel export keep old labels and never drop removed questions; see Part 4).
+
+### `deleted_structure`
+The tombstone table for **structural** deletions (encounter, media file, form, instruction, media type). Recording a tombstone here is the only way a structural deletion propagates — sync never infers deletion from absence.
+
+Key columns: `project_id`, `kind` (e.g. `'encounter'`, `'media'`, `'form'`, `'instruction'`, `'media_type'`), `sync_id`, `deleted_at`, `UNIQUE(project_id, kind, sync_id)`.
 
 ### `deleted_reviews`
-A tombstone table — records of reviews that have been deleted, so the deletion propagates to other machines during sync.
-
-Key columns: `project_id`, `encounter_name`, `media_name`, `reviewer_name`, `review_sync_id` (used for precise matching), `deleted_at`.
-
-Has a `UNIQUE` constraint on `(project_id, encounter_name, media_name, reviewer_name)` so duplicate tombstones can't accumulate. `INSERT OR IGNORE` is used to silently skip duplicates.
+A legacy tombstone table for reviews. It's still written for backward compatibility, but the protocol-v2 sync path no longer reads it — review deletions now travel as `deleted_at` inside the shared project-state snapshot (soft-delete, row kept). Has a `UNIQUE(project_id, encounter_name, media_name, reviewer_name)` constraint; `INSERT OR IGNORE` skips duplicates.
 
 ---
 
@@ -526,7 +537,7 @@ useEffect(() => {
 }, [projectId])
 ```
 
-`checkManifest` reads `manifest.json` from the sync folder — a tiny file containing just `{ config_version, updated_at }`. If the cloud version is higher than what's stored locally, the full config is pulled. If they match, nothing happens. This avoids downloading the full `project-config.json` (which could be large) every 15 seconds when nothing has changed.
+`checkManifest` reads `manifest.json` from the sync folder — a tiny file carrying the protocol version, `config_version`, and a content **fingerprint**. If it indicates the folder has changed relative to local, `fetchProjectStructure` pulls and merges the full `project-state.json`. If nothing changed, the poll does no further work. This avoids reading/merging the (potentially large) full snapshot every 15 seconds when nothing has changed. (See Part 5 for the snapshot + fingerprint model.)
 
 **The Progress view:**
 
@@ -598,22 +609,24 @@ ipcMain.handle('media:healthCheck', (_, projectId) => {
 
 **Excel export:**
 
-`api.exportExcel(projectId)` calls `electron/ipc/projects.js` which uses the `xlsx` library to build a spreadsheet in memory and save it to disk. It creates one sheet per media type, with one row per review containing the reviewer name, timestamps (as formatted time strings), and each form field answer. Form fields are matched by iterating `sec.elements` (not `sec.questions` — this was a bug fix from when the schema format changed):
+`api.exportExcel(projectId)` (handler `export:excel` in `electron/ipc/projects.js`) calls `buildReviewsWorkbook` in `sync.js`, which builds a multi-sheet workbook with the `xlsx` library and saves it to a path the user picks. This export is **on demand only** — earlier versions rewrote and re-uploaded the spreadsheet on every sync, which was the slowest part of cloud sync; that auto-write was removed and the button is now the single way to produce the file.
 
-```js
-for (const sec of form.sections) {
-  for (const el of sec.elements) {
-    const value = responses[el.id] ?? ''
-    row[`${form.name} — ${el.label}`] = value
-  }
-}
-```
+The workbook is structured for analysis, not just display:
+
+- **README** — a guide to the other sheets.
+- **Codebook** — one row per question/component, with stable IDs, type, valid values, the matching wide-sheet column header, the form's current version, and an **In Current Form** flag.
+- **Reviews** — one row per non-deleted review with join keys.
+- **Responses_Long** — the canonical, tool-friendly sheet: one row per answer.
+- **Media_Files**, **Timestamps** — normalized supporting sheets.
+- **`<Media Type>` Reviews / Timestamps** — readable "wide" convenience sheets, one column per question.
+
+Crucially, the export is **version-aware**. It reads each review's `form_snapshot` (Part 5), so an answer keeps the question label it had when it was given, and a question that was later removed from the form still appears — its wide-sheet column is suffixed `(removed)` and its codebook row is flagged `In Current Form = No`. No answered data is dropped when forms change. Form elements are always iterated as `sec.elements` (never `sec.questions`).
 
 ---
 
 ### Setup Page (`src/pages/SetupPage.jsx`)
 
-**What it shows:** Ten tabs of project configuration, behind an optional password gate.
+**What it shows:** Ten tabs of project configuration, behind an optional password gate. The tab indices are **not** hardcoded — they come from `SETUP_SECTIONS` in `src/lib/setupSections.js`, which is the single source of truth: `OVERVIEW (0)`, `FORMS (1)`, `INSTRUCTIONS (2)`, `MEDIA_TYPES (3)`, `ENCOUNTERS (4)`, `FILES (5)`, `SYNC (6)`, `KEYBINDS (7)`, `ACCESS (8)`, `DELETED_REVIEWS (9)`. Always reference these constants rather than a literal number, since inserting a tab shifts the rest. (Note: the subsection headings below were written against an earlier ordering — trust `setupSections.js` for the current numbers.)
 
 **The password gate:**
 
@@ -695,11 +708,13 @@ Every section and element has a UUID generated when created (`crypto.randomUUID(
 
 The form builder UI is a nested list of draggable sections and elements. Adding an element calls `setForm(f => ({ ...f, sections: f.sections.map(s => s.id === sectionId ? { ...s, elements: [...s.elements, newElement] } : s) }))` — immutably inserting into the nested structure.
 
-Saving calls `api.saveForm(projectId, { name, schema })` which upserts by name: if a form with that name exists, update its schema; otherwise insert.
+Saving calls `api.saveForm(projectId, { name, schema })` which upserts by name: if a form with that name exists, update its schema; otherwise insert. Each save bumps `schema_version` and snapshots the previous schema into `form_versions` (see Part 5). The tab surfaces this history — you can view or restore an earlier version — and, when a form that already has responses is edited, offers the opt-in structure-migration prompt rather than silently re-aligning existing reviews.
+
+Beyond simple text and choice fields, the form builder supports a range of element `type`s, all rendered by `src/components/forms/FormRenderer.jsx`: `short_answer`, `paragraph`, `multiple_choice`, `multiselect`, `checkbox`, `rating`, `slider`, `likert`, `likert_group` (a shared scale applied to a list of items), `timestamp_select` (capture a video time + optional tag), `table` (a grid whose columns can themselves be text/number/select/timestamp), and `text_block` (display-only, not a question). The Excel export knows how to flatten each of these into analysis-friendly columns.
 
 **Instructions tab (2):**
 
-Instructions can be markdown or PDF. Markdown is stored directly in the `instructions.content` column. PDFs are uploaded to the local app data folder (`~/Library/Application Support/SDMo/projects/{projectId}/`) and the path is stored in `instructions.file_path`. The PDF binary is base64-encoded when exported to `project-config.json` so it can be synced to other machines:
+Instructions can be markdown or PDF. Markdown is stored directly in the `instructions.content` column. PDFs are uploaded to the local app data folder (`~/Library/Application Support/SDMo/projects/{projectId}/`) and the path is stored in `instructions.file_path`. The PDF binary is base64-encoded into the synced `project-state.json` snapshot so it can travel to other machines:
 
 ```js
 pdf_data = fs.readFileSync(i.file_path).toString('base64')
@@ -723,11 +738,13 @@ for (const tab of mt.workspace_tabs) {
 }
 ```
 
-Workspace tabs store a `ref_name` (e.g. `"Patient Form"`) in the sync config and resolve it to a local `ref_id` (the form's database ID) on each machine. This is necessary because form IDs differ between machines.
+Workspace tabs store the referenced item's `sync_id` and name in the synced snapshot and resolve it to a local `ref_id` (the form's or instruction's database ID) on each machine. This is necessary because those IDs differ between machines.
 
-**Media Folder tab (4):**
+Like forms, media types are versioned: saving bumps `config_version` and snapshots the previous config (tags + tabs) into `media_type_versions`, so the tab can show history and restore a prior version. Deleting a media type that media files still reference sets `archived_at` rather than hard-deleting.
 
-Picking a folder calls `api.selectFolder()` → `dialog.showOpenDialog({ properties: ['openDirectory'] })` — Electron's built-in folder picker. The selected path is stored in `projects.media_folder`.
+**Encounters (4) and Files (5) tabs:**
+
+The encounter list and the media-file list were split into two tabs, but they share the same media-folder scan flow described here. Picking a folder calls `api.selectFolder()` → `dialog.showOpenDialog({ properties: ['openDirectory'] })` — Electron's built-in folder picker. The selected path is stored in `projects.media_folder`.
 
 Clicking Scan calls `api.scanMediaFolder(folderPath, projectId)` which:
 
@@ -753,7 +770,7 @@ Three modes:
 
 **None:** No sync. Only manual export/import. Existing projects that haven't set up sync stay here.
 
-**Local folder:** The user picks a shared folder path. The path is saved to `projects.sync_folder`. After saving, `doLocalSync` is called immediately to write the initial `project-config.json` and `reviews/<uuid>.json` files.
+**Local folder:** The user picks a shared folder path. The path is saved to `projects.sync_folder`. After saving, `doLocalSync` runs immediately to write the initial `project-state.json` + `manifest.json` (see Part 5 for the layout).
 
 **Cloud:** The user clicks "Connect to OneDrive" or "Connect to Google Drive." This opens the OAuth flow in the system browser (not inside the app — Electron uses `shell.openExternal(authUrl)` to open the real browser). A local HTTP server catches the OAuth redirect. After authentication, the user picks a folder from a tree picker modal. The folder ID is saved to `projects.cloud_folder_id` and `projects.cloud_provider`.
 
@@ -804,46 +821,24 @@ Restoring a review sets `deleted_at = NULL` and `restored_at = datetime('now')`,
 
 **What it shows:** A video (or document) player on the left and a tabbed workspace on the right containing the timestamp logger and any configured forms or instructions.
 
-**Loading a review:**
+**Loading a review and resolving the media file:**
+
+The renderer doesn't hand a raw file path to the player. It asks the main process to resolve where *this machine* has the file and how to serve it:
 
 ```js
-useEffect(() => {
-  async function load() {
-    const review = await api.getReview(reviewId)
-    const mediaFile = await api.getMediaFile(review.media_file_id)
-    const videoUrl = await api.getVideoUrl(mediaFile.file_path)
-    setReview(review)
-    setMediaFile(mediaFile)
-    setVideoUrl(videoUrl)
-    // load tags, forms, keybinds...
-  }
-  load()
-}, [reviewId])
+const review = await api.getReview(reviewId)
+const playback = await api.getPlaybackInfo(review.media_file_id)
+// playback = { status, resolved_path, url, file_type }
 ```
 
-`getVideoUrl` converts the local file path to a `localfile://` URL:
+`media:getPlaybackInfo` (`electron/ipc/media.js`) calls `resolveLink()` (`electron/mediaLinks.js`), which consults the per-machine `media_file_links` table and the machine's media base folder. If the file isn't linked locally yet, `status` is something other than `'linked'` and `url` is null — the UI shows an "unlinked" state instead of a broken player. If it *is* linked, the handler returns a `url` to play.
 
-```js
-ipcMain.handle('media:getUrl', (_, filePath) => {
-  if (!filePath) return null
-  return 'localfile://' + encodeURIComponent(filePath)
-})
-```
+**Two different serving mechanisms, by file type:**
 
-**The `localfile://` protocol:**
+- **Video and audio** are served by a small local **HTTP media server** (`electron/mediaServer.js`). `getMediaUrl(resolved_path)` registers the path behind a single-use-ish token and returns a `http://127.0.0.1:<port>/media/<token>` URL. This server implements HTTP **range requests** — the browser's mechanism for fetching a specific byte range (e.g. "bytes 5,000,000–6,000,000"), which is how video seeking works without downloading the whole file first. Serving through a real HTTP server (rather than a custom protocol) gives correct, well-tested range behavior for large media.
+- **PDFs and other documents** are served through the `localfile://` protocol registered in `electron/main.js` with `protocol.registerFileProtocol`. Do **not** "modernize" this to `protocol.handle` + `net.fetch` — that path streams through Node and breaks range requests.
 
-Registered in `electron/main.js`:
-
-```js
-protocol.registerFileProtocol('localfile', (request, callback) => {
-  const filePath = decodeURIComponent(request.url.replace('localfile://', ''))
-  callback({ path: filePath })
-})
-```
-
-This tells Chromium: when you encounter a URL starting with `localfile://`, serve the file at that local path. This is critical because standard `file://` URLs don't support HTTP **range requests** — the browser's mechanism for requesting a specific byte range of a file (e.g. "give me bytes 5,000,000 to 6,000,000"). Range requests are how video seeking works: clicking to a position in the video sends a range request for the data at that timestamp. Without range support, you'd have to load the entire video before seeking. The `localfile://` protocol goes through Chromium's native file protocol handler which fully supports range requests.
-
-`protocol.handle` (the newer API) does NOT support range requests — it processes requests through Node.js streams which don't implement the range protocol correctly. The older `protocol.registerFileProtocol` is intentionally used here.
+Both mechanisms enforce an allowlist of resolved paths; neither will serve an arbitrary path the renderer makes up.
 
 **Video player:**
 
@@ -941,6 +936,18 @@ navigate(-1)  // go back to the previous page
 
 `navigate(-1)` is React Router's equivalent of the browser Back button.
 
+**Popping the workspace into its own window:**
+
+The forms/instructions/timestamp workspace can be detached into a second window so a coder can put the video on one monitor and the forms on another. The review page calls `window:openWorkspace` with a `#/workspace/<reviewId>` URL; `electron/main.js` opens a new `BrowserWindow` (tracked in a `workspaceWindows` map keyed by review id, so re-opening focuses the existing one instead of spawning duplicates). The two windows stay in step through one-way IPC events — `review:notifyUpdate` tells the other window to reload, and `workspace:closed` tells the review window the pop-out went away.
+
+---
+
+### Workspace Page (`src/pages/WorkspacePage.jsx`)
+
+**What it shows:** The detached workspace — the same tabbed forms, instructions, and timestamp logger that can appear beside the player, rendered in its own window for `/workspace/:reviewId`.
+
+The important detail is *where its form definitions come from*. Instead of fetching the current forms, it hydrates from the review's **`workspace_snapshot`** (`hydrateWorkspaceSnapshot`): the media type, tags, workspace tabs, and full form schemas exactly as they were when the review began. This is the user-facing payoff of the snapshot system in Part 5 — a coder always sees and answers the instrument as it existed for *their* review, even if the PI has since edited the form. Form answers still save through the normal `form_responses` upsert, and the page validates required fields before allowing submit.
+
 ---
 
 ## Part 5: The Sync System
@@ -959,208 +966,54 @@ The constraints are:
 - No central server — communication is only via files in a shared folder
 - No machine should be able to accidentally overwrite another's reviews
 
-### The Split-File Layout
+### The File Layout (protocol v2)
+
+The sync system was rewritten. The old design split data across many files (`project-config.json`, a `reviews/<uuid>.json` per machine, `deleted-reviews.json`) and used a `config_version` counter to decide who won. That is **gone**. Today there is one canonical snapshot file:
 
 ```
 sync-folder/
-  manifest.json          ← { config_version: 12, updated_at: "..." }
-  project-config.json    ← full project structure
-  deleted-reviews.json   ← { tombstones: [...] }
-  reviews/
-    a1b2c3d4.json        ← all reviews by machine with UUID a1b2c3d4
-    e5f6g7h8.json        ← all reviews by machine with UUID e5f6g7h8
+  project-state.json     ← canonical snapshot: structure + ALL reviews + tombstones
+  manifest.json          ← { protocol_version, config_version, fingerprint }
+  reviews-export.xlsx     (no longer written automatically — see Part 4)
 ```
 
-Each machine has a UUID (`user_uuid` in `app-settings.json`) generated once on first launch. A machine only ever writes its own `reviews/<uuid>.json`. It reads everyone else's. This is enforced in `mergeReviewFile`:
+`project-state.json` holds *everything*: encounters, media files, media types (with tags + workspace tabs), forms, instructions, every machine's reviews, and the tombstone lists. Both sides read it, merge it against their local database, and write the merged result back. It is the single source of truth — it is never split back into per-entity files.
 
-```js
-// Never overwrite our own reviews from a stale file
-if (ownUuid && reviewData.reviewer_uuid === ownUuid) return
-```
+Each machine still has a UUID (`user_uuid` in `app-settings.json`, created once on first launch). But a machine no longer "owns" a file — every machine publishes the full merged state whenever its local content differs from the folder. There is no `isOwner` / owner-gating anymore; the old concept was removed.
 
-### Config Versioning
+### Fingerprint-Driven, Per-Entity Merge (last-writer-wins)
 
-`config_version` is an integer on the `projects` table. Every structural change — adding an encounter, modifying a form, changing a media type — calls:
+Sync is **bidirectional** and merges **per entity**, not per file. Two ideas drive it:
 
-```js
-function bumpConfigVersion(db, projectId) {
-  db.prepare("UPDATE projects SET config_version = config_version + 1, updated_at = datetime('now') WHERE id=?").run(projectId)
-}
-```
+1. **Fingerprint** — `projectStateFingerprint()` hashes the meaningful content of the snapshot (entity contents + clocks, ignoring row order). On each sync the local fingerprint is compared to the folder's `manifest.json` fingerprint. If they match, there is nothing to do and the sync is essentially free. If they differ, a merge runs and the result is written back.
 
-During sync, versions are compared:
+2. **Per-entity clocks** — every structural row carries a `sync_id` and an `updated_at` modification clock; every review carries a `review_sync_id`. When the same entity exists on both sides, the one with the newer `updated_at` wins (**last-writer-wins**). Different entities added on different machines both survive — a merge never drops an entity just because the other side hasn't seen it yet.
 
-```js
-const localVersion = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)?.config_version || 0
-const manifest = readLocalManifest(syncFolder)  // or read from cloud
-const folderVersion = manifest?.config_version || 0
+`config_version` still exists in the manifest but is **legacy back-compat only**. It does *not* gate which side wins. Don't write new logic that uses it to decide a merge.
 
-if (folderVersion > localVersion) {
-  // Pull config — cloud is newer (someone else made changes)
-  replaceStructureFromConfig(db, projectId, configData)
-} else if (localVersion > folderVersion) {
-  // Push config — local is newer (we made changes)
-  fs.writeFileSync(configPath, JSON.stringify(buildConfigExport(db, projectId)))
-  fs.writeFileSync(manifestPath, JSON.stringify(buildManifest(db, projectId)))
-}
-```
+### `applyStructure` and its two modes
 
-`manifest.json` is a tiny file (just a version number) that lives alongside `project-config.json`. It's read first on every poll and every sync to cheaply determine whether the full config needs to be downloaded. Only if the version has changed is the full config fetched.
+Structure merging goes through `applyStructure`, which has two modes and **neither ever prunes**:
 
-### The Full Sync Order
+- `merge: true` — last-writer-wins by `updated_at`. This is the automatic sync path.
+- `merge: false` — authoritative replace, used for manual import/join flows.
 
-Each sync (local or cloud) runs in this order:
+Crucially, **absence is never deletion.** If an entity is missing from the incoming snapshot, `applyStructure` leaves the local copy alone. The only way a structural deletion propagates is a tombstone (next section).
 
-1. **Tombstones in** — read `deleted-reviews.json` from the folder, apply any deletions to local DB
-2. **Merge tombstones** — combine local tombstones with incoming ones (union, no duplicates)
-3. **Config** — compare versions, push or pull accordingly
-4. **Peer reviews in** — read every `reviews/*.json` except our own, merge each into local DB
-5. **Own review out** — write our current reviews to `reviews/<uuid>.json`
-6. **Tombstones out** — write the merged tombstone list back to `deleted-reviews.json`
+### Tombstones — the only way deletions travel
 
-This order matters. Tombstones are applied before peer reviews are merged — so if a review was deleted, it stays deleted even if the peer's file still contains it (because the tombstone will soft-delete it locally before the merge tries to re-add it... actually the merge skips `deleted_at` reviews during the name-based fallback lookup).
+- **Structural entities** (encounter, media file, form, instruction, media type): deleting one records a row in `deleted_structure` via `recordStructureTombstone(db, projectId, kind, id)` *before* the row is removed. That tombstone rides along in `project-state.json`; peers that see it delete their local copy. If you ever add a new delete path for a structural entity and forget the tombstone, the deletion silently won't sync.
+- **Reviews**: soft-delete only. `deleted_at` is set and the row is **kept** (so it can still be inspected/restored). The soft-deleted review travels inside the snapshot, and the LWW clock resolves restore-vs-delete races. The legacy `deleted_reviews` table is still written but not consulted in the v2 path.
 
-### `buildConfigExport` — What Gets Synced as Config
+### Reviews carry their snapshot
 
-The config file contains everything the PI controls: project name, password hash, keybinds, forms, instructions (with PDFs base64-encoded), media types (with tags and workspace tab definitions), and encounter + media file structure (names and sync_ids, but NOT file paths — those are local to each machine).
+Because forms and media types are versioned, a review in the snapshot also carries the `workspace_snapshot` and per-response `form_snapshot` captured when it was filled. On merge, `localizeWorkspaceSnapshot` (in `services/snapshots.js`) rewrites the snapshot's embedded form/instruction ids from the sender's local ids to the receiver's local ids (matching by `sync_id`, falling back to name), so the snapshot stays meaningful on every machine.
 
-```js
-function buildConfigExport(db, projectId) {
-  // ...
-  const encounters = db.prepare('SELECT * FROM encounters WHERE project_id=?').all(projectId).map(enc => {
-    const mediaFiles = db.prepare('SELECT mf.*, mt.name as media_type_name FROM media_files mf LEFT JOIN media_types mt ON mf.media_type_id = mt.id WHERE mf.encounter_id=?').all(enc.id)
-    return {
-      sync_id: enc.sync_id,
-      name: enc.name,
-      media: mediaFiles.map(m => ({
-        sync_id: m.sync_id,
-        name: m.name,
-        file_type: m.file_type,
-        media_type_name: m.media_type_name || null
-        // no file_path — that's local
-      })),
-    }
-  })
-}
-```
+### Connectivity and auto-sync cadence
 
-`file_path` is deliberately excluded. Every machine sets up its own media folder and scans to link files locally. The sync config tells you the structure (what files exist) but not where each machine has stored them.
-
-### `buildReviewExport` — What Gets Synced as Reviews
-
-The reviewer file contains all non-deleted reviews for this machine's UUID:
-
-```js
-function buildReviewExport(db, projectId, reviewerUuid, reviewerName) {
-  const encounters = db.prepare('SELECT * FROM encounters WHERE project_id=?').all(projectId)
-  const reviews = []
-  for (const enc of encounters) {
-    for (const m of db.prepare('SELECT * FROM media_files WHERE encounter_id=?').all(enc.id)) {
-      const revRows = db.prepare(
-        'SELECT * FROM reviews WHERE media_file_id=? AND (reviewer_uuid=? OR (reviewer_uuid IS NULL AND reviewer_name=?)) AND deleted_at IS NULL'
-      ).all(m.id, reviewerUuid, reviewerName)
-      for (const rev of revRows) {
-        const timestamps = db.prepare('SELECT * FROM timestamps WHERE review_id=? ORDER BY time_seconds').all(rev.id)
-        const formResponses = db.prepare('SELECT fr.*, f.name as form_name FROM form_responses fr JOIN forms f ON fr.form_id=f.id WHERE fr.review_id=?').all(rev.id)
-        reviews.push({
-          review_sync_id: rev.review_sync_id,
-          encounter_sync_id: enc.sync_id,
-          encounter_name: enc.name,
-          media_sync_id: m.sync_id,
-          media_name: m.name,
-          status: rev.status,
-          notes: rev.notes,
-          created_at: rev.created_at,
-          submitted_at: rev.submitted_at,
-          timestamps: timestamps.map(ts => ({ time_seconds: ts.time_seconds, tag_label: ts.tag_label, tag_color: ts.tag_color, notes: ts.notes, created_at: ts.created_at })),
-          form_responses: formResponses.map(fr => ({ form_name: fr.form_name, responses: fr.responses })),
-        })
-      }
-    }
-  }
-  return { sdmo_reviews: true, version: 1, reviewer_uuid: reviewerUuid, reviewer_name: reviewerName, reviews }
-}
-```
-
-### `mergeReviewFile` — Importing Peer Reviews
-
-For each review entry in a peer's file, the receiving machine must:
-
-1. Find the local encounter and media file that the entry refers to
-2. Find the existing local review record (if any) for this entry
-3. Either update the existing record or insert a new one
-
-**Finding the encounter and media file** uses a three-tier lookup:
-
-```js
-// Encounter: try sync_id first (survives renames), fall back to name
-let localEnc = rev.encounter_sync_id
-  ? db.prepare('SELECT id FROM encounters WHERE project_id=? AND sync_id=?').get(projectId, rev.encounter_sync_id)
-  : null
-if (!localEnc) localEnc = db.prepare('SELECT id FROM encounters WHERE project_id=? AND name=?').get(projectId, rev.encounter_name)
-
-// Media file: sync_id (survives moves between encounters), fall back to name
-let localMedia = rev.media_sync_id
-  ? db.prepare('SELECT id FROM media_files WHERE sync_id=?').get(rev.media_sync_id)
-  : null
-if (!localMedia) localMedia = db.prepare('SELECT id FROM media_files WHERE encounter_id=? AND name=?').get(localEnc.id, rev.media_name)
-```
-
-Sync IDs are why renames don't break sync: if encounter "Encounter 1" is renamed to "Patient A", both machines have the same `sync_id` on that row. The sync_id lookup finds it regardless of the current name.
-
-**Finding the existing review record** also uses a three-tier lookup:
-
-```js
-// Most precise: the review's own UUID
-let existing = rev.review_sync_id
-  ? db.prepare('SELECT id FROM reviews WHERE review_sync_id=?').get(rev.review_sync_id)
-  : null
-// Fallback: reviewer UUID + exact created_at time
-if (!existing && reviewData.reviewer_uuid)
-  existing = db.prepare('SELECT id FROM reviews WHERE media_file_id=? AND reviewer_uuid=? AND created_at=?').get(localMedia.id, reviewData.reviewer_uuid, rev.created_at)
-// Last resort: reviewer name + created_at
-if (!existing)
-  existing = db.prepare('SELECT id FROM reviews WHERE media_file_id=? AND reviewer_name=? AND created_at=? AND deleted_at IS NULL').get(localMedia.id, reviewData.reviewer_name, rev.created_at)
-```
-
-`review_sync_id` is why the same reviewer can have multiple reviews for the same media file and have them all sync correctly. Without it, there's no way to tell which local record corresponds to which entry in the peer file when there are multiple.
-
-If `existing` is found, the review is updated in place (status, notes, timestamps, form responses — all replaced). If not found, a new review is inserted. The peer's file is always authoritative for their own reviews.
-
-### Tombstones
-
-When a review is deleted (`reviews:delete`):
-
-```js
-// Soft-delete the review
-db.prepare("UPDATE reviews SET deleted_at=datetime('now') WHERE id=?").run(id)
-
-// Record a tombstone with the review's own UUID
-db.prepare('INSERT OR IGNORE INTO deleted_reviews (project_id, encounter_name, media_name, reviewer_name, review_sync_id) VALUES (?,?,?,?,?)')
-  .run(row.project_id, row.encounter_name, row.media_name, row.reviewer_name, row.review_sync_id)
-```
-
-During sync, tombstones from the folder are applied:
-
-```js
-function applyTombstones(db, projectId, tombstones) {
-  for (const del of tombstones) {
-    let rev
-    if (del.review_sync_id) {
-      // Precise: find by the review's own UUID
-      rev = db.prepare('SELECT id FROM reviews WHERE review_sync_id=? AND deleted_at IS NULL').get(del.review_sync_id)
-    } else {
-      // Legacy: find by name (for tombstones written before review_sync_id existed)
-      const localEnc = db.prepare('SELECT id FROM encounters WHERE project_id=? AND name=?').get(projectId, del.encounter_name)
-      const localMedia = db.prepare('SELECT id FROM media_files WHERE encounter_id=? AND name=?').get(localEnc?.id, del.media_name)
-      rev = db.prepare('SELECT id FROM reviews WHERE media_file_id=? AND reviewer_name=? AND deleted_at IS NULL').get(localMedia?.id, del.reviewer_name)
-    }
-    if (rev) db.prepare("UPDATE reviews SET deleted_at=datetime('now') WHERE id=?").run(rev.id)
-  }
-}
-```
-
-Tombstones use `review_sync_id` when available so the deletion targets the exact review, not "any review by this reviewer on this file." This matters when one reviewer has multiple reviews for the same file — the deletion hits the right one.
+- **Local-folder sync** (`doLocalSync` → `syncProjectStateLocal`) has no network check — it reads/writes files in the shared folder directly.
+- **Cloud sync** (`doCloudSync` → `syncProjectStateCloud`) checks `net.isOnline()` first. If offline, it emits `sync:offline` once and returns; the periodic pass retries, and when connectivity returns it emits `sync:online`. (See Part 6 for the cloud adapters.)
+- **Auto-sync triggers**: `scheduleSync(projectId)` runs ~2s after a structural change (debounced — rapid changes coalesce into one sync). `scheduleSyncForReview(reviewId)` is the review-save variant (walks review → media → encounter → project to find the project id; no `config_version` bump). `startPeriodicAutoSync` runs a pass every 5 minutes plus a ~15s startup pass to catch changes made while the app was closed.
 
 ### Auto-Sync Debouncing
 
@@ -1187,6 +1040,18 @@ scheduleSync(enc.project_id)
 ```
 
 Three queries to get from review → project, but they're all indexed primary-key lookups and take microseconds.
+
+### Versioning, Snapshots, and Structure Migration
+
+Research instruments evolve — a PI tweaks a form's wording, adds a question, or changes a media type's tags weeks into a study. Three mechanisms keep that from corrupting data already collected. The first two live in `electron/services/`; all three are exercised by tests in `test/sync.test.js`.
+
+**1. Version history (`services/structure.js`).** Editing a form bumps `forms.schema_version`; editing a media type bumps `media_types.config_version`. Just before the live row is overwritten, the *prior* state is copied into `form_versions` / `media_type_versions` (`captureFormVersion` / `captureMediaTypeVersion`, using `INSERT OR IGNORE` so re-running is safe). The Setup UI can list this history (`setup:listVersionHistory`) and restore any prior version — restoring writes the old content back as a *new* latest version (it never rewrites history). Deleting a form or media type that has data sets `archived_at` instead of hard-deleting, so existing responses keep a valid reference.
+
+**2. Review-time snapshots (`services/snapshots.js`).** When a coder opens a media file to review, `buildWorkspaceSnapshot` captures the exact instrument they will see — the media type, its tags, its workspace tabs, and the full JSON schema of every form on those tabs — into `reviews.workspace_snapshot`. Each saved form response also stores the form's schema at answer time in `form_responses.form_snapshot`. This is why a later edit to a form never changes what an in-progress or submitted review shows, and why the Excel export can keep old question labels and never drop answers to questions that were since removed (see Part 4). `WorkspacePage` renders directly from the snapshot rather than from the current form definitions.
+
+**3. Opt-in structure migration.** Sometimes you *do* want existing reviews re-aligned to the current structure (e.g. you fixed a typo and want everyone's drafts to pick it up). This is deliberate, never automatic. `setup:previewStructureMigration` reports how many reviews match a given form/media type (split into drafts vs. submitted) by comparing snapshots and responses; `setup:migrateStructureReviews` then rewrites those reviews' snapshots to the current version inside a transaction. Submitted reviews are left untouched unless the scope explicitly includes them. Nothing here runs on a normal save — editing a form does not retroactively touch any review.
+
+> All three `setup:*` channels above are registered in `electron/ipc/projects.js` (there is no separate `setup.js`), validated in `electron/ipc/contracts.js`, exposed in `preload.js`, and mocked in `src/lib/api.js` — the standard four-touch path for any IPC method.
 
 ---
 
@@ -1477,11 +1342,11 @@ The `release` job runs after all three build jobs finish. It downloads all artif
 
 ## Part 9: Key Design Decisions and Why
 
-**Why split config and reviews into separate files?**
-If everything were in one file, any change by any coder (saving a timestamp) would require uploading the entire project file, and two coders saving simultaneously would create a conflict with no clear resolution. Separate files mean each machine writes only its own file; structure conflicts (who owns encounter definitions) are resolved by version numbers.
+**Why one `project-state.json` snapshot instead of many per-machine files?**
+The original design split data into a config file, a per-machine reviews file, and a deletions file, with a `config_version` counter deciding who won. It worked but was fragile: the counter could gate the wrong side, "who owns this" was ambiguous, and adding an entity on two machines at once could silently lose one. Protocol v2 replaced it with a single snapshot merged **per entity** by `sync_id` + `updated_at` (last-writer-wins), with a content **fingerprint** to skip no-op syncs. Different entities added on different machines all survive; the merge never infers deletion from absence. The trade-off — rewriting the whole snapshot on change instead of one small file — is cheap at this data scale and far less error-prone.
 
-**Why soft-delete reviews instead of hard-delete?**
-If you delete a row and then sync, other machines still have it — there's no way to tell the difference between "this review was deleted" and "this review hasn't synced yet." Soft-deletes (setting `deleted_at`) plus tombstone records give deletions a persistent signal that can travel through the sync system.
+**Why soft-delete reviews and use tombstones for structure?**
+If you hard-delete a row and then sync, other machines still have it — and there's no way to distinguish "deleted" from "not synced yet." Reviews are soft-deleted (`deleted_at` set, row kept) so the deletion travels inside the snapshot and can even be undone. Structural deletions record a `deleted_structure` tombstone, which is the *only* signal that propagates them — `applyStructure` never prunes, so without the tombstone the item would just reappear from a peer.
 
 **Why store form responses as a single JSON blob instead of one row per field?**
 Forms change over time — fields get added, removed, reordered. A row-per-field schema would need complex migrations and risk orphaned rows. A JSON blob keyed by field UUID accommodates any schema change without schema migration: missing keys are treated as no answer, extra keys are ignored.
@@ -1489,8 +1354,11 @@ Forms change over time — fields get added, removed, reordered. A row-per-field
 **Why use `review_sync_id` in addition to `reviewer_uuid`?**
 `reviewer_uuid` identifies the machine, not the review. One machine can have multiple reviews for the same media file (e.g. a reviewer re-did a review after un-submitting). `review_sync_id` is a UUID for the specific review row, making sync matching and deletion precise regardless of how many reviews exist per reviewer per file.
 
-**Why `manifest.json` for polling?**
-Polling every 15 seconds by downloading `project-config.json` (which can be hundreds of kilobytes with PDFs embedded) would be wasteful and slow. `manifest.json` is always a few bytes and tells you whether it's worth downloading the full config. It's the same pattern CDNs use with `ETag` and `Last-Modified` headers.
+**Why a tiny `manifest.json` next to the snapshot?**
+`project-state.json` can be large. `manifest.json` is a few bytes and carries the content **fingerprint**; comparing fingerprints first lets a sync (or a poll) cheaply decide whether anything actually changed before reading or writing the full snapshot. It's the same idea as a CDN's `ETag`.
 
-**Why `localfile://` instead of `file://` for videos?**
-The HTML `<video>` element requires HTTP range requests to support seeking — jumping to a point in the video without loading everything before it. Standard `file://` URLs don't support range requests in Electron. The custom `localfile://` protocol routes through Chromium's native file handler which does support ranges. This is a known Electron limitation and the registered protocol is the standard workaround.
+**Why snapshot the instrument at review time, and version forms/media types?**
+Studies run for months and PIs revise forms mid-stream. If reviews referenced only the *live* form, an edit would retroactively change what past reviews appear to have asked — corrupting the record. Instead, each review captures a `workspace_snapshot`/`form_snapshot` of the exact instrument it was filled with, and every edit is preserved in `form_versions`/`media_type_versions`. Coders always see their own version, the Excel export keeps original labels and never drops removed questions, and re-aligning old reviews to a new version is an explicit, opt-in migration rather than a side effect of saving.
+
+**Why serve video over a local HTTP server but documents over `localfile://`?**
+Both need HTTP **range requests** so the player can seek without downloading the whole file. For video/audio the app runs a small local HTTP server (`mediaServer.js`) that implements ranges correctly and is easy to reason about for large files. PDFs and other documents use the `localfile://` custom protocol (`protocol.registerFileProtocol`), which also supports ranges through Chromium's native file handler. The newer `protocol.handle` + `net.fetch` API is deliberately avoided — it streams through Node and breaks range support.

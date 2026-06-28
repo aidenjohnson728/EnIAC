@@ -1,6 +1,7 @@
 const { getDb } = require('../db')
 const { scheduleSyncForReview } = require('../sync')
 const { getOrCreateUUID } = require('../settings')
+const { buildWorkspaceSnapshot, getFormSnapshotFromReview, currentFormSnapshot } = require('../services/snapshots')
 
 module.exports = function (ipcMain) {
   ipcMain.handle('reviews:list', (_, mediaFileId) => {
@@ -12,7 +13,19 @@ module.exports = function (ipcMain) {
     const db = getDb()
     const crypto = require('crypto')
     const uuid = getOrCreateUUID()
-    const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id) VALUES (?,?,?,?)').run(data.media_file_id, data.reviewer_name, uuid, crypto.randomUUID())
+    const snapshot = buildWorkspaceSnapshot(db, data.media_file_id)
+    const r = db.prepare(`
+      INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, media_type_sync_id, media_type_version, workspace_snapshot)
+      VALUES (?,?,?,?,?,?,?)
+    `).run(
+      data.media_file_id,
+      data.reviewer_name,
+      uuid,
+      crypto.randomUUID(),
+      snapshot?.media_type?.sync_id || null,
+      snapshot?.media_type?.version || null,
+      snapshot ? JSON.stringify(snapshot) : null
+    )
     const review = db.prepare('SELECT * FROM reviews WHERE id=?').get(r.lastInsertRowid)
     scheduleSyncForReview(r.lastInsertRowid)
     return review
@@ -24,8 +37,10 @@ module.exports = function (ipcMain) {
     if (!review) return null
     review.timestamps = db.prepare('SELECT * FROM timestamps WHERE review_id=? ORDER BY time_seconds').all(id)
     review.form_responses = db.prepare('SELECT * FROM form_responses WHERE review_id=?').all(id)
+    review.workspace_snapshot = review.workspace_snapshot ? JSON.parse(review.workspace_snapshot) : null
     for (const fr of review.form_responses) {
       fr.responses = JSON.parse(fr.responses)
+      fr.form_snapshot = fr.form_snapshot ? JSON.parse(fr.form_snapshot) : null
     }
     return review
   })
@@ -147,11 +162,17 @@ module.exports = function (ipcMain) {
   ipcMain.handle('reviews:saveFormResponse', (_, reviewId, data) => {
     const db = getDb()
     const responses = typeof data.responses === 'string' ? data.responses : JSON.stringify(data.responses)
+    const formSnapshot = getFormSnapshotFromReview(db, reviewId, data.form_id) || currentFormSnapshot(db, data.form_id)
+    const formSyncId = formSnapshot?.sync_id || null
+    const formVersion = formSnapshot?.version || null
+    const formSnapshotJson = formSnapshot ? JSON.stringify(formSnapshot) : null
     const existing = db.prepare('SELECT id FROM form_responses WHERE review_id=? AND form_id=?').get(reviewId, data.form_id)
     if (existing) {
-      db.prepare("UPDATE form_responses SET responses=?, updated_at=datetime('now') WHERE id=?").run(responses, existing.id)
+      db.prepare("UPDATE form_responses SET responses=?, form_sync_id=COALESCE(form_sync_id,?), form_version=COALESCE(form_version,?), form_snapshot=COALESCE(form_snapshot,?), updated_at=datetime('now') WHERE id=?")
+        .run(responses, formSyncId, formVersion, formSnapshotJson, existing.id)
     } else {
-      db.prepare('INSERT INTO form_responses (review_id, form_id, responses) VALUES (?,?,?)').run(reviewId, data.form_id, responses)
+      db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+        .run(reviewId, data.form_id, responses, formSyncId, formVersion, formSnapshotJson)
     }
     scheduleSyncForReview(reviewId)
     return true

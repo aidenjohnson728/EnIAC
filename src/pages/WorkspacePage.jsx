@@ -7,6 +7,20 @@ import { api } from '../lib/api'
 import FormRenderer from '../components/forms/FormRenderer'
 import Modal from '../components/ui/Modal'
 
+function hydrateWorkspaceSnapshot(snapshot) {
+  const formSchemas = {}
+  for (const [id, form] of Object.entries(snapshot?.forms || {})) {
+    formSchemas[id] = { ...form, schema: form.schema || { sections: [] } }
+  }
+  const instructions = {}
+  for (const [id, instr] of Object.entries(snapshot?.instructions || {})) instructions[id] = instr
+  return {
+    workspaceTabs: snapshot?.workspace_tabs || [],
+    formSchemas,
+    instructions,
+  }
+}
+
 export default function WorkspacePage() {
   const { reviewId } = useParams()
 
@@ -16,6 +30,7 @@ export default function WorkspacePage() {
   const [formSchemas, setFormSchemas] = useState({})
   const [instructions, setInstructions] = useState({})
   const [formResponses, setFormResponses] = useState({})
+  const [timestamps, setTimestamps] = useState([])
 
   const [activeTab, setActiveTab] = useState(0)
   const [submitted, setSubmitted] = useState(false)
@@ -34,6 +49,7 @@ export default function WorkspacePage() {
       const respMap = {}
       for (const fr of (rev.form_responses || [])) respMap[fr.form_id] = fr.responses
       setFormResponses(respMap)
+      setTimestamps(rev.timestamps || [])
     })
   }
 
@@ -52,6 +68,7 @@ export default function WorkspacePage() {
     if (!rev) { setLoading(false); return }
     setReview(rev)
     setSubmitted(rev.status === 'submitted')
+    setTimestamps(rev.timestamps || [])
 
     const respMap = {}
     for (const fr of (rev.form_responses || [])) respMap[fr.form_id] = fr.responses
@@ -63,6 +80,15 @@ export default function WorkspacePage() {
 
     const enc = await api.getEncounter(mf.encounter_id)
     if (!enc) { setLoading(false); return }
+
+    if (rev.workspace_snapshot) {
+      const frozen = hydrateWorkspaceSnapshot(rev.workspace_snapshot)
+      setWorkspaceTabs(frozen.workspaceTabs)
+      setFormSchemas(frozen.formSchemas)
+      setInstructions(frozen.instructions)
+      setLoading(false)
+      return
+    }
 
     const allTypes = await api.listMediaTypes(enc.project_id)
     const mt = allTypes.find(t => t.id === mf.media_type_id)
@@ -216,6 +242,7 @@ export default function WorkspacePage() {
                   responses={formResponses[currentTab.ref_id] || {}}
                   onSave={resp => saveFormResponse(currentTab.ref_id, resp)}
                   readOnly={submitted}
+                  timestamps={timestamps}
                 />
               : <div className="empty-state"><p className="text-sm">Form not found.</p></div>
           ) : currentTab.tab_type === 'instruction' ? (

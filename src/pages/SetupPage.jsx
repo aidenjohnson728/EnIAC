@@ -1,13 +1,35 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { ChevronLeft, Plus, FolderOpen, ChevronRight, Trash2, Copy, Edit2, Check, Lock, Unlock, Cloud, HardDrive, X, RefreshCw, AlertTriangle, User } from 'lucide-react'
+import { ChevronLeft, Plus, FolderOpen, ChevronRight, Trash2, Copy, Edit2, Check, Lock, Unlock, Cloud, HardDrive, X, RefreshCw, AlertTriangle, User, HelpCircle } from 'lucide-react'
 import { api } from '../lib/api'
 import FormBuilder from '../components/setup/FormBuilder'
 import MediaTypeEditor from '../components/setup/MediaTypeEditor'
 import InstructionEditor from '../components/setup/InstructionEditor'
 import Modal from '../components/ui/Modal'
+import useTour from '../components/ui/useTour'
 
-const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Deleted Reviews']
+const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Versions', 'Deleted Reviews']
+
+const FILES_TOUR_STEPS = [
+  {
+    targetId: 'tut-files-base',
+    placement: 'bottom',
+    title: 'Why Linking Is Needed',
+    body: "SDMo stores the project structure (encounters, media slots, reviews) in the cloud — but your actual video files stay on your own computer, never uploaded. Since file paths are device-specific, everyone on the team links their own local copies here. Set your base folder to get started.",
+  },
+  {
+    targetId: 'tut-files-autolink',
+    placement: 'bottom',
+    title: 'Auto-link: Fastest Setup',
+    body: "Point Auto-link at the folder where your local copy of the media lives. Its file structure should mirror the project's encounters and file names. SDMo scans it (and any subfolders) and links every matching file automatically — no manual locating needed.",
+  },
+  {
+    targetId: 'tut-files-status',
+    placement: 'top',
+    title: 'Manual Linking',
+    body: "See every media file and its link status on this machine. If Auto-link missed a file, use Link / Locate to browse to it manually. Mark N/A for files you intentionally don't have (they'll be skipped in your export).",
+  },
+]
 
 export default function SetupPage() {
   const { projectId } = useParams()
@@ -32,6 +54,7 @@ export default function SetupPage() {
   const [editingType, setEditingType] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const filesTour = useTour(FILES_TOUR_STEPS, 'sdmo_tour_files_v1', { ready: section === 5 && !loading })
   // Password / lock state
   const [isUnlocked, setIsUnlocked] = useState(false)
   const [hasPassword, setHasPassword] = useState(false)
@@ -65,8 +88,12 @@ export default function SetupPage() {
   const [autolinkResult, setAutolinkResult] = useState(null)
   const [autolinking, setAutolinking] = useState(false)
   const [linkSaving, setLinkSaving] = useState(null) // mediaFileId being linked
+  const forcedLockOnEntryRef = useRef(false)
 
-  useEffect(() => { load() }, [projectId])
+  useEffect(() => {
+    forcedLockOnEntryRef.current = false
+    load()
+  }, [projectId])
 
   async function load() {
     setLoading(true)
@@ -113,14 +140,15 @@ export default function SetupPage() {
     setBaseFolder(bf || '')
 
     const hasPw = proj?.has_password ?? false
+    let unlocked = !hasPw || !!proj?.is_unlocked
+    if (hasPw && !forcedLockOnEntryRef.current) {
+      await api.lockProject(Number(projectId))
+      forcedLockOnEntryRef.current = true
+      unlocked = false
+    }
     setHasPassword(hasPw)
-    // Only prompt on first load — if already unlocked this session, stay unlocked
-    setIsUnlocked(prev => {
-      if (!hasPw) return true
-      if (prev) return true  // already unlocked, don't re-prompt
-      setShowUnlock(true)
-      return false
-    })
+    setIsUnlocked(unlocked)
+    setShowUnlock(hasPw && !unlocked)
     setLoading(false)
   }
 
@@ -151,6 +179,16 @@ export default function SetupPage() {
     setNewPwConfirm('')
     setPwSaved(true)
     setTimeout(() => setPwSaved(false), 2000)
+  }
+
+  function handleEditorLocked() {
+    setEditingForm(null)
+    setEditingType(null)
+    setEditingInstr(null)
+    setIsUnlocked(false)
+    setUnlockInput('')
+    setUnlockError('')
+    setShowUnlock(true)
   }
 
   async function handleSwitchMode(newMode) {
@@ -372,6 +410,7 @@ export default function SetupPage() {
         form={editingForm}
         onSave={async (saved) => { await load(); setEditingForm(null) }}
         onCancel={() => setEditingForm(null)}
+        onLocked={handleEditorLocked}
       />
     )
   }
@@ -398,6 +437,7 @@ export default function SetupPage() {
         instructions={instructions}
         onSave={async () => { await load(); setEditingType(null) }}
         onCancel={() => setEditingType(null)}
+        onLocked={handleEditorLocked}
       />
     )
   }
@@ -685,7 +725,12 @@ export default function SetupPage() {
 
           {section === 5 && (
             <div style={{ maxWidth: 600 }}>
-              <h2 style={{ marginBottom: 6 }}>Files</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <h2 style={{ margin: 0 }}>Files</h2>
+                <button className="btn btn-ghost btn-icon btn-sm" onClick={filesTour.start} title="Show tutorial">
+                  <HelpCircle size={15} />
+                </button>
+              </div>
               <p className="text-secondary" style={{ marginBottom: 24, fontSize: 13 }}>
                 Link your local media files to this project. The app reads files directly — nothing is copied or uploaded.
               </p>
@@ -696,7 +741,7 @@ export default function SetupPage() {
                 <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
                   Set a base folder and click <strong>Auto-link</strong> — the app will match files by name. You can also link individual files manually below.
                 </p>
-                <div className="form-field">
+                <div id="tut-files-base" className="form-field">
                   <label>Base Folder</label>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <input value={baseFolder} onChange={e => setBaseFolder(e.target.value)} placeholder="/path/to/your/media/folder" />
@@ -712,7 +757,7 @@ export default function SetupPage() {
                   <button className="btn btn-secondary" onClick={handleSaveBaseFolder} disabled={!baseFolder || saving}>
                     {saving ? 'Saving…' : 'Save Base Folder'}
                   </button>
-                  <button className="btn btn-primary" onClick={handleAutolink} disabled={!baseFolder || autolinking}>
+                  <button id="tut-files-autolink" className="btn btn-primary" onClick={handleAutolink} disabled={!baseFolder || autolinking}>
                     <RefreshCw size={13} style={{ animation: autolinking ? 'spin 1s linear infinite' : 'none' }} />
                     {autolinking ? 'Linking…' : 'Auto-link Files'}
                   </button>
@@ -736,7 +781,7 @@ export default function SetupPage() {
 
               {/* ── PER-FILE LINK STATUS ── */}
               {encounters.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
+                <div id="tut-files-status" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
                   <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>File Link Status</h3>
                   {encounters.map(enc => (
                     <div key={enc.id} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
@@ -788,6 +833,10 @@ export default function SetupPage() {
           )}
 
           {section === 9 && (
+            <VersionManagementSection projectId={projectId} forms={forms} mediaTypes={mediaTypes} locked={!isUnlocked} onChanged={load} />
+          )}
+
+          {section === 10 && (
             <DeletedReviewsSection projectId={projectId} />
           )}
         </div>
@@ -797,12 +846,12 @@ export default function SetupPage() {
       <Modal
         open={!!deleteConfirm}
         onClose={() => !deleteLoading && setDeleteConfirm(null)}
-        title={`Delete ${deleteConfirm?.type === 'form' ? 'Form' : deleteConfirm?.type === 'instruction' ? 'Instruction' : 'Media Type'}`}
+        title={`${deleteConfirm?.count > 0 && deleteConfirm?.type !== 'instruction' ? 'Archive' : 'Delete'} ${deleteConfirm?.type === 'form' ? 'Form' : deleteConfirm?.type === 'instruction' ? 'Instruction' : 'Media Type'}`}
         footer={
           <>
             <button className="btn btn-secondary" onClick={() => setDeleteConfirm(null)} disabled={deleteLoading}>Cancel</button>
             <button className="btn btn-danger" onClick={handleDeleteConfirm} disabled={deleteLoading}>
-              {deleteLoading ? 'Deleting…' : 'Delete'}
+              {deleteLoading ? 'Working…' : deleteConfirm?.count > 0 && deleteConfirm?.type !== 'instruction' ? 'Archive' : 'Delete'}
             </button>
           </>
         }
@@ -815,7 +864,7 @@ export default function SetupPage() {
                 {deleteConfirm.count > 0 && (
                   <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#92400e', display: 'flex', gap: 8 }}>
                     <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                    <span><strong>{deleteConfirm.count} review{deleteConfirm.count !== 1 ? 's' : ''}</strong> exist on files assigned to this type. Those reviews are not deleted — they stay on the files. However, the files will become untyped and the type's tag definitions and workspace layout will be permanently removed.</span>
+                    <span><strong>{deleteConfirm.count} review{deleteConfirm.count !== 1 ? 's' : ''}</strong> exist on files assigned to this type. This media type will be archived for existing reviews and hidden from new setup choices.</span>
                   </div>
                 )}
                 {deleteConfirm.count === 0 && (
@@ -826,7 +875,7 @@ export default function SetupPage() {
             {deleteConfirm.type === 'form' && deleteConfirm.count > 0 && (
               <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b91c1c', display: 'flex', gap: 8 }}>
                 <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                <span><strong>{deleteConfirm.count} saved response{deleteConfirm.count !== 1 ? 's' : ''}</strong> will be permanently deleted. The reviews themselves are kept, but all answers submitted to this form will be gone.</span>
+                <span><strong>{deleteConfirm.count} saved response{deleteConfirm.count !== 1 ? 's' : ''}</strong> use this form. The form will be archived and removed from future workspaces, but existing answers are kept for export and review history.</span>
               </div>
             )}
             {deleteConfirm.type === 'form' && deleteConfirm.count === 0 && (
@@ -865,6 +914,239 @@ export default function SetupPage() {
             {unlockError && <span className="text-sm" style={{ color: 'var(--danger)', marginTop: 4 }}>{unlockError}</span>}
           </div>
         </form>
+      </Modal>
+
+      {filesTour.node}
+    </div>
+  )
+}
+
+function VersionManagementSection({ projectId, forms, mediaTypes, locked, onChanged }) {
+  const [pending, setPending] = useState(null)
+  const [restorePending, setRestorePending] = useState(null)
+  const [history, setHistory] = useState({})
+  const [expanded, setExpanded] = useState({})
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+
+  async function openMigration(kind, item, scope) {
+    setBusy(true)
+    setMessage('')
+    try {
+      const preview = await api.previewStructureMigration(projectId, { kind, id: item.id, scope })
+      setPending({ kind, item, scope, preview })
+    } catch (e) {
+      console.error('[VersionManagement] preview failed:', e)
+      setMessage(e?.message || 'Could not check review versions.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function applyMigration() {
+    if (!pending) return
+    setBusy(true)
+    setMessage('')
+    try {
+      const result = await api.migrateStructureReviews(projectId, { kind: pending.kind, id: pending.item.id, scope: pending.scope })
+      setMessage(`Updated ${result.updated || 0} review${result.updated === 1 ? '' : 's'}.`)
+      setPending(null)
+    } catch (e) {
+      console.error('[VersionManagement] migration failed:', e)
+      setMessage(e?.message || 'Could not update review versions.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function toggleHistory(kind, item) {
+    const key = `${kind}:${item.id}`
+    if (expanded[key]) {
+      setExpanded(prev => ({ ...prev, [key]: false }))
+      return
+    }
+    setExpanded(prev => ({ ...prev, [key]: true }))
+    if (history[key]) return
+    setBusy(true)
+    setMessage('')
+    try {
+      const rows = await api.listVersionHistory(projectId, { kind, id: item.id })
+      setHistory(prev => ({ ...prev, [key]: rows }))
+    } catch (e) {
+      console.error('[VersionManagement] history failed:', e)
+      setMessage(e?.message || 'Could not load version history.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function restoreVersion() {
+    if (!restorePending) return
+    const { kind, item, version } = restorePending
+    const key = `${kind}:${item.id}`
+    setBusy(true)
+    setMessage('')
+    try {
+      const result = await api.restoreVersion(projectId, { kind, id: item.id, version })
+      setHistory(prev => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+      setMessage(`Restored ${item.name} v${version} as version ${result.current_version}.`)
+      await onChanged?.()
+      setRestorePending(null)
+    } catch (e) {
+      console.error('[VersionManagement] restore failed:', e)
+      setMessage(e?.message || 'Could not restore that version.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function versionSummary(kind, row) {
+    if (kind === 'form') {
+      const sections = row.schema?.sections || []
+      const questions = sections.reduce((n, s) => n + (s.elements || []).length, 0)
+      return `${sections.length} section${sections.length === 1 ? '' : 's'}, ${questions} item${questions === 1 ? '' : 's'}`
+    }
+    const tags = row.config?.tags || []
+    const tabs = row.config?.workspace_tabs || []
+    return `${tags.length} tag${tags.length === 1 ? '' : 's'}, ${tabs.length} workspace tab${tabs.length === 1 ? '' : 's'}`
+  }
+
+  function rows(kind, items) {
+    return items.map(item => {
+      const key = `${kind}:${item.id}`
+      const isExpanded = !!expanded[key]
+      const versions = history[key] || []
+      return (
+        <div key={key} style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{item.name}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Version {kind === 'form' ? item.schema_version || 1 : item.config_version || 1}
+              </div>
+            </div>
+            <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => toggleHistory(kind, item)}>
+              {isExpanded ? 'Hide History' : 'History'}
+            </button>
+            <button className="btn btn-secondary btn-sm" disabled={busy || locked} onClick={() => openMigration(kind, item, 'drafts')}>
+              Update Drafts
+            </button>
+            <button className="btn btn-danger btn-sm" disabled={busy || locked} onClick={() => openMigration(kind, item, 'all')}>
+              Update All
+            </button>
+          </div>
+          {isExpanded && (
+            <div style={{ borderTop: '1px solid var(--border)', background: 'var(--bg-secondary)', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {versions.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No saved prior versions yet.</div>}
+              {versions.map(v => (
+                <div key={`${key}:v${v.version}:${v.is_current ? 'current' : 'old'}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>
+                      Version {v.version}{v.is_current ? ' · Current' : ''}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      {versionSummary(kind, v)}
+                    </div>
+                  </div>
+                  {!v.is_current && (
+                    <button className="btn btn-secondary btn-sm" disabled={busy || locked} onClick={() => setRestorePending({ kind, item, version: v.version })}>
+                      Restore
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )
+    })
+  }
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <h2 style={{ marginBottom: 4 }}>Versions</h2>
+      <p className="text-secondary" style={{ fontSize: 13, marginBottom: 20 }}>
+        Move existing reviews onto the current form or media type version. New reviews already use the latest version automatically.
+      </p>
+      {locked && (
+        <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
+          Unlock the project to migrate review versions.
+        </div>
+      )}
+      {message && (
+        <div style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.25)', borderRadius: 8, padding: '9px 12px', fontSize: 13, marginBottom: 16 }}>
+          {message}
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+        <section>
+          <h3 style={{ marginBottom: 10 }}>Forms</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{rows('form', forms)}</div>
+        </section>
+        <section>
+          <h3 style={{ marginBottom: 10 }}>Media Types</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{rows('mediaType', mediaTypes)}</div>
+        </section>
+      </div>
+
+      <Modal
+        open={!!pending}
+        onClose={() => !busy && setPending(null)}
+        title={pending?.scope === 'all' ? 'Update All Reviews?' : 'Update Draft Reviews?'}
+        footer={
+          <>
+            <button className="btn btn-secondary" disabled={busy} onClick={() => setPending(null)}>Cancel</button>
+            <button className={pending?.scope === 'all' ? 'btn btn-danger' : 'btn btn-primary'} disabled={busy || (pending?.preview?.total || 0) === 0} onClick={applyMigration}>
+              {busy ? 'Updating…' : pending?.scope === 'all' ? 'Update All Reviews' : 'Update Drafts'}
+            </button>
+          </>
+        }
+      >
+        {pending && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13, lineHeight: 1.5 }}>
+            <p style={{ margin: 0 }}>
+              <strong>{pending.item.name}</strong> will be applied to <strong>{pending.preview.total}</strong> matching review{pending.preview.total !== 1 ? 's' : ''}.
+            </p>
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+              <div><strong>{pending.preview.drafts}</strong> draft review{pending.preview.drafts !== 1 ? 's' : ''}</div>
+              <div><strong>{pending.preview.submitted}</strong> submitted review{pending.preview.submitted !== 1 ? 's' : ''}</div>
+            </div>
+            {pending.scope === 'all' && (
+              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 12, color: '#991b1b' }}>
+                This changes version metadata used to interpret submitted reviews. Answers are preserved, but this should be treated as a deliberate research-data migration.
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!restorePending}
+        onClose={() => !busy && setRestorePending(null)}
+        title="Restore Version?"
+        footer={
+          <>
+            <button className="btn btn-secondary" disabled={busy} onClick={() => setRestorePending(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy || locked} onClick={restoreVersion}>
+              {busy ? 'Restoring…' : 'Restore as Latest'}
+            </button>
+          </>
+        }
+      >
+        {restorePending && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13, lineHeight: 1.5 }}>
+            <p style={{ margin: 0 }}>
+              Restore <strong>{restorePending.item.name}</strong> version <strong>{restorePending.version}</strong> as the new latest version.
+            </p>
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+              Existing reviews keep their current snapshots until you use Update Drafts or Update All.
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   )
@@ -1536,9 +1818,20 @@ function OverviewSection() {
   return (
     <div style={{ maxWidth: 680 }}>
       <h2 style={{ marginBottom: 4 }}>Overview</h2>
-      <p className="text-secondary" style={{ fontSize: 13, marginBottom: 28 }}>
+      <p className="text-secondary" style={{ fontSize: 13, marginBottom: 20 }}>
         Read this before setting up your project. It covers the full workflow, folder structure, sync, and common mistakes.
       </p>
+
+      {/* New-user pointer */}
+      <div style={{ display: 'flex', gap: 12, padding: '14px 16px', border: '1px solid var(--accent)', background: 'var(--accent-light)', borderRadius: 8, marginBottom: 28 }}>
+        <span style={{ fontSize: 20, lineHeight: 1, flexShrink: 0, marginTop: 1 }}>🎓</span>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, color: 'var(--accent)' }}>New to SDMo? Start with the sample project</div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+            From the home screen, click <strong>Sample Project</strong> to open a ready-made example with encounters, media, and a coding form already set up. Guided pop-up tips walk you through each page. Look for the <strong>?</strong> button in the top-right of any page to replay a tour.
+          </div>
+        </div>
+      </div>
 
       {/* Setup flow */}
       <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Setup Flow</h3>

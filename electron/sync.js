@@ -1,9 +1,10 @@
 const fs = require('fs')
 const path = require('path')
-const { app } = require('electron')
+const { app, net } = require('electron')
 const crypto = require('crypto')
 const { getDb, backupDb } = require('./db')
 const { getSettings, getProjectName, getOrCreateUUID } = require('./settings')
+const { localizeWorkspaceSnapshot, parseJson } = require('./services/snapshots')
 
 const SYNC_PROTOCOL_VERSION = 2
 const PROJECT_STATE_FILENAME = 'project-state.json'
@@ -72,6 +73,19 @@ function emitConflicts(conflicts) {
   const more = conflicts.length > 1 ? ` (+${conflicts.length - 1} more)` : ''
   const message = `Edit conflict on ${first.kind} "${first.name}"${more}: another machine's change was newer, so the most recent version was kept.`
   try { _mainWindow.webContents.send('sync:conflict', { message, conflicts }) } catch (_) {}
+}
+
+// Track projects currently in offline (no-internet) mode so we only notify on transitions.
+const offlineProjects = new Set()
+
+function emitSyncOffline(projectId) {
+  if (!_mainWindow || _mainWindow.isDestroyed?.()) return
+  try { _mainWindow.webContents.send('sync:offline', { projectId }) } catch (_) {}
+}
+
+function emitSyncOnline(projectId) {
+  if (!_mainWindow || _mainWindow.isDestroyed?.()) return
+  try { _mainWindow.webContents.send('sync:online', { projectId }) } catch (_) {}
 }
 
 // ─── Debounced auto-sync ──────────────────────────────────────────────────────
@@ -185,7 +199,18 @@ function buildConfigExport(db, projectId) {
     sync_id: f.sync_id,
     updated_at: f.updated_at || f.created_at,
     name: f.name,
+    schema_version: f.schema_version || 1,
+    archived_at: f.archived_at || null,
     schema: JSON.parse(f.schema || '{"sections":[]}'),
+  }))
+
+  const formVersions = db.prepare('SELECT * FROM form_versions WHERE project_id=? ORDER BY form_sync_id, version').all(projectId).map(v => ({
+    form_sync_id: v.form_sync_id,
+    version: v.version,
+    name: v.name,
+    schema: safeJsonParse(v.schema, { sections: [] }),
+    source_updated_at: v.source_updated_at || null,
+    created_at: v.created_at || null,
   }))
 
   const instructions = db.prepare('SELECT * FROM instructions WHERE project_id=?').all(projectId).map(i => {
@@ -216,6 +241,8 @@ function buildConfigExport(db, projectId) {
       sync_id: mt.sync_id,
       updated_at: mt.updated_at || mt.created_at,
       name: mt.name,
+      config_version: mt.config_version || 1,
+      archived_at: mt.archived_at || null,
       reviews_required: mt.reviews_required,
       allow_custom_tags: mt.allow_custom_tags,
       color: mt.color,
@@ -223,6 +250,15 @@ function buildConfigExport(db, projectId) {
       workspace_tabs: tabs,
     }
   })
+
+  const mediaTypeVersions = db.prepare('SELECT * FROM media_type_versions WHERE project_id=? ORDER BY media_type_sync_id, version').all(projectId).map(v => ({
+    media_type_sync_id: v.media_type_sync_id,
+    version: v.version,
+    name: v.name,
+    config: safeJsonParse(v.config, {}),
+    source_updated_at: v.source_updated_at || null,
+    created_at: v.created_at || null,
+  }))
 
   // Encounters included as schema only (no reviews)
   const encounters = db.prepare('SELECT * FROM encounters WHERE project_id=?').all(projectId).map(enc => {
@@ -253,8 +289,10 @@ function buildConfigExport(db, projectId) {
       updated_at: project.updated_at,
     },
     forms,
+    form_versions: formVersions,
     instructions,
     media_types: mediaTypes,
+    media_type_versions: mediaTypeVersions,
     encounters,
   }
 }
@@ -281,8 +319,14 @@ function buildReviewExport(db, projectId, reviewerUuid, reviewerName) {
           }))
 
         const formResponses = db.prepare(
-          'SELECT fr.*, f.name as form_name FROM form_responses fr JOIN forms f ON fr.form_id = f.id WHERE fr.review_id=?'
-        ).all(rev.id).map(fr => ({ form_name: fr.form_name, responses: fr.responses }))
+          'SELECT fr.*, f.name as form_name, f.sync_id as current_form_sync_id FROM form_responses fr JOIN forms f ON fr.form_id = f.id WHERE fr.review_id=?'
+        ).all(rev.id).map(fr => ({
+          form_name: fr.form_name,
+          form_sync_id: fr.form_sync_id || fr.current_form_sync_id || null,
+          form_version: fr.form_version || null,
+          form_snapshot: fr.form_snapshot ? safeJsonParse(fr.form_snapshot, null) : null,
+          responses: fr.responses,
+        }))
 
         reviews.push({
           review_sync_id: rev.review_sync_id || null,
@@ -294,6 +338,9 @@ function buildReviewExport(db, projectId, reviewerUuid, reviewerName) {
           notes: rev.notes,
           created_at: rev.created_at,
           submitted_at: rev.submitted_at,
+          media_type_sync_id: rev.media_type_sync_id || null,
+          media_type_version: rev.media_type_version || null,
+          workspace_snapshot: rev.workspace_snapshot ? safeJsonParse(rev.workspace_snapshot, null) : null,
           timestamps,
           form_responses: formResponses,
         })
@@ -329,8 +376,8 @@ function hashOf(obj) {
 // LWW clock. Falls back to created_at (local rows whose updated_at is still NULL)
 // and exported_at (pre-v5 incoming configs with no per-entity clock) so the value
 // is always a comparable string in the DB's 'YYYY-MM-DD HH:MM:SS' format.
-function localClock(row) { return row.updated_at || row.created_at || '' }
-function incomingClock(entity, configData) { return entity.updated_at || configData.exported_at || '' }
+function localClock(row) { return normalizeClockValue(row.updated_at || row.created_at) || '' }
+function incomingClock(entity, configData) { return normalizeClockValue(entity.updated_at || configData.exported_at) || '' }
 
 // Decide whether an incoming entity should overwrite the local one (merge mode).
 // Equal clocks with differing content is a real concurrent edit: a deterministic
@@ -417,8 +464,8 @@ function applyStructure(db, projectId, configData, { merge = false } = {}) {
       let local = f.sync_id ? db.prepare('SELECT * FROM forms WHERE project_id=? AND sync_id=?').get(projectId, f.sync_id) : null
       if (!local) local = db.prepare('SELECT * FROM forms WHERE project_id=? AND name=?').get(projectId, f.name)
       if (!local) {
-        db.prepare("INSERT INTO forms (project_id, name, schema, sync_id, updated_at) VALUES (?,?,?,?,COALESCE(?,datetime('now')))")
-          .run(projectId, f.name, schema, f.sync_id || crypto.randomUUID(), f.updated_at || null)
+        db.prepare("INSERT INTO forms (project_id, name, schema, sync_id, schema_version, archived_at, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, f.name, schema, f.sync_id || crypto.randomUUID(), f.schema_version || 1, f.archived_at || null, f.updated_at || null)
         continue
       }
       let write = true
@@ -428,8 +475,8 @@ function applyStructure(db, projectId, configData, { merge = false } = {}) {
         if (d.conflict) conflicts.push({ kind: 'form', name: f.name })
       }
       if (write) {
-        db.prepare("UPDATE forms SET name=?, schema=?, sync_id=COALESCE(sync_id,?), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
-          .run(f.name, schema, f.sync_id || null, f.updated_at || null, local.id)
+        db.prepare("UPDATE forms SET name=?, schema=?, sync_id=COALESCE(sync_id,?), schema_version=?, archived_at=?, updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(f.name, schema, f.sync_id || null, f.schema_version || local.schema_version || 1, f.archived_at || null, f.updated_at || null, local.id)
       }
     }
 
@@ -483,15 +530,33 @@ function applyStructure(db, projectId, configData, { merge = false } = {}) {
 
       let mtId
       if (local) {
-        db.prepare("UPDATE media_types SET name=?, reviews_required=?, allow_custom_tags=?, color=?, sync_id=COALESCE(sync_id,?), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
-          .run(mt.name, mt.reviews_required, mt.allow_custom_tags ? 1 : 0, mt.color, mt.sync_id || null, mt.updated_at || null, local.id)
+        db.prepare("UPDATE media_types SET name=?, reviews_required=?, allow_custom_tags=?, color=?, sync_id=COALESCE(sync_id,?), config_version=?, archived_at=?, updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(mt.name, mt.reviews_required, mt.allow_custom_tags ? 1 : 0, mt.color, mt.sync_id || null, mt.config_version || local.config_version || 1, mt.archived_at || null, mt.updated_at || null, local.id)
         mtId = local.id
       } else {
-        const r = db.prepare("INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))")
-          .run(projectId, mt.name, mt.reviews_required || 1, mt.allow_custom_tags ? 1 : 0, mt.color || '#6366f1', mt.sync_id || crypto.randomUUID(), mt.updated_at || null)
+        const r = db.prepare("INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id, config_version, archived_at, updated_at) VALUES (?,?,?,?,?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, mt.name, mt.reviews_required || 1, mt.allow_custom_tags ? 1 : 0, mt.color || '#6366f1', mt.sync_id || crypto.randomUUID(), mt.config_version || 1, mt.archived_at || null, mt.updated_at || null)
         mtId = r.lastInsertRowid
       }
       _writeMediaTypeChildren(db, projectId, mtId, mt)
+    }
+
+    for (const v of (configData.form_versions || [])) {
+      if (!v.form_sync_id || tombstoned.form.has(v.form_sync_id)) continue
+      const schema = typeof v.schema === 'string' ? v.schema : JSON.stringify(v.schema || { sections: [] })
+      db.prepare(`
+        INSERT OR IGNORE INTO form_versions (project_id, form_sync_id, version, name, schema, source_updated_at, created_at)
+        VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))
+      `).run(projectId, v.form_sync_id, v.version || 1, v.name || '', schema, v.source_updated_at || null, v.created_at || null)
+    }
+
+    for (const v of (configData.media_type_versions || [])) {
+      if (!v.media_type_sync_id || tombstoned.media_type.has(v.media_type_sync_id)) continue
+      const config = typeof v.config === 'string' ? v.config : JSON.stringify(v.config || {})
+      db.prepare(`
+        INSERT OR IGNORE INTO media_type_versions (project_id, media_type_sync_id, version, name, config, source_updated_at, created_at)
+        VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))
+      `).run(projectId, v.media_type_sync_id, v.version || 1, v.name || '', config, v.source_updated_at || null, v.created_at || null)
     }
 
     // ── Encounters + media files ──
@@ -597,6 +662,8 @@ function mergeReviewFile(db, projectId, reviewData, ownUuid) {
         : null
       if (!localMedia) localMedia = db.prepare('SELECT id FROM media_files WHERE encounter_id=? AND name=?').get(localEnc.id, rev.media_name)
       if (!localMedia) continue
+      const localizedWorkspaceSnapshot = localizeWorkspaceSnapshot(db, projectId, rev.workspace_snapshot)
+      const workspaceSnapshotJson = localizedWorkspaceSnapshot ? JSON.stringify(localizedWorkspaceSnapshot) : null
 
       // Match by review_sync_id (most precise), then fall back to uuid+created_at, then name+created_at
       let existing = rev.review_sync_id
@@ -624,16 +691,25 @@ function mergeReviewFile(db, projectId, reviewData, ownUuid) {
 
       const insertFormResponses = (reviewId) => {
         for (const fr of (rev.form_responses || [])) {
-          const form = fr.form_name ? db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, fr.form_name) : null
+          let form = fr.form_sync_id ? db.prepare('SELECT id FROM forms WHERE project_id=? AND sync_id=?').get(projectId, fr.form_sync_id) : null
+          if (!form) form = fr.form_name ? db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, fr.form_name) : null
           if (!form) continue
-          db.prepare('INSERT INTO form_responses (review_id, form_id, responses) VALUES (?,?,?)').run(reviewId, form.id, fr.responses)
+          const formSnapshot = fr.form_snapshot ? JSON.stringify(fr.form_snapshot) : null
+          db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+            .run(reviewId, form.id, fr.responses, fr.form_sync_id || null, fr.form_version || null, formSnapshot)
         }
       }
 
       if (existing) {
         // The file is the single authoritative source for this UUID's reviews — always replace
-        db.prepare("UPDATE reviews SET status=?, notes=?, reviewer_uuid=?, submitted_at=? WHERE id=?")
-          .run(rev.status, rev.notes || '', reviewData.reviewer_uuid || null, rev.submitted_at, existing.id)
+        db.prepare("UPDATE reviews SET status=?, notes=?, reviewer_uuid=?, submitted_at=?, media_type_sync_id=?, media_type_version=?, workspace_snapshot=? WHERE id=?")
+          .run(
+            rev.status, rev.notes || '', reviewData.reviewer_uuid || null, rev.submitted_at,
+            rev.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
+            rev.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
+            workspaceSnapshotJson,
+            existing.id
+          )
         db.prepare('DELETE FROM timestamps WHERE review_id=?').run(existing.id)
         db.prepare('DELETE FROM form_responses WHERE review_id=?').run(existing.id)
         insertTimestamps(existing.id)
@@ -641,8 +717,14 @@ function mergeReviewFile(db, projectId, reviewData, ownUuid) {
         continue
       }
 
-      const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(localMedia.id, reviewData.reviewer_name, reviewData.reviewer_uuid || null, rev.review_sync_id || crypto.randomUUID(), rev.status, rev.notes || '', rev.created_at, rev.submitted_at)
+      const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, media_type_sync_id, media_type_version, workspace_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+        .run(
+          localMedia.id, reviewData.reviewer_name, reviewData.reviewer_uuid || null, rev.review_sync_id || crypto.randomUUID(),
+          rev.status, rev.notes || '', rev.created_at, rev.submitted_at,
+          rev.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
+          rev.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
+          workspaceSnapshotJson
+        )
       insertTimestamps(r.lastInsertRowid)
       insertFormResponses(r.lastInsertRowid)
     }
@@ -823,8 +905,12 @@ function isProtocolV2Manifest(manifest) {
 
 function normalizeClockValue(value) {
   if (!value) return null
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) return `${value.replace(' ', 'T')}Z`
-  return value
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(' ', 'T')}Z`
+    : value
+  const parsed = new Date(normalized)
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString()
+  return normalized
 }
 
 function maxClock(...values) {
@@ -853,16 +939,20 @@ function buildReviewStateExport(db, projectId) {
         created_at: ts.created_at,
       }))
     const formResponses = db.prepare(`
-        SELECT fr.responses, fr.updated_at, f.name as form_name
+        SELECT fr.responses, fr.updated_at, fr.form_sync_id, fr.form_version, fr.form_snapshot, f.name as form_name, f.sync_id as current_form_sync_id
         FROM form_responses fr
         JOIN forms f ON fr.form_id = f.id
         WHERE fr.review_id=?
         ORDER BY f.name
       `).all(rev.id).map(fr => ({
       form_name: fr.form_name,
+      form_sync_id: fr.form_sync_id || fr.current_form_sync_id || null,
+      form_version: fr.form_version || null,
+      form_snapshot: fr.form_snapshot ? safeJsonParse(fr.form_snapshot, null) : null,
       responses: fr.responses,
       updated_at: fr.updated_at,
     }))
+    const workspaceSnapshot = rev.workspace_snapshot ? safeJsonParse(rev.workspace_snapshot, null) : null
     return {
       review_sync_id: rev.review_sync_id || null,
       media_sync_id: rev.media_sync_id || null,
@@ -877,11 +967,15 @@ function buildReviewStateExport(db, projectId) {
       submitted_at: rev.submitted_at || null,
       deleted_at: rev.deleted_at || null,
       restored_at: rev.restored_at || null,
+      media_type_sync_id: rev.media_type_sync_id || null,
+      media_type_version: rev.media_type_version || null,
+      workspace_snapshot: workspaceSnapshot,
       updated_at: maxClock(
         rev.created_at,
         rev.submitted_at,
         rev.deleted_at,
         rev.restored_at,
+        workspaceSnapshot?.captured_at,
         ...timestamps.map(ts => ts.created_at),
         ...formResponses.map(fr => fr.updated_at)
       ),
@@ -901,8 +995,10 @@ function buildProjectStateExport(db, projectId) {
     exported_at: new Date().toISOString(),
     project: config.project,
     forms: config.forms || [],
+    form_versions: config.form_versions || [],
     instructions: config.instructions || [],
     media_types: config.media_types || [],
+    media_type_versions: config.media_type_versions || [],
     encounters: config.encounters || [],
     reviews: buildReviewStateExport(db, projectId),
     deleted_structure: buildStructureTombstones(db, projectId),
@@ -924,11 +1020,23 @@ function canonicalizeProjectState(state) {
       keybinds: state.project.keybinds || [],
     } : null,
     forms: sortBy(state.forms, 'sync_id').map(stripClock),
+    form_versions: sortBy(state.form_versions, 'form_sync_id').map(v => ({
+      form_sync_id: v.form_sync_id,
+      version: v.version || 1,
+      name: v.name || '',
+      schema: v.schema || { sections: [] },
+    })),
     instructions: sortBy(state.instructions, 'sync_id').map(stripClock),
     media_types: sortBy(state.media_types, 'sync_id').map(mt => ({
       ...stripClock(mt),
       tags: [...(mt.tags || [])].sort((a, b) => (a.label || '') > (b.label || '') ? 1 : -1),
       workspace_tabs: [...(mt.workspace_tabs || [])].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
+    })),
+    media_type_versions: sortBy(state.media_type_versions, 'media_type_sync_id').map(v => ({
+      media_type_sync_id: v.media_type_sync_id,
+      version: v.version || 1,
+      name: v.name || '',
+      config: v.config || {},
     })),
     encounters: sortBy(state.encounters, 'sync_id').map(enc => ({
       sync_id: enc.sync_id,
@@ -949,12 +1057,18 @@ function canonicalizeProjectState(state) {
       submitted_at: rev.submitted_at || null,
       deleted_at: rev.deleted_at || null,
       restored_at: rev.restored_at || null,
+      media_type_sync_id: rev.media_type_sync_id || null,
+      media_type_version: rev.media_type_version || null,
+      workspace_snapshot: rev.workspace_snapshot || null,
       timestamps: [...(rev.timestamps || [])].sort((a, b) => {
         if (a.time_seconds !== b.time_seconds) return a.time_seconds - b.time_seconds
         return (a.created_at || '') > (b.created_at || '') ? 1 : -1
       }),
       form_responses: [...(rev.form_responses || [])].sort((a, b) => (a.form_name || '') > (b.form_name || '') ? 1 : -1).map(fr => ({
         form_name: fr.form_name,
+        form_sync_id: fr.form_sync_id || null,
+        form_version: fr.form_version || null,
+        form_snapshot: fr.form_snapshot || null,
         responses: fr.responses,
       })),
     })),
@@ -980,8 +1094,17 @@ function buildReviewHash(review) {
     submitted_at: review.submitted_at || null,
     deleted_at: review.deleted_at || null,
     restored_at: review.restored_at || null,
+    media_type_sync_id: review.media_type_sync_id || null,
+    media_type_version: review.media_type_version || null,
+    workspace_snapshot: review.workspace_snapshot || null,
     timestamps: review.timestamps || [],
-    form_responses: (review.form_responses || []).map(fr => ({ form_name: fr.form_name, responses: fr.responses })),
+    form_responses: (review.form_responses || []).map(fr => ({
+      form_name: fr.form_name,
+      form_sync_id: fr.form_sync_id || null,
+      form_version: fr.form_version || null,
+      form_snapshot: fr.form_snapshot || null,
+      responses: fr.responses,
+    })),
   })
 }
 
@@ -1000,6 +1123,8 @@ function applyReviewState(db, projectId, review, { merge = false } = {}) {
     if (localEnc) localMedia = db.prepare('SELECT id FROM media_files WHERE encounter_id=? AND name=?').get(localEnc.id, review.media_name)
   }
   if (!localMedia) return { conflict: null }
+  const localizedWorkspaceSnapshot = localizeWorkspaceSnapshot(db, projectId, review.workspace_snapshot)
+  const workspaceSnapshotJson = localizedWorkspaceSnapshot ? JSON.stringify(localizedWorkspaceSnapshot) : null
 
   let local = review.review_sync_id
     ? db.prepare('SELECT * FROM reviews WHERE review_sync_id=?').get(review.review_sync_id)
@@ -1028,12 +1153,17 @@ function applyReviewState(db, projectId, review, { merge = false } = {}) {
     db.prepare(`
       UPDATE reviews
       SET media_file_id=?, reviewer_name=?, reviewer_uuid=?, review_sync_id=COALESCE(review_sync_id, ?),
-          status=?, notes=?, created_at=?, submitted_at=?, deleted_at=?, restored_at=?
+          status=?, notes=?, created_at=?, submitted_at=?, deleted_at=?, restored_at=?,
+          media_type_sync_id=?, media_type_version=?, workspace_snapshot=?
       WHERE id=?
     `).run(
       localMedia.id, review.reviewer_name, review.reviewer_uuid || null, review.review_sync_id || null,
       review.status, review.notes || '', review.created_at, review.submitted_at || null,
-      review.deleted_at || null, review.restored_at || null, local.id
+      review.deleted_at || null, review.restored_at || null,
+      review.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
+      review.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
+      workspaceSnapshotJson,
+      local.id
     )
     db.prepare('DELETE FROM timestamps WHERE review_id=?').run(local.id)
     db.prepare('DELETE FROM form_responses WHERE review_id=?').run(local.id)
@@ -1050,21 +1180,26 @@ function applyReviewState(db, projectId, review, { merge = false } = {}) {
         .run(local.id, ts.time_seconds, tag?.id || null, ts.tag_label || null, ts.notes || '', ts.tag_color || null, ts.created_at)
     }
     for (const fr of (review.form_responses || [])) {
-      const form = fr.form_name ? db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, fr.form_name) : null
+      let form = fr.form_sync_id ? db.prepare('SELECT id FROM forms WHERE project_id=? AND sync_id=?').get(projectId, fr.form_sync_id) : null
+      if (!form) form = fr.form_name ? db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, fr.form_name) : null
       if (!form) continue
-      db.prepare('INSERT INTO form_responses (review_id, form_id, responses, updated_at) VALUES (?,?,?,COALESCE(?,datetime(\'now\')))')
-        .run(local.id, form.id, fr.responses, fr.updated_at || null)
+      const formSnapshot = fr.form_snapshot ? JSON.stringify(fr.form_snapshot) : null
+      db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime(\'now\')))')
+        .run(local.id, form.id, fr.responses, fr.form_sync_id || null, fr.form_version || null, formSnapshot, fr.updated_at || null)
     }
     return { conflict }
   }
 
   const r = db.prepare(`
-    INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, deleted_at, restored_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, deleted_at, restored_at, media_type_sync_id, media_type_version, workspace_snapshot)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     localMedia.id, review.reviewer_name, review.reviewer_uuid || null, review.review_sync_id || crypto.randomUUID(),
     review.status, review.notes || '', review.created_at, review.submitted_at || null,
-    review.deleted_at || null, review.restored_at || null
+    review.deleted_at || null, review.restored_at || null,
+    review.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
+    review.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
+    workspaceSnapshotJson
   )
   for (const ts of (review.timestamps || [])) {
     const tag = ts.tag_label
@@ -1079,10 +1214,12 @@ function applyReviewState(db, projectId, review, { merge = false } = {}) {
       .run(r.lastInsertRowid, ts.time_seconds, tag?.id || null, ts.tag_label || null, ts.notes || '', ts.tag_color || null, ts.created_at)
   }
   for (const fr of (review.form_responses || [])) {
-    const form = fr.form_name ? db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, fr.form_name) : null
+    let form = fr.form_sync_id ? db.prepare('SELECT id FROM forms WHERE project_id=? AND sync_id=?').get(projectId, fr.form_sync_id) : null
+    if (!form) form = fr.form_name ? db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, fr.form_name) : null
     if (!form) continue
-    db.prepare('INSERT INTO form_responses (review_id, form_id, responses, updated_at) VALUES (?,?,?,COALESCE(?,datetime(\'now\')))')
-      .run(r.lastInsertRowid, form.id, fr.responses, fr.updated_at || null)
+    const formSnapshot = fr.form_snapshot ? JSON.stringify(fr.form_snapshot) : null
+    db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime(\'now\')))')
+      .run(r.lastInsertRowid, form.id, fr.responses, fr.form_sync_id || null, fr.form_version || null, formSnapshot, fr.updated_at || null)
   }
   return { conflict: null }
 }
@@ -1106,8 +1243,10 @@ function mergeProjectStateImport(db, projectId, stateData, { merge = true } = {}
       exported_at: stateData.exported_at,
       project: stateData.project,
       forms: stateData.forms || [],
+      form_versions: stateData.form_versions || [],
       instructions: stateData.instructions || [],
       media_types: stateData.media_types || [],
+      media_type_versions: stateData.media_type_versions || [],
       encounters: stateData.encounters || [],
     }, { merge })
     const conflicts = []
@@ -1343,13 +1482,8 @@ async function _doLocalSync(db, projectId, syncFolder, uuid, name) {
     console.error('[sync] project state sync failed:', e.message)
   }
 
-  // Write the auto-updated reviews report (.xlsx of all merged reviews)
-  try {
-    const wb = buildReviewsWorkbook(db, projectId)
-    if (wb) require('xlsx').writeFile(wb, path.join(syncFolder, REVIEWS_REPORT_FILENAME))
-  } catch (e) {
-    console.error('[sync] reviews report write failed:', e.message)
-  }
+  // The Excel report is no longer written on every sync — it slowed sync and was
+  // redundant with the on-demand "Export Excel" button. Users export when needed.
 
   markSynced(projectId)
 }
@@ -1361,6 +1495,17 @@ function doCloudSync(db, projectId, provider, folderId, uuid, name) {
 }
 
 async function _doCloudSync(db, projectId, provider, folderId, uuid, name) {
+  if (!net.isOnline()) {
+    if (!offlineProjects.has(projectId)) {
+      offlineProjects.add(projectId)
+      emitSyncOffline(projectId)
+    }
+    return
+  }
+
+  const wasOffline = offlineProjects.has(projectId)
+  offlineProjects.delete(projectId)
+
   const { getAdapter } = require('./cloud/cloudSync')
   const adapter = getAdapter(provider)
 
@@ -1373,90 +1518,502 @@ async function _doCloudSync(db, projectId, provider, folderId, uuid, name) {
     console.error('[sync] cloud project state sync failed:', e.message)
   }
 
-  // Write the auto-updated reviews report (.xlsx of all merged reviews)
-  try {
-    const wb = buildReviewsWorkbook(db, projectId)
-    if (wb) {
-      const buf = require('xlsx').write(wb, { type: 'buffer', bookType: 'xlsx' })
-      await adapter.writeFile(folderId, REVIEWS_REPORT_FILENAME, buf,
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    }
-  } catch (e) {
-    console.error('[sync] cloud reviews report write failed:', e.message)
-  }
+  // The Excel report is no longer uploaded on every cloud sync — the per-pass
+  // upload was the slowest part of cloud sync and duplicated the on-demand
+  // "Export Excel" button. Users export locally when they need a report.
 
   markSynced(projectId)
+
+  if (wasOffline) emitSyncOnline(projectId)
 }
 
 // ─── Reviews report (auto-uploaded .xlsx of all reviews) ─────────────────────
 
-// Builds the multi-sheet Excel workbook of every review + timestamp in the DB
-// (one "<Media Type> Reviews"/"<Media Type> Timestamps" sheet pair per media
-// type), mirroring the manual `export:excel` flow. After a sync merges all peer
-// review files into the DB, this captures exactly the union of the cloud reviews.
-// Returns an XLSX workbook, or null when there are no reviews to report (an
-// empty workbook can't be written).
+// Builds the multi-sheet Excel workbook of every review + timestamp in the DB.
+// Sheet structure: README + Codebook + normalized research sheets + one
+// "<Media Type> Reviews" / "<Media Type> Timestamps" pair per media type.
+// Returns an XLSX workbook, or null when there are no reviews to report.
 function buildReviewsWorkbook(db, projectId) {
   const XLSX = require('xlsx')
   const wb = XLSX.utils.book_new()
-  const FIXED = ['Encounter', 'Media File', 'Reviewer', 'Status', 'Created At', 'Submitted At', 'Review Notes']
+  const FIXED = ['Review ID', 'Encounter', 'Media File', 'Reviewer', 'Status', 'Created At', 'Submitted At', 'Review Notes']
 
   function sheetName(base, suffix) {
-    const s = `${base} ${suffix}`
-    return s.length > 31 ? s.slice(0, 28) + '...' : s
+    // Excel sheet name limit: 31 chars. Reserve space for suffix so pairs never collide.
+    const maxBase = 31 - 1 - suffix.length
+    const truncBase = base.length > maxBase ? base.slice(0, maxBase - 3) + '...' : base
+    return `${truncBase} ${suffix}`
   }
+
   function fmtTime(sec) {
+    if (sec == null || isNaN(Number(sec))) return ''
     const m = Math.floor(sec / 60)
     const s = String(Math.floor(sec % 60)).padStart(2, '0')
     return `${m}:${s}`
   }
 
+  function valueCells(value) {
+    const out = {
+      'Value': '',
+      'Value Label': '',
+      'Value Number': '',
+      'Value Time (seconds)': '',
+      'Value Time': '',
+      'Value JSON': '',
+    }
+    if (value == null) return out
+    if (typeof value === 'object') out['Value JSON'] = JSON.stringify(value)
+    if (typeof value === 'number') {
+      out['Value'] = value
+      out['Value Number'] = value
+      return out
+    }
+    if (typeof value === 'boolean') {
+      out['Value'] = value ? 'Yes' : 'No'
+      out['Value Label'] = out['Value']
+      return out
+    }
+    if (Array.isArray(value)) {
+      out['Value'] = value.join('; ')
+      out['Value Label'] = out['Value']
+      return out
+    }
+    if (typeof value === 'object') {
+      if (value.time_seconds != null) {
+        out['Value Time (seconds)'] = value.time_seconds
+        out['Value Time'] = fmtTime(value.time_seconds)
+      }
+      if (value.tag_label != null) out['Value Label'] = value.tag_label
+      out['Value'] = out['Value Label'] || out['Value Time'] || out['Value JSON']
+      return out
+    }
+    out['Value'] = String(value)
+    out['Value Label'] = String(value)
+    if (!isNaN(Number(value)) && String(value).trim() !== '') out['Value Number'] = Number(value)
+    return out
+  }
+
+  function optionText(options) {
+    return (options || []).join(', ')
+  }
+
+  function validValuesForElement(el) {
+    if (el.type === 'multiple_choice' || el.type === 'multiselect') return optionText(el.options)
+    if (el.type === 'rating') return `1-${el.max || 5}`
+    if (el.type === 'likert') return `1-${el.scale || 5}${el.has_na ? ', N/A' : ''}`
+    if (el.type === 'likert_group') return `1-${el.scale || 5}${el.has_na ? ', N/A' : ''}`
+    if (el.type === 'slider') return `${el.min ?? 0}-${el.max ?? 100}`
+    if (el.type === 'checkbox') return 'Yes, No'
+    if (el.type === 'timestamp_select') return 'Time in seconds plus optional tag label'
+    if (el.type === 'short_answer' || el.type === 'paragraph') return 'Free text'
+    return ''
+  }
+
+  function validValuesForTableColumn(col) {
+    if (col.type === 'select') return optionText(col.options)
+    if (col.type === 'number') return 'Number'
+    if (col.type === 'timestamp_select') return 'Time in seconds plus optional tag label'
+    return 'Free text'
+  }
+
+  // Auto-size columns from header + sampled cell lengths and add a header filter
+  // dropdown, so every sheet is readable/sortable without manual fiddling in Excel.
+  function styleDataSheet(ws, headers, rows) {
+    if (!ws['!ref']) return
+    const cols = (headers && headers.length)
+      ? headers
+      : (rows[0] ? Object.keys(rows[0]) : [])
+    if (cols.length) {
+      ws['!cols'] = cols.map(h => {
+        let max = String(h).length
+        for (let i = 0; i < rows.length && i < 200; i++) {
+          const v = rows[i] ? rows[i][h] : ''
+          if (v != null) max = Math.max(max, String(v).length)
+        }
+        return { wch: Math.min(Math.max(max + 2, 10), 60) }
+      })
+    }
+    ws['!autofilter'] = { ref: ws['!ref'] }
+  }
+
+  function appendSheet(name, rows, headers) {
+    const ws = XLSX.utils.json_to_sheet(rows, headers ? { header: headers } : undefined)
+    styleDataSheet(ws, headers, rows)
+    XLSX.utils.book_append_sheet(wb, ws, name)
+  }
+
+  function appendAoaSheet(name, rows) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), name)
+  }
+
+  // Build allForms: keyed by form id, preserving section/question ids for analysis.
   const allForms = {}
   for (const f of db.prepare('SELECT * FROM forms WHERE project_id=?').all(projectId)) {
     const schema = safeJsonParse(f.schema, { sections: [] })
-    const elements = []
-    for (const sec of (schema.sections || [])) {
-      for (const el of (sec.elements || [])) {
-        if (el.type !== 'text_block') elements.push(el)
+    const sections = (schema.sections || []).map(sec => ({
+      id: sec.id || '',
+      title: sec.title || '',
+      elements: (sec.elements || []).filter(el => el.type !== 'text_block'),
+    }))
+    allForms[f.id] = { id: f.id, syncId: f.sync_id || '', name: f.name, version: f.schema_version || 1, sections }
+  }
+
+  // Version history: a review captures the exact form schema it was filled against
+  // (form_snapshot). Forms get edited over time, so a question answered in an older
+  // version may no longer exist in the current schema. To keep ALL answered data in
+  // the wide sheets + codebook (not just Responses_Long), pre-scan every review's
+  // snapshot and raw response keys, building per-form the set of questions that were
+  // answered but are absent from the current schema.
+  //   historicalElsByForm: formId -> Map<elementId, { el, section }>  (defs from snapshots)
+  //   seenKeysByForm:      formId -> Set<elementId>                    (raw answered keys)
+  const historicalElsByForm = new Map()
+  const seenKeysByForm = new Map()
+  for (const fr of db.prepare(`
+    SELECT fr.form_id, fr.responses, fr.form_snapshot
+    FROM form_responses fr
+    JOIN reviews r ON fr.review_id = r.id
+    JOIN media_files mf ON r.media_file_id = mf.id
+    JOIN encounters e ON mf.encounter_id = e.id
+    WHERE e.project_id=? AND r.deleted_at IS NULL
+  `).all(projectId)) {
+    const resp = safeJsonParse(fr.responses, {})
+    if (!seenKeysByForm.has(fr.form_id)) seenKeysByForm.set(fr.form_id, new Set())
+    const keys = seenKeysByForm.get(fr.form_id)
+    for (const k of Object.keys(resp)) keys.add(k)
+
+    const snap = fr.form_snapshot ? safeJsonParse(fr.form_snapshot, null) : null
+    if (snap?.schema?.sections) {
+      if (!historicalElsByForm.has(fr.form_id)) historicalElsByForm.set(fr.form_id, new Map())
+      const m = historicalElsByForm.get(fr.form_id)
+      for (const sec of snap.schema.sections) {
+        for (const el of (sec.elements || [])) {
+          if (el.type === 'text_block') continue
+          if (!m.has(el.id)) m.set(el.id, { el, section: sec })
+        }
       }
     }
-    allForms[f.id] = { name: f.name, elements }
   }
 
   function getResponses(reviewId) {
-    const rows = db.prepare('SELECT form_id, responses FROM form_responses WHERE review_id=?').all(reviewId)
+    const rows = db.prepare(`
+      SELECT fr.form_id, fr.responses, fr.form_sync_id, fr.form_version, fr.form_snapshot, f.name as form_name
+      FROM form_responses fr
+      LEFT JOIN forms f ON fr.form_id = f.id
+      WHERE fr.review_id=?
+    `).all(reviewId)
     const out = {}
-    for (const row of rows) out[row.form_id] = safeJsonParse(row.responses, {})
+    for (const row of rows) {
+      out[row.form_id] = {
+        responses: safeJsonParse(row.responses, {}),
+        form_sync_id: row.form_sync_id || null,
+        form_version: row.form_version || null,
+        form_snapshot: row.form_snapshot ? safeJsonParse(row.form_snapshot, null) : null,
+        form_name: row.form_name || null,
+      }
+    }
     return out
   }
 
   const mediaTypes = db.prepare('SELECT * FROM media_types WHERE project_id=?').all(projectId)
   const buckets = [...mediaTypes, { id: null, name: '(Untyped)' }]
   const encounters = db.prepare('SELECT * FROM encounters WHERE project_id=? ORDER BY name').all(projectId)
+  const project = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId) || {}
 
   let appended = 0
+  const allCbRows = []
+  const normalizedReviewRows = []
+  const normalizedResponseRows = []
+  const normalizedTimestampRows = []
+  const mediaFileRows = []
+  const seenMediaFiles = new Set()
+
+  function codebookRow(mediaTypeName, form, section, el, component) {
+    return {
+      'Media Type': mediaTypeName,
+      'Form ID': form?.syncId || form?.id || '',
+      'Form': form?.name || '',
+      'Current Form Version': form?.version || '',
+      'In Current Form': component?.historical ? 'No' : 'Yes',
+      'Section ID': section?.id || '',
+      'Section': section?.title || '',
+      'Question ID': el?.id || '',
+      'Question Label': el?.label || '',
+      'Question Type': component?.qType || el?.type || '',
+      'Component ID': component?.id || el?.id || '',
+      'Component Label': component?.label || el?.label || '',
+      'Column Header': component?.header || '',
+      'Valid Values': component?.validValues || validValuesForElement(el || {}),
+      'Required': el?.required ? 'Yes' : 'No',
+    }
+  }
+
+  function pushResponseRow(base, form, section, el, component, value) {
+    normalizedResponseRows.push({
+      ...base,
+      'Form ID': form?.syncId || form?.id || '',
+      'Form Name': form?.name || '',
+      'Section ID': section?.id || '',
+      'Section Title': section?.title || '',
+      'Question ID': el?.id || '',
+      'Question Label': el?.label || '',
+      'Question Type': el?.type || '',
+      'Component ID': component?.id || el?.id || '',
+      'Component Label': component?.label || el?.label || '',
+      ...valueCells(value),
+    })
+  }
+
+  function responseEntriesFromFormSnapshot(formSnapshot, formId) {
+    if (!formSnapshot?.schema?.sections) return []
+    const form = {
+      id: formId,
+      syncId: formSnapshot.sync_id || '',
+      name: formSnapshot.name || '',
+    }
+    const entries = []
+    for (const section of formSnapshot.schema.sections || []) {
+      for (const el of (section.elements || [])) {
+        if (el.type === 'text_block') continue
+        if (el.type === 'likert_group') {
+          for (const item of (el.items || [])) {
+            entries.push({
+              form,
+              section,
+              el,
+              component: { id: `${el.id}.${item.id}`, label: item.label || item.id },
+              getValue: (resp) => {
+                const g = resp[el.id]
+                return g && typeof g === 'object' ? g[item.id] : undefined
+              },
+            })
+          }
+        } else if (el.type === 'table') {
+          for (let ri = 0; ri < (el.rows || []).length; ri++) {
+            for (const col of (el.columns || [])) {
+              entries.push({
+                form,
+                section,
+                el,
+                component: { id: `${el.id}.${ri}.${col.id}`, label: `${el.rows[ri]} / ${col.label || col.id}` },
+                getValue: (resp) => {
+                  const tbl = resp[el.id]
+                  const rowObj = (tbl && typeof tbl === 'object' && !Array.isArray(tbl)) ? (tbl[String(ri)] || {}) : {}
+                  return rowObj[col.id]
+                },
+              })
+            }
+          }
+        } else {
+          entries.push({
+            form,
+            section,
+            el,
+            component: { id: el.id, label: el.label || el.id },
+            getValue: (resp) => resp[el.id],
+          })
+        }
+      }
+    }
+    return entries
+  }
+
   for (const mt of buckets) {
     const tabForms = mt.id
       ? db.prepare(`
           SELECT DISTINCT f.id, f.name FROM workspace_tabs wt
           JOIN forms f ON wt.ref_id = f.id
           WHERE wt.media_type_id=? AND wt.tab_type='form'
+          ORDER BY wt.sort_order
         `).all(mt.id)
       : []
 
+    // qCols: one entry per output column beyond FIXED.
+    // Each entry: { formId, header, getValue(formResp) -> cell value }
+    // cbRows: parallel codebook entry for each qCol.
     const qCols = []
+    const cbRows = []
+    const schemaEntriesByForm = new Map()
+    const seenCbKeys = new Set()
+    // Set while emitting columns for questions that no longer exist in the current
+    // form schema (answered under an older version). Their headers get a "(removed)"
+    // suffix so they never collide with a live question and the codebook flags them.
+    let historicalPass = false
+
+    function pushCol(form, section, el, component, header, getValue, qType, validValues) {
+      if (historicalPass) header = `${header} (removed)`
+      qCols.push({ formId: form.id, header, getValue })
+      const key = `${form.id}:${component.id}:${header}`
+      if (!seenCbKeys.has(key)) {
+        seenCbKeys.add(key)
+        cbRows.push(codebookRow(mt.name, form, section, el, { ...component, header, validValues, qType, historical: historicalPass }))
+      }
+    }
+
+    function addSchemaEntry(form, section, el, component, getValue) {
+      if (!schemaEntriesByForm.has(form.id)) schemaEntriesByForm.set(form.id, [])
+      schemaEntriesByForm.get(form.id).push({ form, section, el, component, getValue })
+    }
+
+    function pushQCols(form, section, el) {
+      const prefix = `[${form.name}] ${el.label || el.id}`
+
+      if (el.type === 'table') {
+        const rows = el.rows || []
+        const columns = el.columns || []
+        for (let ri = 0; ri < rows.length; ri++) {
+          for (const col of columns) {
+            const cellBase = `[${form.name}] ${el.label || el.id} (${rows[ri]} / ${col.label})`
+            const componentBase = {
+              id: `${el.id}.${ri}.${col.id}`,
+              label: `${rows[ri]} / ${col.label || col.id}`,
+              validValues: validValuesForTableColumn(col),
+            }
+            const getCell = (resp) => {
+              const tbl = resp[el.id]
+              const rowObj = (tbl && typeof tbl === 'object' && !Array.isArray(tbl)) ? (tbl[String(ri)] || {}) : {}
+              return rowObj[col.id]
+            }
+            if (col.type === 'timestamp_select') {
+              // Split timestamp into Time + Tag columns so each is independently analyzable
+              pushCol(form, section, el, { ...componentBase, id: `${componentBase.id}.time`, label: `${componentBase.label}: Time` }, `${cellBase}: Time`, (resp) => {
+                const v = getCell(resp)
+                return (v && typeof v === 'object' && v.time_seconds != null) ? fmtTime(v.time_seconds) : ''
+              }, 'table / timestamp', 'M:SS')
+              pushCol(form, section, el, { ...componentBase, id: `${componentBase.id}.tag`, label: `${componentBase.label}: Tag` }, `${cellBase}: Tag`, (resp) => {
+                const v = getCell(resp)
+                return (v && typeof v === 'object') ? (v.tag_label || '') : ''
+              }, 'table / timestamp', 'Tag label')
+            } else {
+              pushCol(form, section, el, componentBase, cellBase, (resp) => {
+                const v = getCell(resp)
+                if (v == null) return ''
+                if (Array.isArray(v)) return v.join('; ')
+                if (col.type === 'number') return typeof v === 'number' ? v : (isNaN(Number(v)) ? '' : Number(v))
+                return String(v)
+              }, `table / ${col.type}`, componentBase.validValues)
+            }
+            addSchemaEntry(form, section, el, componentBase, getCell)
+          }
+        }
+
+      } else if (el.type === 'likert_group') {
+        // Expand to one column per item — the raw JSON exported by the old code was unreadable
+        for (const item of (el.items || [])) {
+          const component = { id: `${el.id}.${item.id}`, label: item.label || item.id, validValues: validValuesForElement(el) }
+          const getItem = (resp) => {
+            const g = resp[el.id]
+            if (!g || typeof g !== 'object') return ''
+            return g[item.id]
+          }
+          pushCol(form, section, el, component, `${prefix}: ${item.label}`, (resp) => {
+            const v = getItem(resp)
+            return v == null ? '' : v
+          }, 'likert_group', component.validValues)
+          addSchemaEntry(form, section, el, component, getItem)
+        }
+
+      } else if (el.type === 'timestamp_select') {
+        pushCol(form, section, el, { id: `${el.id}.time`, label: 'Time', validValues: 'M:SS' }, `${prefix}: Time`, (resp) => {
+          const v = resp[el.id]
+          return (v && typeof v === 'object' && v.time_seconds != null) ? fmtTime(v.time_seconds) : ''
+        }, 'timestamp_select', 'M:SS')
+        pushCol(form, section, el, { id: `${el.id}.tag`, label: 'Tag', validValues: 'Tag label' }, `${prefix}: Tag`, (resp) => {
+          const v = resp[el.id]
+          return (v && typeof v === 'object') ? (v.tag_label || '') : ''
+        }, 'timestamp_select', 'Tag label')
+        addSchemaEntry(form, section, el, { id: el.id, label: el.label || el.id, validValues: validValuesForElement(el) }, (resp) => resp[el.id])
+
+      } else if (el.type === 'checkbox') {
+        const component = { id: el.id, label: el.label || el.id, validValues: validValuesForElement(el) }
+        pushCol(form, section, el, component, prefix, (resp) => {
+          const v = resp[el.id]
+          return v === true ? 'Yes' : v === false ? 'No' : ''
+        }, 'checkbox', 'Yes, No')
+        addSchemaEntry(form, section, el, component, (resp) => resp[el.id])
+
+      } else if (el.type === 'rating' || el.type === 'likert' || el.type === 'slider') {
+        const validValues = validValuesForElement(el)
+        const component = { id: el.id, label: el.label || el.id, validValues }
+        pushCol(form, section, el, component, prefix, (resp) => {
+          const v = resp[el.id]
+          if (v == null) return ''
+          return typeof v === 'number' ? v : (isNaN(Number(v)) ? '' : Number(v))
+        }, el.type, validValues)
+        addSchemaEntry(form, section, el, component, (resp) => resp[el.id])
+
+      } else if (el.type === 'multiselect') {
+        const component = { id: el.id, label: el.label || el.id, validValues: validValuesForElement(el) }
+        pushCol(form, section, el, component, prefix, (resp) => {
+          const v = resp[el.id]
+          if (v == null) return ''
+          return Array.isArray(v) ? v.join('; ') : String(v)
+        }, 'multiselect', component.validValues)
+        addSchemaEntry(form, section, el, component, (resp) => resp[el.id])
+
+      } else {
+        // multiple_choice, short_answer, paragraph, and any future types
+        const validValues = validValuesForElement(el)
+        const component = { id: el.id, label: el.label || el.id, validValues }
+        pushCol(form, section, el, component, prefix, (resp) => {
+          const v = resp[el.id]
+          if (v == null) return ''
+          if (Array.isArray(v)) return v.join('; ')
+          if (typeof v === 'object') return JSON.stringify(v)
+          return String(v)
+        }, el.type, validValues)
+        addSchemaEntry(form, section, el, component, (resp) => resp[el.id])
+      }
+    }
+
+    // Emit columns for questions answered under an older form version but no longer
+    // in the current schema, so no answered data is invisible in the wide sheets.
+    function pushHistoricalCols(form) {
+      const currentIds = new Set()
+      for (const sec of form.sections) for (const el of sec.elements) currentIds.add(el.id)
+      const histMap = historicalElsByForm.get(form.id) || new Map()
+      const seenKeys = seenKeysByForm.get(form.id) || new Set()
+      const removedIds = new Set()
+      for (const id of histMap.keys()) if (!currentIds.has(id)) removedIds.add(id)
+      for (const id of seenKeys) if (!currentIds.has(id)) removedIds.add(id)
+      if (removedIds.size === 0) return
+      historicalPass = true
+      for (const id of removedIds) {
+        const info = histMap.get(id)
+        const el = info?.el || { id, label: '(Removed question)', type: 'short_answer' }
+        const section = info?.section || { id: '', title: '(Historical)' }
+        pushQCols(form, section, el)
+      }
+      historicalPass = false
+    }
+
+    // Workspace-tab forms first (in tab order), then any remaining project forms
+    const tabFormIdSet = new Set(tabForms.map(tf => tf.id))
     for (const tf of tabForms) {
       const form = allForms[tf.id]
       if (!form) continue
-      for (const el of form.elements) {
-        qCols.push({ formId: tf.id, formName: form.name, elId: el.id, label: el.label || el.id })
+      for (const sec of form.sections) {
+        for (const el of sec.elements) pushQCols(form, sec, el)
       }
+    }
+    for (const [idStr, form] of Object.entries(allForms)) {
+      const fid = Number(idStr)
+      if (tabFormIdSet.has(fid)) continue
+      for (const sec of form.sections) {
+        for (const el of sec.elements) pushQCols(form, sec, el)
+      }
+    }
+    // Removed-question columns come after every live column (tab forms first).
+    for (const tf of tabForms) {
+      const form = allForms[tf.id]
+      if (form) pushHistoricalCols(form)
+    }
+    for (const [idStr, form] of Object.entries(allForms)) {
+      if (!tabFormIdSet.has(Number(idStr))) pushHistoricalCols(form)
     }
 
     const reviewRows = []
     const tsRows = []
-    const qHeaders = qCols.map(c => `[${c.formName}] ${c.label}`)
-    const allCols = [...FIXED, ...qHeaders]
+    const allCols = [...FIXED, ...qCols.map(c => c.header)]
 
     for (const enc of encounters) {
       const condition = mt.id === null ? 'mf.media_type_id IS NULL' : 'mf.media_type_id = ?'
@@ -1466,24 +2023,107 @@ function buildReviewsWorkbook(db, projectId) {
       ).all(...params)
 
       for (const mf of mediaFiles) {
+        if (!seenMediaFiles.has(mf.id)) {
+          seenMediaFiles.add(mf.id)
+          mediaFileRows.push({
+            'Media File ID': mf.sync_id || '',
+            'Encounter ID': enc.sync_id || '',
+            'Encounter': enc.name,
+            'Media Type ID': mt.sync_id || '',
+            'Media Type': mt.name,
+            'Media File': mf.name,
+            'File Type': mf.file_type || '',
+            'Created At': mf.created_at || '',
+          })
+        }
         const reviews = db.prepare('SELECT * FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(mf.id)
         for (const rev of reviews) {
           const responses = getResponses(rev.id)
+          const base = {
+            'Review ID': rev.review_sync_id || '',
+            'Encounter ID': enc.sync_id || '',
+            'Encounter': enc.name,
+            'Media File ID': mf.sync_id || '',
+            'Media File': mf.name,
+            'Media Type ID': mt.sync_id || '',
+            'Media Type': mt.name,
+            'Reviewer': rev.reviewer_name,
+          }
           const row = {
-            'Encounter': enc.name, 'Media File': mf.name, 'Reviewer': rev.reviewer_name,
-            'Status': rev.status, 'Created At': rev.created_at, 'Submitted At': rev.submitted_at || '',
+            'Review ID': rev.review_sync_id || '',
+            'Encounter': enc.name,
+            'Media File': mf.name,
+            'Reviewer': rev.reviewer_name,
+            'Status': rev.status === 'submitted' ? 'Submitted' : 'Draft',
+            'Created At': rev.created_at,
+            'Submitted At': rev.submitted_at || '',
             'Review Notes': rev.notes || '',
           }
           for (const qc of qCols) {
-            const val = (responses[qc.formId] || {})[qc.elId]
-            row[`[${qc.formName}] ${qc.label}`] = val == null ? '' : Array.isArray(val) ? val.join('; ') : String(val)
+            row[qc.header] = qc.getValue(responses[qc.formId]?.responses || {})
           }
           reviewRows.push(row)
+          normalizedReviewRows.push({
+            ...base,
+            'Status': rev.status === 'submitted' ? 'Submitted' : 'Draft',
+            'Created At': rev.created_at,
+            'Submitted At': rev.submitted_at || '',
+            'Review Notes': rev.notes || '',
+          })
+
+          for (const [formIdStr, resp] of Object.entries(responses)) {
+            const formId = Number(formIdStr)
+            const responseValues = resp?.responses || {}
+            const formSnapshot = resp?.form_snapshot
+            const entries = formSnapshot ? responseEntriesFromFormSnapshot(formSnapshot, formId) : (schemaEntriesByForm.get(formId) || [])
+            const consumedQuestionIds = new Set()
+            for (const entry of entries) {
+              const value = entry.getValue(responseValues)
+              if (value == null || value === '') continue
+              consumedQuestionIds.add(entry.el.id)
+              pushResponseRow(base, entry.form, entry.section, entry.el, entry.component, value)
+            }
+            const form = formSnapshot ? {
+              id: formId,
+              syncId: formSnapshot.sync_id || resp.form_sync_id || '',
+              name: formSnapshot.name || resp.form_name || '',
+            } : allForms[formId]
+            const snapshotElements = {}
+            for (const sec of (formSnapshot?.schema?.sections || [])) {
+              for (const el of (sec.elements || [])) snapshotElements[el.id] = { section: sec, el }
+            }
+            for (const [questionId, value] of Object.entries(responseValues)) {
+              if (consumedQuestionIds.has(questionId)) continue
+              const snap = snapshotElements[questionId]
+              pushResponseRow(base, form, {}, {
+                id: questionId,
+                label: snap?.el?.label || '(Question no longer in current form)',
+                type: snap?.el?.type || 'unknown',
+              }, {
+                id: questionId,
+                label: snap?.el?.label || '(Unmapped response)',
+              }, value)
+            }
+          }
+
           for (const ts of db.prepare('SELECT * FROM timestamps WHERE review_id=? ORDER BY time_seconds').all(rev.id)) {
             tsRows.push({
-              'Encounter': enc.name, 'Media File': mf.name, 'Reviewer': rev.reviewer_name,
-              'Time': fmtTime(ts.time_seconds), 'Time (seconds)': ts.time_seconds,
-              'Tag': ts.tag_label || '', 'Notes': ts.notes || '',
+              'Review ID': rev.review_sync_id || '',
+              'Encounter': enc.name,
+              'Media File': mf.name,
+              'Reviewer': rev.reviewer_name,
+              'Time': fmtTime(ts.time_seconds),
+              'Time (seconds)': ts.time_seconds,
+              'Tag': ts.tag_label || '',
+              'Notes': ts.notes || '',
+            })
+            normalizedTimestampRows.push({
+              ...base,
+              'Time (seconds)': ts.time_seconds,
+              'Time': fmtTime(ts.time_seconds),
+              'Tag': ts.tag_label || '',
+              'Notes': ts.notes || '',
+              'Created At': ts.created_at || '',
             })
           }
         }
@@ -1491,16 +2131,72 @@ function buildReviewsWorkbook(db, projectId) {
     }
 
     if (reviewRows.length === 0 && tsRows.length === 0) continue
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(reviewRows, { header: allCols }), sheetName(mt.name, 'Reviews'))
-    if (tsRows.length > 0) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tsRows), sheetName(mt.name, 'Timestamps'))
+    const reviewWs = XLSX.utils.json_to_sheet(reviewRows, { header: allCols })
+    styleDataSheet(reviewWs, allCols, reviewRows)
+    XLSX.utils.book_append_sheet(wb, reviewWs, sheetName(mt.name, 'Reviews'))
+    if (tsRows.length > 0) {
+      const tsWs = XLSX.utils.json_to_sheet(tsRows)
+      styleDataSheet(tsWs, Object.keys(tsRows[0]), tsRows)
+      XLSX.utils.book_append_sheet(wb, tsWs, sheetName(mt.name, 'Timestamps'))
+    }
+    if (cbRows.length > 0) allCbRows.push(...cbRows.map(r => ({ 'Media Type': mt.name, ...r })))
     appended++
   }
 
-  return appended > 0 ? wb : null
-}
+  if (appended === 0) return null
 
-// Filename of the auto-uploaded reviews report in the sync folder/cloud.
-const REVIEWS_REPORT_FILENAME = 'reviews-export.xlsx'
+  appendAoaSheet('README', [
+    ['SDMo Reviews Export'],
+    ['Project', project.name || ''],
+    ['Exported At', new Date().toISOString()],
+    ['Export Format Version', '3'],
+    [],
+    ['Sheet', 'Description'],
+    ['Reviews', 'One row per non-deleted review. Stable IDs are included for joins.'],
+    ['Responses_Long', 'Canonical analysis sheet: one row per answer/component. This is the safest sheet for R, Python, SPSS, and future question types. Each answer is recorded against the form version the review was actually filled with, so old labels are preserved after a form is edited.'],
+    ['Media_Files', 'One row per media file included in the export.'],
+    ['Timestamps', 'One row per timestamp logged during review.'],
+    ['Codebook', 'One row per exported question/component: stable IDs, labels, type, valid values, the matching wide column header, the current form version, and "In Current Form" (No = the question was answered under an older form version and has since been removed).'],
+    ['<Media Type> Reviews', 'Readable wide convenience sheets: one row per review and one column per question/component. Columns ending in "(removed)" hold answers to questions that no longer exist in the current form — no answered data is dropped when forms or media types are edited.'],
+    ['<Media Type> Timestamps', 'Readable per-media timestamp convenience sheets.'],
+    [],
+    ['Form versioning', 'Forms and media types can be edited and have version history. Reviews keep a snapshot of the exact form they were filled with, so this export never loses or relabels older answers.'],
+  ])
+
+  appendSheet('Codebook', allCbRows, [
+    'Media Type', 'Form ID', 'Form', 'Current Form Version', 'In Current Form',
+    'Section ID', 'Section', 'Question ID',
+    'Question Label', 'Question Type', 'Component ID', 'Component Label',
+    'Column Header', 'Valid Values', 'Required',
+  ])
+  appendSheet('Reviews', normalizedReviewRows, [
+    'Review ID', 'Encounter ID', 'Encounter', 'Media File ID', 'Media File',
+    'Media Type ID', 'Media Type', 'Reviewer', 'Status', 'Created At',
+    'Submitted At', 'Review Notes',
+  ])
+  appendSheet('Responses_Long', normalizedResponseRows, [
+    'Review ID', 'Encounter ID', 'Encounter', 'Media File ID', 'Media File',
+    'Media Type ID', 'Media Type', 'Reviewer', 'Form ID', 'Form Name',
+    'Section ID', 'Section Title', 'Question ID', 'Question Label',
+    'Question Type', 'Component ID', 'Component Label', 'Value', 'Value Label',
+    'Value Number', 'Value Time (seconds)', 'Value Time', 'Value JSON',
+  ])
+  appendSheet('Media_Files', mediaFileRows, [
+    'Media File ID', 'Encounter ID', 'Encounter', 'Media Type ID', 'Media Type',
+    'Media File', 'File Type', 'Created At',
+  ])
+  appendSheet('Timestamps', normalizedTimestampRows, [
+    'Review ID', 'Encounter ID', 'Encounter', 'Media File ID', 'Media File',
+    'Media Type ID', 'Media Type', 'Reviewer', 'Time (seconds)', 'Time',
+    'Tag', 'Notes', 'Created At',
+  ])
+  wb.SheetNames = [
+    'README', 'Codebook', 'Reviews', 'Responses_Long', 'Media_Files', 'Timestamps',
+    ...wb.SheetNames.filter(n => !['README', 'Codebook', 'Reviews', 'Responses_Long', 'Media_Files', 'Timestamps'].includes(n)),
+  ]
+
+  return wb
+}
 
 // ─── Legacy monolithic export/import (kept for Export/Import file flow) ───────
 
@@ -1510,6 +2206,9 @@ function buildExport(db, projectId) {
 
   const forms = db.prepare('SELECT * FROM forms WHERE project_id=?').all(projectId).map(f => ({
     name: f.name,
+    sync_id: f.sync_id || null,
+    schema_version: f.schema_version || 1,
+    archived_at: f.archived_at || null,
     schema: JSON.parse(f.schema || '{"sections":[]}'),
   }))
 
@@ -1531,7 +2230,8 @@ function buildExport(db, projectId) {
       return { tab_type: tab.tab_type, ref_name: refName, label: tab.label, sort_order: tab.sort_order }
     })
     return {
-      name: mt.name, reviews_required: mt.reviews_required, allow_custom_tags: mt.allow_custom_tags, color: mt.color,
+      name: mt.name, sync_id: mt.sync_id || null, config_version: mt.config_version || 1, archived_at: mt.archived_at || null,
+      reviews_required: mt.reviews_required, allow_custom_tags: mt.allow_custom_tags, color: mt.color,
       tags: tags.map(t => ({ label: t.label, color: t.color, description: t.description })),
       workspace_tabs: tabs,
     }
@@ -1549,9 +2249,28 @@ function buildExport(db, projectId) {
         const reviews = db.prepare('SELECT * FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(m.id).map(rev => {
           const timestamps = db.prepare('SELECT * FROM timestamps WHERE review_id=? ORDER BY time_seconds').all(rev.id)
             .map(ts => ({ time_seconds: ts.time_seconds, tag_label: ts.tag_label || null, tag_color: ts.tag_color || null, notes: ts.notes, created_at: ts.created_at }))
-          const formResponses = db.prepare('SELECT fr.*, f.name as form_name FROM form_responses fr JOIN forms f ON fr.form_id = f.id WHERE fr.review_id=?').all(rev.id)
-            .map(fr => ({ form_name: fr.form_name, responses: fr.responses }))
-          return { reviewer_name: rev.reviewer_name, reviewer_uuid: rev.reviewer_uuid || null, status: rev.status, notes: rev.notes, created_at: rev.created_at, submitted_at: rev.submitted_at, timestamps, form_responses: formResponses }
+          const formResponses = db.prepare('SELECT fr.*, f.name as form_name, f.sync_id as current_form_sync_id FROM form_responses fr JOIN forms f ON fr.form_id = f.id WHERE fr.review_id=?').all(rev.id)
+            .map(fr => ({
+              form_name: fr.form_name,
+              form_sync_id: fr.form_sync_id || fr.current_form_sync_id || null,
+              form_version: fr.form_version || null,
+              form_snapshot: fr.form_snapshot ? safeJsonParse(fr.form_snapshot, null) : null,
+              responses: fr.responses,
+            }))
+          return {
+            reviewer_name: rev.reviewer_name,
+            reviewer_uuid: rev.reviewer_uuid || null,
+            review_sync_id: rev.review_sync_id || null,
+            status: rev.status,
+            notes: rev.notes,
+            created_at: rev.created_at,
+            submitted_at: rev.submitted_at,
+            media_type_sync_id: rev.media_type_sync_id || null,
+            media_type_version: rev.media_type_version || null,
+            workspace_snapshot: rev.workspace_snapshot ? safeJsonParse(rev.workspace_snapshot, null) : null,
+            timestamps,
+            form_responses: formResponses,
+          }
         })
         return { sync_id: m.sync_id, name: m.name, file_type: m.file_type, media_type_name: m.media_type_name || null, reviews }
       }),
@@ -1604,11 +2323,11 @@ function mergeImport(db, projectId, data) {
       const schema = typeof f.schema === 'string' ? f.schema : JSON.stringify(f.schema)
       const existing = db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, f.name)
       if (existing) {
-        db.prepare("UPDATE forms SET schema=?, sync_id=COALESCE(?,sync_id), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
-          .run(schema, f.sync_id || null, f.updated_at || null, existing.id)
+        db.prepare("UPDATE forms SET schema=?, sync_id=COALESCE(?,sync_id), schema_version=?, archived_at=?, updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(schema, f.sync_id || null, f.schema_version || 1, f.archived_at || null, f.updated_at || null, existing.id)
       } else {
-        db.prepare("INSERT INTO forms (project_id, name, schema, sync_id, updated_at) VALUES (?,?,?,?,COALESCE(?,datetime('now')))")
-          .run(projectId, f.name, schema, f.sync_id || crypto.randomUUID(), f.updated_at || null)
+        db.prepare("INSERT INTO forms (project_id, name, schema, sync_id, schema_version, archived_at, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, f.name, schema, f.sync_id || crypto.randomUUID(), f.schema_version || 1, f.archived_at || null, f.updated_at || null)
         formsAdded++
       }
     }
@@ -1637,12 +2356,12 @@ function mergeImport(db, projectId, data) {
       let mtId
       const existing = db.prepare('SELECT id FROM media_types WHERE project_id=? AND name=?').get(projectId, mt.name)
       if (existing) {
-        db.prepare("UPDATE media_types SET reviews_required=?, allow_custom_tags=?, color=?, sync_id=COALESCE(?,sync_id), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
-          .run(mt.reviews_required, mt.allow_custom_tags ? 1 : 0, mt.color, mt.sync_id || null, mt.updated_at || null, existing.id)
+        db.prepare("UPDATE media_types SET reviews_required=?, allow_custom_tags=?, color=?, sync_id=COALESCE(?,sync_id), config_version=?, archived_at=?, updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(mt.reviews_required, mt.allow_custom_tags ? 1 : 0, mt.color, mt.sync_id || null, mt.config_version || 1, mt.archived_at || null, mt.updated_at || null, existing.id)
         mtId = existing.id
       } else {
-        const r = db.prepare("INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))")
-          .run(projectId, mt.name, mt.reviews_required || 1, mt.allow_custom_tags ? 1 : 0, mt.color || '#6366f1', mt.sync_id || crypto.randomUUID(), mt.updated_at || null)
+        const r = db.prepare("INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id, config_version, archived_at, updated_at) VALUES (?,?,?,?,?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, mt.name, mt.reviews_required || 1, mt.allow_custom_tags ? 1 : 0, mt.color || '#6366f1', mt.sync_id || crypto.randomUUID(), mt.config_version || 1, mt.archived_at || null, mt.updated_at || null)
         mtId = r.lastInsertRowid
         typesAdded++
       }
@@ -1716,16 +2435,27 @@ function mergeImport(db, projectId, data) {
           }
           const insertFormResponses = (reviewId) => {
             for (const fr of (rev.form_responses || [])) {
-              const form = fr.form_name ? db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, fr.form_name) : null
+              let form = fr.form_sync_id ? db.prepare('SELECT id FROM forms WHERE project_id=? AND sync_id=?').get(projectId, fr.form_sync_id) : null
+              if (!form) form = fr.form_name ? db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, fr.form_name) : null
               if (!form) continue
-              db.prepare('INSERT INTO form_responses (review_id, form_id, responses) VALUES (?,?,?)').run(reviewId, form.id, fr.responses)
+              const formSnapshot = fr.form_snapshot ? JSON.stringify(fr.form_snapshot) : null
+              db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+                .run(reviewId, form.id, fr.responses, fr.form_sync_id || null, fr.form_version || null, formSnapshot)
             }
           }
+          const localizedWorkspaceSnapshot = localizeWorkspaceSnapshot(db, projectId, rev.workspace_snapshot)
+          const workspaceSnapshotJson = localizedWorkspaceSnapshot ? JSON.stringify(localizedWorkspaceSnapshot) : null
 
           if (existing) {
             if (rev.status === 'submitted' && existing.status === 'in_progress') {
-              db.prepare("UPDATE reviews SET status=?, notes=?, reviewer_uuid=?, submitted_at=? WHERE id=?")
-                .run(rev.status, rev.notes || '', rev.reviewer_uuid || null, rev.submitted_at, existing.id)
+              db.prepare("UPDATE reviews SET status=?, notes=?, reviewer_uuid=?, submitted_at=?, media_type_sync_id=?, media_type_version=?, workspace_snapshot=? WHERE id=?")
+                .run(
+                  rev.status, rev.notes || '', rev.reviewer_uuid || null, rev.submitted_at,
+                  rev.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
+                  rev.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
+                  workspaceSnapshotJson,
+                  existing.id
+                )
               db.prepare('DELETE FROM timestamps WHERE review_id=?').run(existing.id)
               db.prepare('DELETE FROM form_responses WHERE review_id=?').run(existing.id)
               insertTimestamps(existing.id)
@@ -1735,8 +2465,14 @@ function mergeImport(db, projectId, data) {
             continue
           }
 
-          const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at) VALUES (?,?,?,?,?,?,?,?)')
-            .run(localMedia.id, rev.reviewer_name, rev.reviewer_uuid || null, rev.review_sync_id || crypto.randomUUID(), rev.status, rev.notes || '', rev.created_at, rev.submitted_at)
+          const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, media_type_sync_id, media_type_version, workspace_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+            .run(
+              localMedia.id, rev.reviewer_name, rev.reviewer_uuid || null, rev.review_sync_id || crypto.randomUUID(),
+              rev.status, rev.notes || '', rev.created_at, rev.submitted_at,
+              rev.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
+              rev.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
+              workspaceSnapshotJson
+            )
           insertTimestamps(r.lastInsertRowid)
           insertFormResponses(r.lastInsertRowid)
           reviewsImported++
@@ -1765,7 +2501,7 @@ module.exports = {
   scheduleSync, scheduleSyncForReview,
   bumpConfigVersion, bumpAndSync,
   buildExport, mergeImport, createFromImport,
-  buildReviewsWorkbook, REVIEWS_REPORT_FILENAME,
+  buildReviewsWorkbook,
   buildConfigExport, buildReviewExport,
   buildProjectStateExport, projectStateFingerprint,
   mergeConfigImport, mergeReviewFile,

@@ -38,6 +38,7 @@ function assertArgs(channel, args, rules) {
 
 const contracts = {
   'projects:get': [isIntLike],
+  'projects:createSample': [],
   'projects:update': [isIntLike, isObject],
   'projects:delete': [isIntLike],
   'project:setPassword': [isIntLike, isOptionalString],
@@ -99,6 +100,10 @@ const contracts = {
   'setup:getForm': [isIntLike],
   'setup:countFormResponses': [isIntLike],
   'setup:deleteForm': [isIntLike, isIntLike],
+  'setup:previewStructureMigration': [isIntLike, isObject],
+  'setup:migrateStructureReviews': [isIntLike, isObject],
+  'setup:listVersionHistory': [isIntLike, isObject],
+  'setup:restoreVersion': [isIntLike, isObject],
   'setup:saveInstruction': [isIntLike, isObject],
   'setup:listInstructions': [isIntLike],
   'setup:deleteInstruction': [isIntLike, isIntLike],

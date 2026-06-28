@@ -56,6 +56,9 @@
       "node_modules/**/*",
       "package.json"
     ],
+    "extraResources": [
+      "media/**/*"
+    ],
     "asar": true,
     "asarUnpack": [
       "node_modules/better-sqlite3/**/*",

@@ -3,16 +3,59 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   ChevronLeft, Plus, Maximize2, Minimize2,
   Clock, Trash2, ChevronDown, ChevronUp, CheckCircle2, Maximize, Edit2, AlertCircle,
-  Columns2, Rows2, ExternalLink,
+  Columns2, Rows2, ExternalLink, HelpCircle,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api, formatTime } from '../lib/api'
 import FormRenderer from '../components/forms/FormRenderer'
 import Modal from '../components/ui/Modal'
+import useTour from '../components/ui/useTour'
+
+const REVIEW_TOUR_STEPS = [
+  {
+    targetId: 'tut-rev-video',
+    placement: 'right',
+    title: 'The Video Player',
+    body: 'Play, pause, and scrub through the video here. You can drag the divider to resize the video panel, or use the layout button (top-right) to switch between stacked and side-by-side views.',
+  },
+  {
+    targetId: 'tut-rev-timestamp',
+    placement: 'bottom',
+    title: 'Logging Timestamps',
+    body: 'Click "Add Timestamp" to capture the current video position. Then tag it (e.g. Greeting, Question, Empathy) to categorize the moment. Set up keyboard shortcuts in Settings → Keybinds so you never have to pause.',
+  },
+  {
+    targetId: 'tut-rev-workspace',
+    placement: 'top',
+    title: 'Forms & Instructions',
+    body: 'These tabs contain your coding forms and any reference instructions. Fill them out as you watch — everything saves automatically. Switch tabs without losing progress. You can also pop the workspace into a separate window.',
+  },
+  {
+    targetId: 'tut-rev-submit',
+    placement: 'bottom',
+    title: 'Submitting Your Review',
+    body: "Click Submit Review when you're done coding. Your work syncs to the shared folder automatically. You can reopen and edit a submitted review at any time by clicking Edit Review.",
+  },
+]
 
 function parseFormResponses(rev) {
   return Object.fromEntries((rev.form_responses || []).map(fr => [fr.form_id, fr.responses]))
+}
+
+function hydrateWorkspaceSnapshot(snapshot) {
+  const formSchemas = {}
+  for (const [id, form] of Object.entries(snapshot?.forms || {})) {
+    formSchemas[id] = { ...form, schema: form.schema || { sections: [] } }
+  }
+  const instructions = {}
+  for (const [id, instr] of Object.entries(snapshot?.instructions || {})) instructions[id] = instr
+  return {
+    tags: snapshot?.tags || [],
+    workspaceTabs: snapshot?.workspace_tabs || [],
+    formSchemas,
+    instructions,
+  }
 }
 
 export default function ReviewPage() {
@@ -48,6 +91,7 @@ export default function ReviewPage() {
   const [submitted, setSubmitted] = useState(false)
   const [loading, setLoading] = useState(true)
   const [validationErrors, setValidationErrors] = useState([])
+  const tour = useTour(REVIEW_TOUR_STEPS, 'sdmo_tour_review_v1', { ready: !loading && !!videoUrl })
   const [linkModal, setLinkModal] = useState(null) // null | 'not_linked' | 'missing'
   const [linkSaving, setLinkSaving] = useState(false)
   const [encProjectId, setEncProjectId] = useState(null)
@@ -162,9 +206,19 @@ export default function ReviewPage() {
     // Parallel: project + media types
     const [proj, allTypes] = await Promise.all([
       api.getProject(enc.project_id),
-      api.listMediaTypes(enc.project_id),
+      rev.workspace_snapshot ? Promise.resolve([]) : api.listMediaTypes(enc.project_id),
     ])
     if (proj?.keybinds) setKeybinds(proj.keybinds)
+
+    if (rev.workspace_snapshot) {
+      const frozen = hydrateWorkspaceSnapshot(rev.workspace_snapshot)
+      setTags(frozen.tags)
+      setWorkspaceTabs(frozen.workspaceTabs)
+      setFormSchemas(frozen.formSchemas)
+      setInstructions(frozen.instructions)
+      setLoading(false)
+      return
+    }
 
     const mt = allTypes.find(t => t.id === mf.media_type_id)
     if (!mt) { setLoading(false); return }
@@ -364,6 +418,7 @@ export default function ReviewPage() {
       responses={currentTab?.tab_type === 'form' ? formResponses[currentTab?.ref_id] : null}
       onSave={(resp) => saveFormResponse(currentTab.ref_id, resp)}
       readOnly={false}
+      timestamps={timestamps}
     />
   )
 
@@ -387,7 +442,10 @@ export default function ReviewPage() {
             </span>
             {submitted && <span className="badge badge-success"><CheckCircle2 size={10} /> Submitted</span>}
           </div>
-          <div style={{ display: 'flex', gap: 6, WebkitAppRegion: 'no-drag' }}>
+          <div id="tut-rev-submit" style={{ display: 'flex', gap: 6, WebkitAppRegion: 'no-drag' }}>
+            <button className="btn btn-ghost btn-icon btn-sm" onClick={tour.start} title="Show tutorial">
+              <HelpCircle size={15} />
+            </button>
             {/* Layout toggle */}
             <button
               className="btn btn-ghost btn-icon btn-sm"
@@ -426,6 +484,7 @@ export default function ReviewPage() {
           >
             {/* Video panel */}
             <div
+              id="tut-rev-video"
               ref={videoPanelRef}
               style={{
                 background: '#000',
@@ -514,7 +573,7 @@ export default function ReviewPage() {
                 transition: 'height 0.2s ease',
               }}>
                 {/* Add Timestamp bar — hidden when minimized */}
-                <div style={{ padding: '7px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                <div id="tut-rev-timestamp" style={{ padding: '7px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                   <button className="btn btn-secondary btn-sm" onClick={addTimestamp} disabled={submitted}>
                     <Plus size={13} /> Add Timestamp
                   </button>
@@ -523,7 +582,7 @@ export default function ReviewPage() {
 
                 {workspaceTabs.length > 0 ? (
                   <>
-                    <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+                    <div id="tut-rev-workspace" style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
                       <div className="tabs" style={{ flex: 1, borderBottom: 'none' }}>
                         {workspaceTabs.map((tab, i) => (
                           <button
@@ -713,6 +772,8 @@ export default function ReviewPage() {
           Timestamps: {timestamps.length} · Forms filled: {Object.keys(formResponses).length}
         </p>
       </Modal>
+
+      {tour.node}
     </div>
   )
 }
@@ -838,11 +899,11 @@ function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, readOnly }) {
   )
 }
 
-function WorkspaceTabContent({ tab, formSchema, instruction, responses, onSave, readOnly }) {
+function WorkspaceTabContent({ tab, formSchema, instruction, responses, onSave, readOnly, timestamps = [] }) {
   if (!tab) return null
   if (tab.tab_type === 'form') {
     if (!formSchema) return <div className="empty-state"><p className="text-sm">Form not found.</p></div>
-    return <FormRenderer schema={formSchema.schema} responses={responses || {}} onSave={onSave} readOnly={readOnly} />
+    return <FormRenderer schema={formSchema.schema} responses={responses || {}} onSave={onSave} readOnly={readOnly} timestamps={timestamps} />
   }
   if (tab.tab_type === 'instruction') {
     if (instruction?.content_type === 'pdf' && instruction?.file_path) {
