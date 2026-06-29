@@ -1,6 +1,8 @@
+<mark>Please read in full before downloading</mark>
+
 # SDMo — Patient Encounter Coding App
 
-SDMo is a desktop application for research studies where coders watch videos (or review documents) of clinical encounters and log timestamped observations while filling out structured forms.
+SDMo is a desktop application for research studies where coders watch videos (or review documents) of clinical encounters and log timestamped observations while filling out structured forms. 
 
 ---
 
@@ -32,22 +34,10 @@ Click **[Releases](https://github.com/n232not/sdmo-app/releases)** on the right 
 
 ## Updating the App
 
-SDMo checks GitHub Releases for newer versions. Updates are not installed automatically.
-
-- **Normal updates:** SDMo will ask you to download the update. You can choose **Later** and keep working.
-- **Required updates:** SDMo will block use until the update is installed. These are only used for important compatibility or safety changes, such as sync protocol changes.
-
-When an update is ready, click **Restart to Install**. SDMo creates a local database backup before restarting into the new version. Your projects, reviews, settings, sync credentials, and media links are stored separately from the app and should remain in place after updating.
-
-App version, update status, and diagnostics export are available from **Settings → About**.
-
-Maintainers should follow [RELEASE.md](./RELEASE.md) for every release.
-
+SDMo checks GitHub Releases for newer versions. When an update is available, you will be notified in the app. On Windows, you will have an option to autoupdate within the app. On Mac, you will have to go to the github releases page and reinstall the app from scratch. You can also always check the current version of the app and if a newer version is available in the about tab in settings.
 ---
 
 ## What SDMo Does
-
-SDMo allows you to code patient encounters within a structured digital app. All patient encounter files (videos, transcripts, etc) are stored locally on your own computer while the coding information can be synced to the cloud. This maintains hipaa confidentiality but also allows multiple users to work on the same coding project simultaneously
 
 SDMo organizes research coding sessions around **Projects**, **Encounters**, and **Reviews**.
 
@@ -63,21 +53,7 @@ When a coder opens a media file, they create a **Review**. Inside a review they 
 - **Fill out forms** — structured questionnaires that appear in tabs alongside the video
 - **Submit** — mark the review complete when done
 
----
-
-## Core Workflow
-
-```
-Home → Select Project → Encounters list → Open a media file → Review page → Submit
-```
-
-1. **Home screen** — enter your name, then create a new project or join an existing one
-2. **Project page** — see all encounters, track which ones are complete, sync with teammates
-3. **Review page** — video player on the left, timestamp logger and forms on the right
-
----
-
-## Multi-User / Sync
+### Multi-User / Sync
 
 SDMo supports syncing across multiple coders' machines so a team can work on the same project simultaneously.
 
@@ -86,38 +62,3 @@ SDMo supports syncing across multiple coders' machines so a team can work on the
 
 The project admin sets up the encounters, forms, and media types. Coders only need to join and start reviewing — they do not need to configure anything beyond entering their name and connecting to the shared folder.
 
----
-
-## Setup (for Project Admins)
-
-Open any project and click **Settings** in the sidebar.
-
-| Tab | What it does |
-|---|---|
-| Overview | Instructions and FAQs on the Setup process |
-| Forms | Create structured questionnaires for coders to fill out |
-| Instructions | Add reference documents (markdown or PDF) |
-| Media Types | Define types of files (e.g. "Video", "Audio") and their timestamp tags |
-| Media Folder | Point to a local folder containing encounter subfolders and media files |
-| Media Files | View and manage all media files across encounters |
-| Sync | Connect to OneDrive, Google Drive, or a local shared folder |
-| Keybinds | Assign keyboard shortcuts to timestamp tags for fast coding |
-| Access | Set an admin password to protect project settings |
-| Deleted Reviews | View and restore soft-deleted reviews |
-
---
-
-## Media Folder Structure
-
-SDMo expects media files to be organized like this:
-
-```
-Media Folder/
-  Encounter 1/
-    video.mp4
-  Encounter 2/
-    session.mp4
-    notes.pdf
-```
-
-Each subfolder name should match an encounter name in the project. Use **Setup → Media Folder → Scan** to automatically link files to encounters.
