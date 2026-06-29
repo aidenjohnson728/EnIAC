@@ -109,7 +109,7 @@ Run this against a packaged app before giving a release to alpha testers. Mark e
 
 - Configure local-folder sync to a temporary empty folder.
 - Click Sync Now.
-- Confirm `project-state.json` and `manifest.json` appear in the sync folder.
+- Confirm `project-state.json` and `manifest.json` appear in the sync folder. For large-review projects, confirm `reviews/` appears; small projects may keep reviews inline.
 - Join/import that sync folder as a second local project if practical.
 - Confirm the submitted review appears after sync.
 

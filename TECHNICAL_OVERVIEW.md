@@ -373,7 +373,7 @@ The tombstone table for **structural** deletions (encounter, media file, form, i
 Key columns: `project_id`, `kind` (e.g. `'encounter'`, `'media'`, `'form'`, `'instruction'`, `'media_type'`), `sync_id`, `deleted_at`, `UNIQUE(project_id, kind, sync_id)`.
 
 ### `deleted_reviews`
-A legacy tombstone table for reviews. It's still written for backward compatibility, but the protocol-v2 sync path no longer reads it — review deletions now travel as `deleted_at` inside the shared project-state snapshot (soft-delete, row kept). Has a `UNIQUE(project_id, encounter_name, media_name, reviewer_name)` constraint; `INSERT OR IGNORE` skips duplicates.
+A legacy tombstone table for reviews. It's still written for backward compatibility, but the protocol-v3 sync path no longer reads it — review deletions now travel as `deleted_at` inside indexed review payloads (soft-delete, row kept). Has a `UNIQUE(project_id, encounter_name, media_name, reviewer_name)` constraint; `INSERT OR IGNORE` skips duplicates.
 
 ---
 
@@ -966,18 +966,20 @@ The constraints are:
 - No central server — communication is only via files in a shared folder
 - No machine should be able to accidentally overwrite another's reviews
 
-### The File Layout (protocol v2)
+### The File Layout (protocol v3)
 
-The sync system was rewritten. The old design split data across many files (`project-config.json`, a `reviews/<uuid>.json` per machine, `deleted-reviews.json`) and used a `config_version` counter to decide who won. That is **gone**. Today there is one canonical snapshot file:
+The sync system was rewritten. The oldest design split data across many independent files (`project-config.json`, a `reviews/<uuid>.json` per machine, `deleted-reviews.json`) and used a `config_version` counter to decide who won. Protocol v2 replaced that with one monolithic project snapshot. Protocol v3 keeps the stable part of that idea — one canonical index/comparison surface — but moves large payloads out of the index:
 
 ```
 sync-folder/
-  project-state.json     ← canonical snapshot: structure + ALL reviews + tombstones
+  project-state.json     ← canonical compact index: structure + entity hashes/paths + tombstones
   manifest.json          ← { protocol_version, config_version, fingerprint }
+  reviews/
+    <review_sync_id>.json  (only when review storage is split)
   reviews-export.xlsx     (no longer written automatically — see Part 4)
 ```
 
-`project-state.json` holds *everything*: encounters, media files, media types (with tags + workspace tabs), forms, instructions, every machine's reviews, and the tombstone lists. Both sides read it, merge it against their local database, and write the merged result back. It is the single source of truth — it is never split back into per-entity files.
+`project-state.json` holds the project structure, form/media-type version history, tombstones, and either inline reviews or an index of split review payloads with hashes. Review storage is adaptive: compacted reviews stay inline up to 5 MiB, then switch to `reviews/<review_sync_id>.json` payloads. Split reviews are not independent sources of truth: their hashes and paths ride in the index, and sync hydrates them back into the same per-entity merge pipeline before applying changes. Existing protocol-v2 monolithic folders are still accepted and republished as protocol v3 on the next sync. Cloud split-review payload reads/writes are bounded-parallel so unchanged payloads are skipped and changed payloads can transfer concurrently without unbounded provider pressure.
 
 Each machine still has a UUID (`user_uuid` in `app-settings.json`, created once on first launch). But a machine no longer "owns" a file — every machine publishes the full merged state whenever its local content differs from the folder. There is no `isOwner` / owner-gating anymore; the old concept was removed.
 

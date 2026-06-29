@@ -118,7 +118,7 @@ The app is in production. Installed users must be able to update without losing 
 | `electron/preload.js` | `window.api` contextBridge — every renderer↔main call lives here |
 | `electron/db.js` | SQLite singleton, schema init, migrations, `backupDb` |
 | `electron/settings.js` | Per-install JSON settings (reviewer name, UUID, cloud tokens, media base folders) |
-| `electron/sync.js` | All sync logic: protocol-v2 snapshot, tombstones, merge, auto-sync, export/import, offline detection |
+| `electron/sync.js` | All sync logic: protocol-v3 split-index sync, tombstones, merge, auto-sync, export/import, offline detection |
 | `electron/mediaServer.js` | Token-URL HTTP server for video/audio range streaming |
 | `electron/mediaLinks.js` | Per-machine file path resolution (`resolveLink`, `upsertLink`) |
 | `electron/services/structure.js` | Forms/instructions/media-types save+delete domain logic; version-history capture (`form_versions`/`media_type_versions`), `listVersionHistory`, `restoreVersion` |
@@ -151,7 +151,7 @@ projects
 form_versions        ← per-edit history of each form's schema (keyed by form_sync_id + version)
 media_type_versions  ← per-edit history of each media type's config (tags + workspace tabs)
 deleted_structure    ← sync tombstones for structural entities
-deleted_reviews      ← legacy tombstones (still written; not used in protocol-v2 sync path)
+deleted_reviews      ← legacy tombstones (still written; not used in protocol-v3 sync path)
 media_file_links     ← per-machine path resolution (not synced)
 ```
 
@@ -165,14 +165,16 @@ Re-aligning existing reviews to the current structure is **opt-in**, never autom
 
 > **Setup IPC lives in `electron/ipc/projects.js`** (channels prefixed `setup:`), not a separate `setup.js` module. New `setup:*` methods follow the same three-place rule.
 
-## Sync File Layout (protocol v2)
+## Sync File Layout (protocol v3)
 
 ```
 <sync folder>/
-  project-state.json   ← canonical snapshot (structure + reviews + tombstones)
-  manifest.json        ← {protocol_version, config_version, fingerprint}
+  project-state.json       ← canonical compact index (structure + entity hashes + tombstones)
+  manifest.json            ← {protocol_version, config_version, fingerprint}
+  reviews/
+    <review_sync_id>.json  ← full review payload when review storage is split
 ```
 
-Sync is fingerprint-driven and bidirectional. Both sides merge by `sync_id` + `updated_at` (LWW). `project-state.json` is the single source of truth — never split it back into per-entity files.
+Sync is fingerprint-driven and bidirectional. Both sides merge by `sync_id` + `updated_at` (LWW). `project-state.json` remains the single comparison/index surface: it contains structure, form/media-type version history, tombstones, and either inline reviews or hashes/paths for split review payloads. Review storage is adaptive: compacted reviews stay inline up to 5 MiB (`INLINE_REVIEWS_MAX_BYTES`), then switch to split `reviews/<review_sync_id>.json` payloads. Split review files must not become independent sources of truth; their hashes and paths ride in the index. Cloud split review payload reads/writes use bounded parallel requests for speed. Protocol-v2 monolithic `project-state.json` folders are still accepted and republished as protocol v3 on the next sync.
 
 The Excel report (`buildReviewsWorkbook`) is **not** written during sync — it's generated on demand via the "Export Excel" button (`export:excel`). Don't reintroduce a per-sync `.xlsx` write; the per-pass upload was the slowest part of cloud sync. The workbook is version-aware: reviews keep a `form_snapshot`, so questions removed by later form edits still appear (wide-sheet columns suffixed `(removed)`, codebook `In Current Form = No`) and the `Responses_Long` sheet stays lossless.

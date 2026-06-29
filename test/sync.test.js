@@ -919,8 +919,11 @@ test('doLocalSync: two machines exchange full project state through a shared fol
   assert.ok(!fs.existsSync(path.join(folder, 'reviews-export.xlsx')), 'xlsx report is NOT auto-written during sync')
   const state = JSON.parse(fs.readFileSync(path.join(folder, sync.PROJECT_STATE_FILENAME), 'utf8'))
   assert.strictEqual(state.protocol_version, sync.SYNC_PROTOCOL_VERSION)
+  assert.strictEqual(state.layout, 'hybrid-v1')
+  assert.strictEqual(state.review_storage.mode, 'inline')
   assert.strictEqual(state.forms.length, 1)
-  assert.strictEqual(state.reviews.length, 1, 'reviews included in shared project state')
+  assert.strictEqual(state.reviews.length, 1, 'small-project reviews included inline')
+  assert.ok(Array.isArray(state.reviews[0].timestamps), 'inline review payload includes timestamps')
 
   // Machine B — fresh placeholder project pulls A's structure + Alice's review.
   const b = makeDb()
@@ -951,6 +954,41 @@ test('doLocalSync: two machines exchange full project state through a shared fol
     JOIN encounters e ON m.encounter_id=e.id
     WHERE e.project_id=? AND r.deleted_at IS NULL ORDER BY r.reviewer_name`).all(pa).map(x => x.reviewer_name)
   assert.deepStrictEqual(reviewersOnA, ['Alice', 'Bob'])
+
+  a.close(); b.close()
+})
+
+test('doLocalSync: large review payloads switch to split files at the 5 MiB cutoff', async () => {
+  const folder = tmpDir('sdmo-sync-large-')
+
+  const a = makeDb()
+  const pa = createProject(a, 'Large Study')
+  const encA = addEncounter(a, pa, 'P1', 'enc-large')
+  const mediaA = addMedia(a, encA.id, 'large.mp4', { sync_id: 'media-large' })
+  const revA = addReview(a, mediaA.id, 'Alice', {
+    reviewer_uuid: 'uuid-A',
+    status: 'submitted',
+    notes: 'x'.repeat((5 * 1024 * 1024) + 2048),
+  })
+
+  await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice')
+
+  const state = JSON.parse(fs.readFileSync(path.join(folder, sync.PROJECT_STATE_FILENAME), 'utf8'))
+  assert.strictEqual(state.layout, 'hybrid-v1')
+  assert.strictEqual(state.review_storage.mode, 'split')
+  assert.strictEqual(state.reviews.length, 1)
+  assert.ok(state.reviews[0].path.startsWith('reviews/'), 'large review is represented by an index entry')
+  assert.ok(!Array.isArray(state.reviews[0].timestamps), 'large review payload is not embedded in project-state.json')
+  assert.ok(fs.existsSync(path.join(folder, state.reviews[0].path)), 'split review payload file written')
+
+  const b = makeDb()
+  const pb = createProject(b, 'Placeholder')
+  await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')
+  assert.strictEqual(
+    b.prepare('SELECT notes FROM reviews WHERE review_sync_id=?').get(revA.review_sync_id).notes.length,
+    (5 * 1024 * 1024) + 2048,
+    'split payload hydrates onto another machine'
+  )
 
   a.close(); b.close()
 })
@@ -1035,7 +1073,7 @@ test('doLocalSync: legacy sync folder is migrated forward to project-state.json'
   const pFresh = createProject(fresh, 'Placeholder')
   await sync.doLocalSync(fresh, pFresh, folder, 'uuid-B', 'Bob')
 
-  assert.ok(fs.existsSync(path.join(folder, sync.PROJECT_STATE_FILENAME)), 'legacy folder rewritten to protocol v2')
+  assert.ok(fs.existsSync(path.join(folder, sync.PROJECT_STATE_FILENAME)), 'legacy folder rewritten to current protocol')
   assert.strictEqual(fresh.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id=?').get(pFresh).n, 1)
   assert.strictEqual(
     fresh.prepare(`
