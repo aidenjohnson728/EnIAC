@@ -1,6 +1,6 @@
 {
   "name": "sdmo-app",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Patient encounter coding application",
   "main": "electron/main.js",
   "scripts": {
@@ -21,6 +21,7 @@
     "better-sqlite3": "^12.11.1",
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^0.441.0",
     "node-fetch": "^2.7.0",
     "react": "^18.3.1",
@@ -50,6 +51,13 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "n232not",
+        "repo": "sdmo-app"
+      }
+    ],
     "files": [
       "dist/**/*",
       "electron/**/*",
@@ -70,7 +78,10 @@
       "icon": "build/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "target": "dmg"
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "dmg": {
       "title": "${productName} ${version}",

@@ -30,6 +30,21 @@ Click **[Releases](https://github.com/n232not/sdmo-app/releases)** on the right 
 
 ---
 
+## Updating the App
+
+SDMo checks GitHub Releases for newer versions. Updates are not installed automatically.
+
+- **Normal updates:** SDMo will ask you to download the update. You can choose **Later** and keep working.
+- **Required updates:** SDMo will block use until the update is installed. These are only used for important compatibility or safety changes, such as sync protocol changes.
+
+When an update is ready, click **Restart to Install**. SDMo creates a local database backup before restarting into the new version. Your projects, reviews, settings, sync credentials, and media links are stored separately from the app and should remain in place after updating.
+
+App version, update status, and diagnostics export are available from **Settings → About**.
+
+Maintainers should follow [RELEASE.md](./RELEASE.md) for every release.
+
+---
+
 ## What SDMo Does
 
 SDMo allows you to code patient encounters within a structured digital app. All patient encounter files (videos, transcripts, etc) are stored locally on your own computer while the coding information can be synced to the cloud. This maintains hipaa confidentiality but also allows multiple users to work on the same coding project simultaneously

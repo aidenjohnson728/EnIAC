@@ -8,5 +8,7 @@ export const SETUP_SECTIONS = {
   SYNC: 6,
   KEYBINDS: 7,
   ACCESS: 8,
-  DELETED_REVIEWS: 9,
+  VERSIONS: 9,
+  DELETED_REVIEWS: 10,
+  ABOUT: 11,
 }

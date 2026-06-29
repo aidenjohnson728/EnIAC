@@ -26,6 +26,8 @@ npm run dist:win  # Windows NSIS → release/
 
 No linter. Tests live in `test/`, use `test/_harness.js` (zero-dep runner), and rely on `test/helpers.js` for in-memory DB setup.
 
+Releases are migration-sensitive. Follow `RELEASE.md` for version bumps, migration/update tests, diagnostics checks, and GitHub Release publishing.
+
 ---
 
 ## Design Goals
@@ -89,6 +91,15 @@ The app is in production. Installed users must be able to update without losing 
 - Setup section indices come from `src/lib/setupSections.js` (`SETUP_SECTIONS`). Never hardcode section numbers.
 - Page routes: `/` → HomePage, `/project/:id` → ProjectPage, `/project/:id/setup` → SetupPage, `/review/:id` → ReviewPage, `/workspace/:id` → WorkspacePage.
 
+### App updates and diagnostics
+
+- App binary updates use `electron-updater` against GitHub Releases. Do not route app updates through project sync.
+- Updates are prompted, not automatic: `autoDownload=false` and `autoInstallOnAppQuit=false`.
+- Required updates are controlled by GitHub Release notes. Include `[sdmo-update:required]` to block app use until the update is installed.
+- `quitAndInstall()` must call `backupDb('pre-app-update')` before restarting.
+- App/update/diagnostics IPC channels are registered in `main.js`, exposed in `preload.js`, mirrored in `src/lib/api.js`, and validated in `electron/ipc/contracts.js`.
+- Diagnostics export should include version/system/project-count/log information, not media files or review contents.
+
 ### Misc
 
 - Use `node-fetch@2` (CommonJS) for HTTP in the main process. Do **not** upgrade to v3 (ESM only).
@@ -102,6 +113,8 @@ The app is in production. Installed users must be able to update without losing 
 | File | What it owns |
 |------|-------------|
 | `electron/main.js` | BrowserWindow, `localfile://` protocol, workspace windows, IPC module registration, quit hooks |
+| `electron/updater.js` | Prompted GitHub Releases app updates, required-update release-note marker, pre-install DB backup |
+| `electron/diagnostics.js` | App log file setup and diagnostics JSON export payload |
 | `electron/preload.js` | `window.api` contextBridge — every renderer↔main call lives here |
 | `electron/db.js` | SQLite singleton, schema init, migrations, `backupDb` |
 | `electron/settings.js` | Per-install JSON settings (reviewer name, UUID, cloud tokens, media base folders) |

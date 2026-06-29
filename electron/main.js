@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { validateIpcArgs } = require('./ipc/contracts')
@@ -122,6 +122,8 @@ try {
 }
 
 app.whenReady().then(() => {
+  try { require('./diagnostics').setupFileLogging() } catch (_) {}
+
   protocol.registerFileProtocol('localfile', (request, callback) => {
     const filePath = decodeURIComponent(request.url.replace('localfile://', ''))
     if (isKnownLocalFile(filePath)) callback({ path: filePath })
@@ -134,6 +136,8 @@ app.whenReady().then(() => {
   // corruption or accidental destructive action is recoverable.
   try { require('./db').backupDb('startup') } catch (e) { console.error('[main] startup backup failed:', e.message) }
 
+  try { require('./updater').initUpdater() } catch (e) { console.error('[main] updater init failed:', e.message) }
+
   const { setMainWindow, startPeriodicAutoSync } = require('./sync')
   setMainWindow(mainWindow)
   startPeriodicAutoSync()
@@ -144,6 +148,34 @@ app.whenReady().then(() => {
 
 ipcMain.handle('window:setFullscreen', (_, flag) => mainWindow.setFullScreen(flag))
 ipcMain.handle('window:isFullscreen', () => mainWindow.isFullScreen())
+
+ipcMain.handle('app:getInfo', () => ({
+  name: app.getName(),
+  version: app.getVersion(),
+  packaged: app.isPackaged,
+  platform: process.platform,
+  arch: process.arch,
+}))
+
+ipcMain.handle('app:exportDiagnostics', async () => {
+  const diagnostics = require('./diagnostics').buildDiagnostics()
+  const { canceled, filePath } = await dialog.showSaveDialog({
+    title: 'Export SDMo diagnostics',
+    defaultPath: `sdmo-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  })
+  if (canceled || !filePath) return null
+  fs.writeFileSync(filePath, JSON.stringify(diagnostics, null, 2))
+  return filePath
+})
+
+ipcMain.handle('app:updateStatus', () => require('./updater').getUpdateStatus())
+ipcMain.handle('app:checkForUpdates', () => require('./updater').checkForUpdates())
+ipcMain.handle('app:downloadUpdate', () => require('./updater').downloadUpdate())
+ipcMain.handle('app:installUpdate', () => {
+  require('./updater').quitAndInstall()
+  return true
+})
 
 ipcMain.handle('window:openWorkspace', (_, url) => {
   // Extract reviewId from URL hash: #/workspace/<id>

@@ -33,6 +33,7 @@ const workspaceClosedBridge = makeEventBridge('workspace:closed')
 const syncConflictBridge = makeEventBridge('sync:conflict')
 const syncOfflineBridge = makeEventBridge('sync:offline')
 const syncOnlineBridge = makeEventBridge('sync:online')
+const appUpdateBridge = makeEventBridge('app:updateStatus')
 
 contextBridge.exposeInMainWorld('api', {
   // Projects
@@ -105,6 +106,14 @@ contextBridge.exposeInMainWorld('api', {
   uploadPdf: (projectId) => ipcRenderer.invoke('setup:uploadPdf', projectId),
 
   // App settings
+  getAppInfo: () => ipcRenderer.invoke('app:getInfo'),
+  exportDiagnostics: () => ipcRenderer.invoke('app:exportDiagnostics'),
+  getUpdateStatus: () => ipcRenderer.invoke('app:updateStatus'),
+  checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
+  downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
+  installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  onUpdateStatus: (cb) => appUpdateBridge.on(cb),
+  offUpdateStatus: (id) => appUpdateBridge.off(id),
   getAppSettings: () => ipcRenderer.invoke('app:getSettings'),
   setAppSettings: (data) => ipcRenderer.invoke('app:setSettings', data),
   getProjectName: (projectId) => ipcRenderer.invoke('app:getProjectName', projectId),

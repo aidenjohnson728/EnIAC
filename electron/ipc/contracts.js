@@ -109,6 +109,12 @@ const contracts = {
   'setup:deleteInstruction': [isIntLike, isIntLike],
   'setup:uploadPdf': [isIntLike],
 
+  'app:getInfo': [],
+  'app:exportDiagnostics': [],
+  'app:updateStatus': [],
+  'app:checkForUpdates': [],
+  'app:downloadUpdate': [],
+  'app:installUpdate': [],
   'app:getProjectName': [isIntLike],
   'app:setProjectName': [isIntLike, isString],
   'app:setCloudFolderName': [isIntLike, isString],

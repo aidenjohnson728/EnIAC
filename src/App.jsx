@@ -4,6 +4,7 @@ import ProjectPage from './pages/ProjectPage'
 import ReviewPage from './pages/ReviewPage'
 import SetupPage from './pages/SetupPage'
 import WorkspacePage from './pages/WorkspacePage'
+import AppUpdateGate from './components/ui/AppUpdateGate'
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="/review/:reviewId" element={<ReviewPage />} />
         <Route path="/workspace/:reviewId" element={<WorkspacePage />} />
       </Routes>
+      <AppUpdateGate />
     </HashRouter>
   )
 }

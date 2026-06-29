@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { ChevronLeft, Plus, FolderOpen, ChevronRight, Trash2, Copy, Edit2, Check, Lock, Unlock, Cloud, HardDrive, X, RefreshCw, AlertTriangle, User, HelpCircle } from 'lucide-react'
+import { ChevronLeft, Plus, FolderOpen, ChevronRight, Trash2, Copy, Edit2, Check, Lock, Unlock, Cloud, HardDrive, X, RefreshCw, AlertTriangle, User, HelpCircle, Info, Download, RotateCcw, FileText } from 'lucide-react'
 import { api } from '../lib/api'
 import FormBuilder from '../components/setup/FormBuilder'
 import MediaTypeEditor from '../components/setup/MediaTypeEditor'
@@ -8,7 +8,7 @@ import InstructionEditor from '../components/setup/InstructionEditor'
 import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
 
-const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Versions', 'Deleted Reviews']
+const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Versions', 'Deleted Reviews', 'About']
 
 const FILES_TOUR_STEPS = [
   {
@@ -88,12 +88,33 @@ export default function SetupPage() {
   const [autolinkResult, setAutolinkResult] = useState(null)
   const [autolinking, setAutolinking] = useState(false)
   const [linkSaving, setLinkSaving] = useState(null) // mediaFileId being linked
+  const [appInfo, setAppInfo] = useState(null)
+  const [updateStatus, setUpdateStatus] = useState(null)
+  const [aboutBusy, setAboutBusy] = useState(false)
+  const [diagnosticsMessage, setDiagnosticsMessage] = useState('')
   const forcedLockOnEntryRef = useRef(false)
 
   useEffect(() => {
     forcedLockOnEntryRef.current = false
     load()
   }, [projectId])
+
+  useEffect(() => {
+    let mounted = true
+    Promise.all([
+      api.getAppInfo?.(),
+      api.getUpdateStatus?.(),
+    ]).then(([info, status]) => {
+      if (!mounted) return
+      setAppInfo(info)
+      setUpdateStatus(status)
+    })
+    const id = api.onUpdateStatus?.(status => setUpdateStatus(status))
+    return () => {
+      mounted = false
+      if (id) api.offUpdateStatus?.(id)
+    }
+  }, [])
 
   async function load() {
     setLoading(true)
@@ -179,6 +200,48 @@ export default function SetupPage() {
     setNewPwConfirm('')
     setPwSaved(true)
     setTimeout(() => setPwSaved(false), 2000)
+  }
+
+  async function handleCheckForAppUpdate() {
+    setAboutBusy(true)
+    try {
+      const status = await api.checkForUpdates()
+      setUpdateStatus(status)
+    } finally {
+      setAboutBusy(false)
+    }
+  }
+
+  async function handleDownloadAppUpdate() {
+    setAboutBusy(true)
+    try {
+      const status = await api.downloadUpdate()
+      setUpdateStatus(status)
+    } finally {
+      setAboutBusy(false)
+    }
+  }
+
+  async function handleInstallAppUpdate() {
+    setAboutBusy(true)
+    try {
+      await api.installUpdate()
+    } finally {
+      setAboutBusy(false)
+    }
+  }
+
+  async function handleExportDiagnostics() {
+    setDiagnosticsMessage('')
+    setAboutBusy(true)
+    try {
+      const filePath = await api.exportDiagnostics()
+      setDiagnosticsMessage(filePath ? `Saved diagnostics to ${filePath}` : 'Diagnostics export canceled.')
+    } catch (e) {
+      setDiagnosticsMessage(e?.message || 'Could not export diagnostics.')
+    } finally {
+      setAboutBusy(false)
+    }
   }
 
   function handleEditorLocked() {
@@ -839,6 +902,19 @@ export default function SetupPage() {
           {section === 10 && (
             <DeletedReviewsSection projectId={projectId} />
           )}
+
+          {section === 11 && (
+            <AboutSection
+              appInfo={appInfo}
+              updateStatus={updateStatus}
+              busy={aboutBusy}
+              diagnosticsMessage={diagnosticsMessage}
+              onCheckForUpdate={handleCheckForAppUpdate}
+              onDownloadUpdate={handleDownloadAppUpdate}
+              onInstallUpdate={handleInstallAppUpdate}
+              onExportDiagnostics={handleExportDiagnostics}
+            />
+          )}
         </div>
       </div>
 
@@ -1148,6 +1224,104 @@ function VersionManagementSection({ projectId, forms, mediaTypes, locked, onChan
           </div>
         )}
       </Modal>
+    </div>
+  )
+}
+
+function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheckForUpdate, onDownloadUpdate, onInstallUpdate, onExportDiagnostics }) {
+  const updateVersion = updateStatus?.updateInfo?.version || updateStatus?.requiredVersion
+  const updateLabel = updateStatus?.state === 'available'
+    ? `Update available: ${updateVersion || 'new version'}`
+    : updateStatus?.state === 'downloaded'
+      ? `Update ready: ${updateVersion || 'new version'}`
+      : updateStatus?.state === 'downloading'
+        ? 'Downloading update'
+        : updateStatus?.state === 'not-available'
+          ? 'SDMo is up to date'
+          : updateStatus?.state === 'checking'
+            ? 'Checking for updates'
+            : updateStatus?.state === 'unavailable'
+              ? 'Updates unavailable in this build'
+              : updateStatus?.state === 'error'
+                ? 'Update check failed'
+                : 'Update status unknown'
+
+  const progress = updateStatus?.progress?.percent ? Math.round(updateStatus.progress.percent) : null
+
+  return (
+    <div style={{ maxWidth: 680 }}>
+      <h2 style={{ marginBottom: 6 }}>About SDMo</h2>
+      <p className="text-secondary" style={{ marginBottom: 24, fontSize: 13 }}>
+        App version, update status, and diagnostics for support.
+      </p>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <Info size={15} color="var(--accent)" />
+            <span style={{ fontWeight: 600 }}>Version</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '8px 14px', fontSize: 13 }}>
+            <span className="text-secondary">App</span>
+            <span>{appInfo?.name || 'SDMo'}</span>
+            <span className="text-secondary">Version</span>
+            <span>{appInfo?.version || updateStatus?.currentVersion || 'Unknown'}</span>
+            <span className="text-secondary">Build</span>
+            <span>{appInfo?.packaged ? 'Packaged' : 'Development'}</span>
+            <span className="text-secondary">Platform</span>
+            <span>{appInfo?.platform || 'Unknown'} {appInfo?.arch || ''}</span>
+          </div>
+        </div>
+
+        <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <RefreshCw size={15} color="var(--accent)" />
+            <span style={{ fontWeight: 600 }}>Updates</span>
+            {updateStatus?.required && <span className="badge badge-warning" style={{ marginLeft: 'auto' }}>Required</span>}
+          </div>
+          <p style={{ fontSize: 13, color: updateStatus?.state === 'error' ? 'var(--danger)' : 'var(--text-secondary)', marginBottom: 12 }}>
+            {updateLabel}{progress != null ? ` (${progress}%)` : ''}
+          </p>
+          {updateStatus?.state === 'downloaded' && (
+            <p className="text-secondary" style={{ fontSize: 13, marginBottom: 12 }}>
+              SDMo creates a database backup before restarting to install the update.
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-secondary" onClick={onCheckForUpdate} disabled={busy || updateStatus?.state === 'checking'}>
+              <RefreshCw size={14} /> Check for Updates
+            </button>
+            {updateStatus?.state === 'available' && (
+              <button className={updateStatus.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={onDownloadUpdate} disabled={busy}>
+                <Download size={14} /> Download
+              </button>
+            )}
+            {updateStatus?.state === 'downloaded' && (
+              <button className={updateStatus.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={onInstallUpdate} disabled={busy}>
+                <RotateCcw size={14} /> Restart to Install
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <FileText size={15} color="var(--accent)" />
+            <span style={{ fontWeight: 600 }}>Diagnostics</span>
+          </div>
+          <p className="text-secondary" style={{ fontSize: 13, marginBottom: 12 }}>
+            Export app version, system details, backup list, logs, and project counts for troubleshooting. Media files and review contents are not included.
+          </p>
+          <button className="btn btn-secondary" onClick={onExportDiagnostics} disabled={busy}>
+            <Download size={14} /> Export Diagnostics
+          </button>
+          {diagnosticsMessage && (
+            <p style={{ fontSize: 12, color: diagnosticsMessage.includes('Could not') ? 'var(--danger)' : 'var(--text-muted)', marginTop: 10 }}>
+              {diagnosticsMessage}
+            </p>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
