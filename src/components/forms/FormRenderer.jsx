@@ -62,14 +62,14 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
         <div style={{
           position: 'sticky', top: 0, zIndex: 10,
           background: 'var(--bg)',
-          paddingBottom: 12, marginBottom: 24,
+          paddingBottom: 8, marginBottom: 16,
           borderBottom: '1px solid var(--border)',
         }}>
           <div style={{
             background: 'var(--bg-secondary)',
-            borderRadius: 10,
-            padding: '4px 5px',
-            display: 'flex', flexWrap: 'wrap', gap: 3,
+            borderRadius: 8,
+            padding: '3px 4px',
+            display: 'flex', flexWrap: 'wrap', gap: 2,
           }}>
             {sections.map((section, i) => {
               const { answered, total } = countAnswered(section, values)
@@ -80,7 +80,7 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
                   key={section.id}
                   onClick={() => jumpTo(section.id)}
                   style={{
-                    padding: '5px 11px', borderRadius: 7,
+                    padding: '4px 9px', borderRadius: 6,
                     fontSize: 11, fontWeight: isActive ? 600 : 500,
                     border: isActive ? '1px solid var(--border)' : '1px solid transparent',
                     background: isActive ? 'var(--bg)' : complete ? 'rgba(34,197,94,0.1)' : 'transparent',
@@ -102,7 +102,7 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
       )}
 
       {/* ── Sections ─────────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {sections.map((section, i) => (
           <FormSection
             key={section.id}
@@ -116,7 +116,6 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
               if (opening) setActiveSection(section.id)
               setCollapsed(c => ({ ...c, [section.id]: !c[section.id] }))
             }}
-            onAutoCollapse={() => setCollapsed(c => ({ ...c, [section.id]: true }))}
             sectionRef={el => { sectionRefs.current[section.id] = el }}
             readOnly={readOnly}
             timestamps={timestamps}
@@ -139,17 +138,9 @@ function countAnswered(section, values) {
   return { answered: answered.length, total: questions.length }
 }
 
-function FormSection({ section, sectionIndex, values, onChange, collapsed, onToggle, onAutoCollapse, sectionRef, readOnly, timestamps }) {
+function FormSection({ section, sectionIndex, values, onChange, collapsed, onToggle, sectionRef, readOnly, timestamps }) {
   const { answered, total } = countAnswered(section, values)
   const complete = total > 0 && answered === total
-
-  const wasCompleteOnMount = useRef(complete)
-  useEffect(() => {
-    if (wasCompleteOnMount.current) return
-    if (!complete) return
-    const timer = setTimeout(() => onAutoCollapse(), 700)
-    return () => clearTimeout(timer)
-  }, [complete]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div ref={sectionRef}>
@@ -158,7 +149,7 @@ function FormSection({ section, sectionIndex, values, onChange, collapsed, onTog
         onClick={onToggle}
         style={{
           display: 'flex', alignItems: 'center', gap: 10,
-          padding: '10px 14px',
+          padding: '8px 12px',
           background: complete ? 'rgba(34,197,94,0.07)' : 'var(--bg-secondary)',
           borderRadius: collapsed ? 8 : '8px 8px 0 0',
           cursor: 'pointer', userSelect: 'none',
@@ -211,8 +202,8 @@ function FormSection({ section, sectionIndex, values, onChange, collapsed, onTog
         transition: 'max-height 0.2s ease, opacity 0.15s ease',
       }}>
         <div style={{
-          padding: '18px 14px 6px 31px', // left indent aligns with title text
-          display: 'flex', flexDirection: 'column', gap: 22,
+          padding: '12px 12px 4px 26px',
+          display: 'flex', flexDirection: 'column', gap: 16,
           borderLeft: `3px solid ${complete ? 'rgba(34,197,94,0.25)' : 'var(--border)'}`,
           marginLeft: 0,
           transition: 'border-color 0.25s',
@@ -274,8 +265,8 @@ function ChoiceButton({ selected, onClick, readOnly, multiSelect, children }) {
       onMouseEnter={() => !readOnly && setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        display: 'flex', alignItems: 'center', gap: 12,
-        width: '100%', textAlign: 'left', padding: '10px 14px',
+        display: 'flex', alignItems: 'center', gap: 10,
+        width: '100%', textAlign: 'left', padding: '8px 12px',
         border: `1.5px solid ${selected ? 'var(--accent)' : hovered ? 'var(--border-strong)' : 'var(--border)'}`,
         borderRadius: 8,
         background: selected ? 'var(--accent-light)' : hovered ? 'var(--bg-secondary)' : 'transparent',
@@ -357,7 +348,7 @@ function RadioDot({ selected, onClick, readOnly }) {
 
 function QLabel({ el }) {
   return (
-    <div style={{ marginBottom: 8 }}>
+    <div style={{ marginBottom: 6 }}>
       <span style={{ fontWeight: 600, fontSize: 13, letterSpacing: '-0.01em' }}>{el.label}</span>
       {el.required && <span style={{ color: 'var(--danger)', marginLeft: 3, fontSize: 12 }}>*</span>}
     </div>
@@ -412,7 +403,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
         {items.map((item, i) => {
           const itemVal = groupVal[item.id]
           return (
-            <div key={item.id} style={{ display: 'flex', alignItems: 'center', padding: '7px 6px', background: i % 2 === 1 ? 'rgba(0,0,0,0.025)' : 'transparent', borderRadius: 4 }}>
+            <div key={item.id} style={{ display: 'flex', alignItems: 'center', padding: '5px 6px', background: i % 2 === 1 ? 'rgba(0,0,0,0.025)' : 'transparent', borderRadius: 4 }}>
               <div style={{ flex: 1, fontSize: 13, paddingRight: 10, lineHeight: 1.4 }}>{item.label}</div>
               {el.has_na && (
                 <div style={{ width: COL_W, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
@@ -444,7 +435,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     return (
       <div>
         <QLabel el={el} />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {(el.options || []).map(opt => (
             <ChoiceButton key={opt} selected={value === opt} onClick={() => !readOnly && onChange(value === opt ? null : opt)} readOnly={readOnly} multiSelect={false}>{opt}</ChoiceButton>
           ))}
@@ -458,7 +449,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     return (
       <div>
         <QLabel el={el} />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {(el.options || []).map(opt => (
             <ChoiceButton key={opt} selected={selected.includes(opt)}
               onClick={() => { if (readOnly) return; const isSel = selected.includes(opt); onChange(isSel ? selected.filter(x => x !== opt) : [...selected, opt]) }}
@@ -480,7 +471,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
             return (
               <button key={opt} disabled={readOnly} onClick={() => !readOnly && onChange(selected ? null : opt)}
                 style={{
-                  padding: '7px 14px', border: '1.5px solid',
+                  padding: '5px 12px', border: '1.5px solid',
                   borderColor: selected ? 'var(--accent)' : 'var(--border)', borderRadius: 20,
                   background: selected ? 'var(--accent-light)' : 'transparent',
                   color: selected ? 'var(--accent)' : 'var(--text)',

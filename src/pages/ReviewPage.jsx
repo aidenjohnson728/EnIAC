@@ -516,6 +516,9 @@ export default function ReviewPage() {
             <button className="btn btn-primary" onClick={handleLinkFile} disabled={linkSaving}>
               {linkSaving ? 'Opening…' : isMissing ? 'Locate file…' : 'Browse to file…'}
             </button>
+            <button className="btn btn-secondary" onClick={() => setLinkModal(null)}>
+              Open without video
+            </button>
             <button className="btn btn-secondary" onClick={handleMarkNA}>
               I don't have this file (mark N/A)
             </button>
@@ -618,7 +621,7 @@ export default function ReviewPage() {
               onMouseEnter={() => setVideoHovered(true)}
               onMouseLeave={() => setVideoHovered(false)}
             >
-              {isVideo ? (
+              {isVideo && videoUrl ? (
                 <video
                   ref={videoRef}
                   src={videoUrl}
@@ -633,8 +636,20 @@ export default function ReviewPage() {
                   onError={() => setVideoError('This file could not be played. It may use a codec Electron cannot decode, or the file may be damaged.')}
                 />
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#fff', opacity: 0.5 }}>
-                  Non-video file — see workspace tabs
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 10 }}>
+                  <span style={{ color: '#fff', opacity: 0.4, fontSize: 13 }}>
+                    {isVideo ? 'Video not available on this machine' : 'Non-video file — see workspace tabs'}
+                  </span>
+                  {isVideo && !videoUrl && (
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={handleLinkFile}
+                      disabled={linkSaving}
+                      style={{ opacity: 0.85 }}
+                    >
+                      {linkSaving ? 'Opening…' : 'Link file…'}
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -770,9 +785,20 @@ export default function ReviewPage() {
                   </button>
                 ))}
               </div>
-              <button className="btn btn-ghost btn-sm" style={{ margin: '0 8px' }} onClick={() => setWorkspaceExpanded(false)}>
-                <Minimize2 size={14} /> Restore
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px' }}>
+                {submitted ? (
+                  <button className="btn btn-secondary btn-sm" onClick={handleUnsubmit}>
+                    <Edit2 size={13} /> Edit Review
+                  </button>
+                ) : (
+                  <button className="btn btn-primary btn-sm" onClick={handleSubmitClick}>
+                    Submit Review
+                  </button>
+                )}
+                <button className="btn btn-ghost btn-sm" onClick={() => setWorkspaceExpanded(false)}>
+                  <Minimize2 size={14} /> Restore
+                </button>
+              </div>
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: 24, maxWidth: 800, width: '100%', margin: '0 auto' }}>
               {workspaceContent}
