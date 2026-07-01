@@ -9,6 +9,7 @@ import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
 
 const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Versions', 'Deleted Reviews', 'About']
+const MANUAL_UPDATE_URL = 'https://n232not.github.io/sdmo-app/'
 
 const FILES_TOUR_STEPS = [
   {
@@ -1264,7 +1265,6 @@ function VersionManagementSection({ projectId, forms, mediaTypes, locked, onChan
 
 function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheckForUpdate, onDownloadUpdate, onInstallUpdate, onExportDiagnostics }) {
   const updateVersion = updateStatus?.updateInfo?.version || updateStatus?.requiredVersion
-  const releaseUrl = updateStatus?.updateInfo?.releaseUrl || updateStatus?.rememberedRequiredUpdate?.releaseUrl || 'https://github.com/n232not/sdmo-app/releases/latest'
   const updateLabel = updateStatus?.state === 'available'
     ? updateStatus?.manualInstallOnly
       ? `Update available: ${updateVersion || 'new version'}. Install the latest DMG manually.`
@@ -1339,7 +1339,7 @@ function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheck
               </button>
             )}
             {updateStatus?.state === 'available' && updateStatus?.manualInstallOnly && (
-              <button className={updateStatus.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={() => api.openExternalUrl?.(releaseUrl)} disabled={busy}>
+              <button className={updateStatus.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={() => api.openExternalUrl?.(MANUAL_UPDATE_URL)} disabled={busy}>
                 <ExternalLink size={14} /> Open Release
               </button>
             )}

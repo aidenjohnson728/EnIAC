@@ -3,6 +3,8 @@ import { AlertTriangle, Download, ExternalLink, RefreshCw, RotateCcw } from 'luc
 import { api } from '../../lib/api'
 import Modal from './Modal'
 
+const MANUAL_UPDATE_URL = 'https://n232not.github.io/sdmo-app/'
+
 function updateTitle(status) {
   if (status?.required) return 'Update Required'
   if (status?.state === 'downloaded') return 'Update Ready'
@@ -70,7 +72,7 @@ export default function AppUpdateGate() {
   }
 
   async function openRelease() {
-    await api.openExternalUrl?.(releaseUrl)
+    await api.openExternalUrl?.(MANUAL_UPDATE_URL)
   }
 
   if (!show) return null
@@ -78,7 +80,6 @@ export default function AppUpdateGate() {
   const isDownloading = status.state === 'downloading'
   const isDownloaded = status.state === 'downloaded'
   const manualInstallOnly = status.manualInstallOnly
-  const releaseUrl = status.updateInfo?.releaseUrl || status.rememberedRequiredUpdate?.releaseUrl || 'https://github.com/n232not/sdmo-app/releases/latest'
   const progress = status.progress?.percent ? Math.round(status.progress.percent) : null
 
   return (

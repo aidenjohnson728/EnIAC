@@ -35,11 +35,11 @@
             Coders can log timestamped observations, complete structured forms, and sync submitted reviews across machines.
           </p>
           <div class="actions">
-            <a id="download-primary" class="button primary" href="https://github.com/n232not/sdmo-app/releases/latest">Download latest version</a>
+            <a id="download-primary" class="button primary" href="#download">Download latest version</a>
             <a class="button" href="https://github.com/n232not/sdmo-app">View source</a>
           </div>
           <p id="version-note" class="version-note">
-            Current published package version: 0.2.6. The download button points to GitHub's latest release URL, so it follows the newest published SDMo release automatically.
+            Current published package version: 0.2.6. Use the download section below to read the install notes before choosing an installer.
           </p>
         </div>
 
@@ -191,8 +191,7 @@
           const mac = findAsset(assets, [/\.dmg$/i, /arm64/i]) || findAsset(assets, [/\.dmg$/i])
           const windows = findAsset(assets, [/\.exe$/i])
 
-          document.getElementById('version-note').textContent = `Latest release: ${version}. Download links follow GitHub's latest published SDMo release.`
-          document.getElementById('download-primary').href = release.html_url || releasesUrl
+          document.getElementById('version-note').textContent = `Latest release: ${version}. Use the download section below to read the install notes before choosing an installer.`
           document.getElementById('download-primary').textContent = `Download ${version}`
 
           if (mac) document.getElementById('download-mac').href = mac.browser_download_url
