@@ -73,6 +73,7 @@ export const api = isElectron ? window.api : {
   checkForUpdates: async () => ({ state: 'unavailable', currentVersion: '0.0.0-dev', required: false, updateInfo: null }),
   downloadUpdate: async () => ({ state: 'unavailable', currentVersion: '0.0.0-dev', required: false, updateInfo: null }),
   installUpdate: async () => true,
+  openExternalUrl: async (url) => { if (url) window.open(url, '_blank', 'noopener,noreferrer'); return true },
   onUpdateStatus: () => 0,
   offUpdateStatus: () => {},
   getAppSettings: async () => ({ user_uuid: 'mock-uuid' }),

@@ -1339,7 +1339,7 @@ function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheck
               </button>
             )}
             {updateStatus?.state === 'available' && updateStatus?.manualInstallOnly && (
-              <button className={updateStatus.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={() => window.open(releaseUrl, '_blank')} disabled={busy}>
+              <button className={updateStatus.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={() => api.openExternalUrl?.(releaseUrl)} disabled={busy}>
                 <ExternalLink size={14} /> Open Release
               </button>
             )}

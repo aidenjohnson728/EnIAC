@@ -119,6 +119,7 @@ const contracts = {
   'app:checkForUpdates': [],
   'app:downloadUpdate': [],
   'app:installUpdate': [],
+  'app:openExternalUrl': [isString],
   'app:getProjectName': [isIntLike],
   'app:setProjectName': [isIntLike, isString],
   'app:setCloudFolderName': [isIntLike, isString],

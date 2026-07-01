@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, dialog, Menu } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, dialog, Menu, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { validateIpcArgs } = require('./ipc/contracts')
@@ -181,6 +181,11 @@ ipcMain.handle('app:checkForUpdates', () => require('./updater').checkForUpdates
 ipcMain.handle('app:downloadUpdate', () => require('./updater').downloadUpdate())
 ipcMain.handle('app:installUpdate', () => {
   require('./updater').quitAndInstall()
+  return true
+})
+ipcMain.handle('app:openExternalUrl', (_, url) => {
+  if (!/^https?:\/\//i.test(url || '')) throw new Error('Only http(s) links can be opened externally.')
+  shell.openExternal(url)
   return true
 })
 

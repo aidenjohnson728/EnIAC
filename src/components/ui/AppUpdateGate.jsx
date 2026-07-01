@@ -69,6 +69,10 @@ export default function AppUpdateGate() {
     }
   }
 
+  async function openRelease() {
+    await api.openExternalUrl?.(releaseUrl)
+  }
+
   if (!show) return null
 
   const isDownloading = status.state === 'downloading'
@@ -100,7 +104,7 @@ export default function AppUpdateGate() {
             </button>
           )}
           {manualInstallOnly && status.state !== 'error' && (
-            <button className={status.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={() => window.open(releaseUrl, '_blank')} disabled={busy}>
+            <button className={status.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={openRelease} disabled={busy}>
               <ExternalLink size={14} /> Open Release
             </button>
           )}

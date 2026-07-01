@@ -114,6 +114,7 @@ contextBridge.exposeInMainWorld('api', {
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
   installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  openExternalUrl: (url) => ipcRenderer.invoke('app:openExternalUrl', url),
   onUpdateStatus: (cb) => appUpdateBridge.on(cb),
   offUpdateStatus: (id) => appUpdateBridge.off(id),
   getAppSettings: () => ipcRenderer.invoke('app:getSettings'),
