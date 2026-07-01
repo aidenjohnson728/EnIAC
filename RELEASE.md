@@ -26,7 +26,9 @@ Normal releases omit that marker. SDMo will still prompt users, but they can cho
 - Run `npm test`.
 - Run `npm run build`.
 - Build release artifacts with `npm run dist:mac` and/or `npm run dist:win`.
-- Confirm Electron Builder generated update metadata files alongside the installers.
+- Confirm Electron Builder generated update metadata files alongside the installers:
+  - Windows: attach `latest.yml` with the Windows installer artifact.
+  - Mac: attach `latest-mac.yml` with the Mac `zip` artifact. Keep the DMG for manual installs.
 - Mac in-app updates only work from Developer ID signed builds. For unsigned/test mac builds, distribute the DMG manually and leave `SDMO_ENABLE_MAC_AUTO_UPDATE` unset so SDMo does not offer a broken ShipIt update.
 
 ## 4. Migration Safety Test
@@ -40,6 +42,7 @@ Normal releases omit that marker. SDMo will still prompt users, but they can cho
 ## 5. Update Flow Test
 
 - Publish a draft GitHub Release with the installer artifacts and update metadata.
+- Confirm the draft release includes `latest.yml` for Windows updater checks and `latest-mac.yml` for future signed Mac updater checks.
 - Confirm an installed older SDMo build sees the update.
 - For normal releases, confirm users can choose Later.
 - For required releases, confirm SDMo blocks usage until Restart to Install.

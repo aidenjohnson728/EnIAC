@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { ChevronLeft, Plus, FolderOpen, ChevronRight, Trash2, Copy, Edit2, Check, Lock, Unlock, Cloud, HardDrive, X, RefreshCw, AlertTriangle, User, HelpCircle, Info, Download, RotateCcw, FileText } from 'lucide-react'
+import { ChevronLeft, Plus, FolderOpen, ChevronRight, Trash2, Copy, Edit2, Check, Lock, Unlock, Cloud, HardDrive, X, RefreshCw, AlertTriangle, User, HelpCircle, Info, Download, RotateCcw, FileText, ExternalLink } from 'lucide-react'
 import { api } from '../lib/api'
 import FormBuilder from '../components/setup/FormBuilder'
 import MediaTypeEditor from '../components/setup/MediaTypeEditor'
@@ -1264,6 +1264,7 @@ function VersionManagementSection({ projectId, forms, mediaTypes, locked, onChan
 
 function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheckForUpdate, onDownloadUpdate, onInstallUpdate, onExportDiagnostics }) {
   const updateVersion = updateStatus?.updateInfo?.version || updateStatus?.requiredVersion
+  const releaseUrl = updateStatus?.updateInfo?.releaseUrl || updateStatus?.rememberedRequiredUpdate?.releaseUrl || 'https://github.com/n232not/sdmo-app/releases/latest'
   const updateLabel = updateStatus?.state === 'available'
     ? updateStatus?.manualInstallOnly
       ? `Update available: ${updateVersion || 'new version'}. Install the latest DMG manually.`
@@ -1318,6 +1319,11 @@ function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheck
           <p style={{ fontSize: 13, color: updateStatus?.state === 'error' ? 'var(--danger)' : 'var(--text-secondary)', marginBottom: 12 }}>
             {updateLabel}{progress != null ? ` (${progress}%)` : ''}
           </p>
+          {updateStatus?.state === 'error' && updateStatus?.error && (
+            <p style={{ fontSize: 12, color: 'var(--danger)', marginBottom: 12 }}>
+              {updateStatus.error}
+            </p>
+          )}
           {updateStatus?.state === 'downloaded' && (
             <p className="text-secondary" style={{ fontSize: 13, marginBottom: 12 }}>
               SDMo creates a database backup before restarting to install the update.
@@ -1330,6 +1336,11 @@ function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheck
             {updateStatus?.state === 'available' && !updateStatus?.manualInstallOnly && (
               <button className={updateStatus.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={onDownloadUpdate} disabled={busy}>
                 <Download size={14} /> Download
+              </button>
+            )}
+            {updateStatus?.state === 'available' && updateStatus?.manualInstallOnly && (
+              <button className={updateStatus.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={() => window.open(releaseUrl, '_blank')} disabled={busy}>
+                <ExternalLink size={14} /> Open Release
               </button>
             )}
             {updateStatus?.state === 'downloaded' && (

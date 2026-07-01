@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Download, RefreshCw, RotateCcw } from 'lucide-react'
+import { AlertTriangle, Download, ExternalLink, RefreshCw, RotateCcw } from 'lucide-react'
 import { api } from '../../lib/api'
 import Modal from './Modal'
 
@@ -74,6 +74,7 @@ export default function AppUpdateGate() {
   const isDownloading = status.state === 'downloading'
   const isDownloaded = status.state === 'downloaded'
   const manualInstallOnly = status.manualInstallOnly
+  const releaseUrl = status.updateInfo?.releaseUrl || status.rememberedRequiredUpdate?.releaseUrl || 'https://github.com/n232not/sdmo-app/releases/latest'
   const progress = status.progress?.percent ? Math.round(status.progress.percent) : null
 
   return (
@@ -96,6 +97,11 @@ export default function AppUpdateGate() {
           {!manualInstallOnly && !isDownloaded && status.state !== 'error' && (
             <button className={status.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={download} disabled={busy || isDownloading}>
               <Download size={14} /> {isDownloading ? `Downloading${progress != null ? ` ${progress}%` : ''}` : 'Download Update'}
+            </button>
+          )}
+          {manualInstallOnly && status.state !== 'error' && (
+            <button className={status.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={() => window.open(releaseUrl, '_blank')} disabled={busy}>
+              <ExternalLink size={14} /> Open Release
             </button>
           )}
           {isDownloaded && (
