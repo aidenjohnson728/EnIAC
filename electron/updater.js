@@ -11,6 +11,12 @@ const REQUIRED_MARKERS = [
   'required_update: true',
 ]
 
+const DEFAULT_GITHUB_RELEASES = {
+  provider: 'github',
+  owner: 'n232not',
+  repo: 'sdmo-app',
+}
+
 let status = {
   state: app.isPackaged ? 'idle' : 'unavailable',
   currentVersion: app.getVersion(),
@@ -70,7 +76,8 @@ function compareVersions(a, b) {
 
 function getPublishConfig() {
   const publish = Array.isArray(pkg.build?.publish) ? pkg.build.publish[0] : pkg.build?.publish
-  return publish?.provider === 'github' ? publish : null
+  if (publish?.provider === 'github' && publish.owner && publish.repo) return publish
+  return DEFAULT_GITHUB_RELEASES
 }
 
 async function checkGitHubRelease() {
