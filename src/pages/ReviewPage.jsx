@@ -11,6 +11,7 @@ import { api, formatTime } from '../lib/api'
 import FormRenderer from '../components/forms/FormRenderer'
 import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
+import PdfViewer from '../components/ui/PdfViewer'
 
 const REVIEW_TOUR_STEPS = [
   {
@@ -65,6 +66,44 @@ function hydrateWorkspaceSnapshot(snapshot) {
     formSchemas,
     instructions,
   }
+}
+
+function patchSnapshotPdfPaths(instructions, liveInstructions = []) {
+  const liveById = new Map(liveInstructions.map(instr => [String(instr.id), instr]))
+  const liveBySyncId = new Map(liveInstructions.filter(instr => instr.sync_id).map(instr => [instr.sync_id, instr]))
+  const liveByName = new Map(liveInstructions.map(instr => [instr.name, instr]))
+  return Object.fromEntries(Object.entries(instructions || {}).map(([id, instr]) => {
+    if (instr?.content_type !== 'pdf' || instr.file_path) return [id, instr]
+    const live = liveById.get(String(instr.id)) || liveById.get(String(id)) || liveBySyncId.get(instr.sync_id) || liveByName.get(instr.name)
+    return [id, { ...instr, file_path: live?.file_path || null }]
+  }))
+}
+
+function PdfInstructionFrame({ instruction }) {
+  const [url, setUrl] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    setUrl(null)
+    setError('')
+    if (!instruction?.id) {
+      setError('PDF file not found for this instruction.')
+      return () => { active = false }
+    }
+    api.getInstructionFileUrl(instruction.id).then(nextUrl => {
+      if (!active) return
+      if (nextUrl) setUrl(nextUrl)
+      else setError('PDF file not found for this instruction.')
+    }).catch(() => {
+      if (active) setError('PDF file could not be loaded.')
+    })
+    return () => { active = false }
+  }, [instruction?.id])
+
+  if (error) return <div className="empty-state"><p className="text-sm">{error}</p></div>
+  if (!url) return <div className="empty-state"><div className="spinner" /></div>
+  return <PdfViewer url={url} title={instruction.name} />
 }
 
 function tagOptionValue(tag) {
@@ -310,10 +349,12 @@ export default function ReviewPage() {
 
     if (rev.workspace_snapshot) {
       const frozen = hydrateWorkspaceSnapshot(rev.workspace_snapshot)
+      const needsPdfPathPatch = Object.values(frozen.instructions || {}).some(instr => instr?.content_type === 'pdf' && !instr.file_path)
+      const liveInstructions = needsPdfPathPatch ? await api.listInstructions(enc.project_id) : []
       setTags(frozen.tags)
       setWorkspaceTabs(frozen.workspaceTabs)
       setFormSchemas(frozen.formSchemas)
-      setInstructions(frozen.instructions)
+      setInstructions(patchSnapshotPdfPaths(frozen.instructions, liveInstructions))
       setLinkModal(hasLinkedPlayback || playback?.status === 'not_applicable' ? null : playback?.status === 'missing' ? 'missing' : 'not_linked')
       setLoading(false)
       return
@@ -434,6 +475,41 @@ export default function ReviewPage() {
     setFormResponses(r => ({ ...r, [formId]: responses }))
   }
 
+  function isResponseAnswered(value) {
+    if (value === 'N/A' || (value && typeof value === 'object' && !Array.isArray(value) && value.__na === true)) return true
+    if (value === undefined || value === null || value === '') return false
+    if (Array.isArray(value)) return value.length > 0
+    if (typeof value === 'object') return Object.keys(value).length > 0
+    return true
+  }
+
+  function isRequiredElementComplete(el, value) {
+    if (el.type === 'likert_group') {
+      const items = el.items || []
+      if (items.length === 0) return false
+      const groupVal = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {}
+      return items.every(item => isResponseAnswered(groupVal[item.id]))
+    }
+    if (el.type === 'table') {
+      const rows = el.rows || []
+      const columns = el.columns || []
+      if (rows.length === 0 || columns.length === 0) return false
+      const tableVal = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {}
+      return rows.every((_, rowIndex) => {
+        const rowVal = (tableVal[String(rowIndex)] && typeof tableVal[String(rowIndex)] === 'object') ? tableVal[String(rowIndex)] : {}
+        return columns.every(col => isResponseAnswered(rowVal[col.id]))
+      })
+    }
+    return isResponseAnswered(value)
+  }
+
+  function requiredElementLabel(el) {
+    if (el.label) return el.label
+    if (el.type === 'likert_group') return 'Likert group'
+    if (el.type === 'table') return 'Table'
+    return 'Question'
+  }
+
   function getRequiredErrors() {
     const errors = []
     for (const tab of workspaceTabs) {
@@ -445,10 +521,7 @@ export default function ReviewPage() {
         for (const el of (section.elements || [])) {
           if (!el.required) continue
           const val = responses[el.id]
-          const empty = val === undefined || val === null || val === '' ||
-            (Array.isArray(val) && val.length === 0) ||
-            (typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length === 0)
-          if (empty) errors.push({ tab: tab.label, question: el.label })
+          if (!isRequiredElementComplete(el, val)) errors.push({ tab: tab.label, question: requiredElementLabel(el) })
         }
       }
     }
@@ -552,8 +625,10 @@ export default function ReviewPage() {
 
   const currentTab = workspaceTabs[activeTab]
   const isSyncBasicsTab = currentTab?.tab_type === 'instruction' && currentTab?.label === 'Sync Basics'
+  const isFormWorkspaceTab = currentTab?.tab_type === 'form'
+  const isPdfWorkspaceTab = currentTab?.tab_type === 'instruction' && instructions[currentTab?.ref_id]?.content_type === 'pdf'
   const workspaceContent = (
-    <div id={isSyncBasicsTab ? 'tut-rev-sync-basics' : undefined}>
+    <div id={isSyncBasicsTab ? 'tut-rev-sync-basics' : undefined} style={isPdfWorkspaceTab ? { height: '100%', minHeight: 0 } : undefined}>
       <WorkspaceTabContent
         tab={currentTab}
         formSchema={currentTab?.tab_type === 'form' ? formSchemas[currentTab?.ref_id] : null}
@@ -781,7 +856,12 @@ export default function ReviewPage() {
                       </div>
                     </div>
                     {!workspaceMinimized && (
-                      <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
+                      <div style={isPdfWorkspaceTab
+                        ? { flex: 1, overflow: 'hidden', padding: 0, minHeight: 0 }
+                        : isFormWorkspaceTab
+                          ? { flex: 1, overflow: 'auto', padding: '0 20px 20px' }
+                        : { flex: 1, overflow: 'auto', padding: 20 }
+                      }>
                         {workspaceContent}
                       </div>
                     )}
@@ -824,7 +904,12 @@ export default function ReviewPage() {
                 </button>
               </div>
             </div>
-            <div style={{ flex: 1, overflow: 'auto', padding: 24, maxWidth: 800, width: '100%', margin: '0 auto' }}>
+            <div style={isPdfWorkspaceTab
+              ? { flex: 1, overflow: 'hidden', padding: 0, width: '100%', minHeight: 0 }
+              : isFormWorkspaceTab
+                ? { flex: 1, overflow: 'auto', padding: '0 24px 24px', maxWidth: 800, width: '100%', margin: '0 auto' }
+              : { flex: 1, overflow: 'auto', padding: 24, maxWidth: 800, width: '100%', margin: '0 auto' }
+            }>
               {workspaceContent}
             </div>
           </div>
@@ -1271,15 +1356,8 @@ function WorkspaceTabContent({ tab, formSchema, instruction, responses, onSave, 
     return <FormRenderer schema={formSchema.schema} responses={responses || {}} onSave={onSave} readOnly={readOnly} timestamps={timestamps} />
   }
   if (tab.tab_type === 'instruction') {
-    if (instruction?.content_type === 'pdf' && instruction?.file_path) {
-      const pdfUrl = `localfile://${encodeURIComponent(instruction.file_path)}`
-      return (
-        <iframe
-          src={pdfUrl}
-          style={{ width: '100%', height: '100%', border: 'none', minHeight: 500, display: 'block' }}
-          title={instruction.name}
-        />
-      )
+    if (instruction?.content_type === 'pdf') {
+      return <PdfInstructionFrame instruction={instruction} />
     }
     const content = instruction?.content || ''
     return (

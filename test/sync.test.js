@@ -6,8 +6,9 @@ const { test } = require('./_harness')
 const sync = require('../electron/sync')
 const snapshots = require('../electron/services/snapshots')
 const structure = require('../electron/services/structure')
+const defaultProjects = require('../electron/services/defaultProjects')
 const {
-  makeDb, createProject, addForm, addMediaType, addWorkspaceTab,
+  makeDb, createProject, addForm, addInstruction, addMediaType, addWorkspaceTab,
   addEncounter, addMedia, addReview,
 } = require('./helpers')
 
@@ -160,6 +161,32 @@ test('config: timestamp tag categories survive export', () => {
   const mt = config.media_types.find(m => m.name === 'Video')
 
   assert.deepStrictEqual(mt.tags, [{ label: 'Greeting', color: '#111111', description: '', category: 'Communication' }])
+  db.close()
+})
+
+test('defaults: UCAT template creates only active current form and media type', () => {
+  const db = makeDb()
+  const result = defaultProjects.seedDefaultProject(db, 'ucat')
+  const project = db.prepare('SELECT name FROM projects WHERE id=?').get(result.id)
+  const forms = db.prepare('SELECT id, name, archived_at, schema FROM forms WHERE project_id=?').all(result.id)
+  const mediaTypes = db.prepare('SELECT id, name, archived_at FROM media_types WHERE project_id=?').all(result.id)
+  const tabs = db.prepare('SELECT tab_type, label, ref_id FROM workspace_tabs WHERE media_type_id=?').all(mediaTypes[0].id)
+  const deletedReviews = db.prepare('SELECT COUNT(*) as n FROM deleted_reviews WHERE project_id=?').get(result.id).n
+  const encounters = db.prepare('SELECT COUNT(*) as n FROM encounters WHERE project_id=?').get(result.id).n
+  const schema = JSON.parse(forms[0].schema)
+
+  assert.strictEqual(project.name, 'UCAT')
+  assert.strictEqual(forms.length, 1)
+  assert.strictEqual(forms[0].name, 'UCAT')
+  assert.strictEqual(forms[0].archived_at, null)
+  assert.strictEqual(mediaTypes.length, 1)
+  assert.strictEqual(mediaTypes[0].name, 'UCAT')
+  assert.strictEqual(mediaTypes[0].archived_at, null)
+  assert.deepStrictEqual(tabs, [{ tab_type: 'form', label: 'UCAT', ref_id: forms[0].id }])
+  assert.strictEqual(deletedReviews, 0)
+  assert.strictEqual(encounters, 0)
+  assert.strictEqual(schema.sections.length, 8)
+  assert.ok(schema.sections.flatMap(section => section.elements || []).every(el => el.required === true))
   db.close()
 })
 
@@ -641,6 +668,24 @@ test('review snapshots: export preserves old question labels after form edits', 
   db.close()
 })
 
+test('review snapshots: PDF instruction file paths are preserved', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const instrId = db.prepare("INSERT INTO instructions (project_id, name, content, content_type, file_path, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))")
+    .run(p, 'Guide', '', 'pdf', '/tmp/guide.pdf', 'instr-guide').lastInsertRowid
+  const mtId = addMediaType(db, p, 'Video', { sync_id: 'mt-video' })
+  addWorkspaceTab(db, mtId, { tab_type: 'instruction', ref_id: instrId, label: 'Guide', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId })
+
+  const snapshot = snapshots.buildWorkspaceSnapshot(db, media.id)
+  const instr = snapshot.instructions[String(instrId)]
+
+  assert.strictEqual(instr.content_type, 'pdf')
+  assert.strictEqual(instr.file_path, '/tmp/guide.pdf')
+  db.close()
+})
+
 test('review snapshots: wide sheet + codebook keep answers to questions removed by a later form edit', () => {
   const db = makeDb()
   const p = createProject(db, 'P')
@@ -897,6 +942,131 @@ test('review migration: saving a form applies to all reviews and unsubmits submi
   assert.strictEqual(fr.form_version, 2)
   assert.strictEqual(JSON.parse(fr.form_snapshot).schema.sections[0].elements[0].label, 'New label')
   assert.strictEqual(JSON.parse(fr.responses).q1, 'kept')
+  db.close()
+})
+
+test('review migration: saving a media type applies new survey tabs to all reviews', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const oldFormId = addForm(db, p, 'Old Survey', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'old', type: 'short_answer', label: 'Old question' }] }],
+  }, { sync_id: 'form-old' })
+  const newFormId = addForm(db, p, 'New Survey', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'new', type: 'short_answer', label: 'New question' }] }],
+  }, { sync_id: 'form-new' })
+  const mtId = addMediaType(db, p, 'Video', { sync_id: 'mt-video' })
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: oldFormId, label: 'Old Survey', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId })
+  const oldSnap = snapshots.buildWorkspaceSnapshot(db, media.id)
+  const submitted = addReview(db, media.id, 'Alice', { status: 'submitted', submitted_at: '2024-01-01T00:00:00.000Z' })
+  db.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+    .run(JSON.stringify(oldSnap), oldSnap.media_type.sync_id, oldSnap.media_type.version, submitted.id)
+  db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+    .run(submitted.id, oldFormId, JSON.stringify({ old: 'old answer' }), 'form-old', 1, JSON.stringify(oldSnap.forms[String(oldFormId)]))
+
+  structure.saveMediaType(db, p, {
+    id: mtId,
+    name: 'Video',
+    reviews_required: 1,
+    allow_custom_tags: true,
+    color: '#6366f1',
+    tags: [],
+    workspace_tabs: [{ tab_type: 'form', ref_id: newFormId, label: 'New Survey' }],
+  })
+
+  const review = db.prepare('SELECT status, submitted_at, reopened_at, reopened_reason, previous_submitted_at, workspace_snapshot FROM reviews WHERE id=?').get(submitted.id)
+  const snapshot = JSON.parse(review.workspace_snapshot)
+  assert.strictEqual(review.status, 'in_progress')
+  assert.strictEqual(review.submitted_at, null)
+  assert.ok(review.reopened_at)
+  assert.strictEqual(review.reopened_reason, 'media_type_version_changed')
+  assert.strictEqual(review.previous_submitted_at, '2024-01-01T00:00:00.000Z')
+  assert.deepStrictEqual(Object.keys(snapshot.forms), [String(newFormId)])
+  assert.strictEqual(snapshot.workspace_tabs[0].ref_id, newFormId)
+  assert.strictEqual(db.prepare('SELECT COUNT(*) as n FROM form_responses WHERE review_id=?').get(submitted.id).n, 0)
+  db.close()
+})
+
+test('review migration: deleting an instruction removes stale tabs and reopens affected reviews', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const instructionId = addInstruction(db, p, 'Protocol', { content: 'Read first' })
+  const formId = addForm(db, p, 'Survey', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'Question' }] }],
+  })
+  const mtId = addMediaType(db, p, 'Video', { sync_id: 'mt-video' })
+  addWorkspaceTab(db, mtId, { tab_type: 'instruction', ref_id: instructionId, label: 'Protocol', sort_order: 0 })
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Survey', sort_order: 1 })
+  const enc = addEncounter(db, p, 'Patient 1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId })
+  const oldSnap = snapshots.buildWorkspaceSnapshot(db, media.id)
+  const submitted = addReview(db, media.id, 'Alice', { status: 'submitted', submitted_at: '2024-01-01T00:00:00.000Z' })
+  db.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+    .run(JSON.stringify(oldSnap), oldSnap.media_type.sync_id, oldSnap.media_type.version, submitted.id)
+
+  structure.deleteInstruction(db, p, instructionId)
+
+  assert.strictEqual(db.prepare("SELECT COUNT(*) as n FROM workspace_tabs WHERE tab_type='instruction' AND ref_id=?").get(instructionId).n, 0)
+  const mediaType = db.prepare('SELECT config_version FROM media_types WHERE id=?').get(mtId)
+  assert.strictEqual(mediaType.config_version, 2)
+  const review = db.prepare('SELECT status, submitted_at, reopened_at, reopened_reason, previous_submitted_at, workspace_snapshot FROM reviews WHERE id=?').get(submitted.id)
+  const snapshot = JSON.parse(review.workspace_snapshot)
+  assert.strictEqual(review.status, 'in_progress')
+  assert.strictEqual(review.submitted_at, null)
+  assert.ok(review.reopened_at)
+  assert.strictEqual(review.reopened_reason, 'media_type_version_changed')
+  assert.strictEqual(review.previous_submitted_at, '2024-01-01T00:00:00.000Z')
+  assert.deepStrictEqual(snapshot.workspace_tabs.map(t => t.tab_type), ['form'])
+  assert.deepStrictEqual(Object.keys(snapshot.instructions), [])
+  assert.deepStrictEqual(Object.keys(snapshot.forms), [String(formId)])
+  db.close()
+})
+
+test('review migration: changing one video media type reopens only that video reviews', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const oldFormId = addForm(db, p, 'Old Survey', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'old', type: 'short_answer', label: 'Old question' }] }],
+  }, { sync_id: 'form-old' })
+  const newFormId = addForm(db, p, 'New Survey', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'new', type: 'short_answer', label: 'New question' }] }],
+  }, { sync_id: 'form-new' })
+  const oldMtId = addMediaType(db, p, 'Old Video', { sync_id: 'mt-old' })
+  const newMtId = addMediaType(db, p, 'New Video', { sync_id: 'mt-new' })
+  addWorkspaceTab(db, oldMtId, { tab_type: 'form', ref_id: oldFormId, label: 'Old Survey', sort_order: 0 })
+  addWorkspaceTab(db, newMtId, { tab_type: 'form', ref_id: newFormId, label: 'New Survey', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1')
+  const changedMedia = addMedia(db, enc.id, 'changed.mp4', { media_type_id: oldMtId })
+  const otherMedia = addMedia(db, enc.id, 'other.mp4', { media_type_id: oldMtId })
+  const changedSnap = snapshots.buildWorkspaceSnapshot(db, changedMedia.id)
+  const otherSnap = snapshots.buildWorkspaceSnapshot(db, otherMedia.id)
+  const changedReview = addReview(db, changedMedia.id, 'Alice', { status: 'submitted', submitted_at: '2024-01-01T00:00:00.000Z' })
+  const otherReview = addReview(db, otherMedia.id, 'Bob', { status: 'submitted', submitted_at: '2024-01-02T00:00:00.000Z' })
+  for (const [review, snap] of [[changedReview, changedSnap], [otherReview, otherSnap]]) {
+    db.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+      .run(JSON.stringify(snap), snap.media_type.sync_id, snap.media_type.version, review.id)
+    db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+      .run(review.id, oldFormId, JSON.stringify({ old: 'old answer' }), 'form-old', 1, JSON.stringify(snap.forms[String(oldFormId)]))
+  }
+
+  db.prepare("UPDATE media_files SET media_type_id=?, updated_at=datetime('now') WHERE id=?").run(newMtId, changedMedia.id)
+  const result = snapshots.migrateMediaFileReviews(db, changedMedia.id, 'media_type_version_changed')
+
+  const changed = db.prepare('SELECT status, submitted_at, reopened_reason, previous_submitted_at, workspace_snapshot FROM reviews WHERE id=?').get(changedReview.id)
+  const other = db.prepare('SELECT status, submitted_at, reopened_reason, workspace_snapshot FROM reviews WHERE id=?').get(otherReview.id)
+  assert.strictEqual(result.updated, 1)
+  assert.strictEqual(changed.status, 'in_progress')
+  assert.strictEqual(changed.submitted_at, null)
+  assert.strictEqual(changed.reopened_reason, 'media_type_version_changed')
+  assert.strictEqual(changed.previous_submitted_at, '2024-01-01T00:00:00.000Z')
+  assert.deepStrictEqual(Object.keys(JSON.parse(changed.workspace_snapshot).forms), [String(newFormId)])
+  assert.strictEqual(db.prepare('SELECT COUNT(*) as n FROM form_responses WHERE review_id=?').get(changedReview.id).n, 0)
+  assert.strictEqual(other.status, 'submitted')
+  assert.strictEqual(other.submitted_at, '2024-01-02T00:00:00.000Z')
+  assert.strictEqual(other.reopened_reason, null)
+  assert.deepStrictEqual(Object.keys(JSON.parse(other.workspace_snapshot).forms), [String(oldFormId)])
+  assert.strictEqual(db.prepare('SELECT COUNT(*) as n FROM form_responses WHERE review_id=?').get(otherReview.id).n, 1)
   db.close()
 })
 

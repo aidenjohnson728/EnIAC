@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Upload, HelpCircle, Link2, Cloud, ArrowLeft, Folder, GraduationCap } from 'lucide-react'
+import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Upload, HelpCircle, Link2, Cloud, ArrowLeft, Folder, GraduationCap, ClipboardList } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
@@ -37,8 +37,10 @@ const TUTORIAL_STEPS = [
 
 export default function HomePage() {
   const [projects, setProjects] = useState([])
+  const [defaultProjects, setDefaultProjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
+  const [showTemplates, setShowTemplates] = useState(false)
   const [form, setForm] = useState({ name: '', description: '' })
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [reviewerName, setReviewerName] = useState(null)
@@ -65,6 +67,7 @@ export default function HomePage() {
 
   useEffect(() => {
     load()
+    api.listDefaultProjects?.().then(setDefaultProjects).catch(() => setDefaultProjects([]))
     api.getAppSettings().then(s => {
       setReviewerName(s.reviewer_name || null)
       if (!s.reviewer_name) setShowIdentity(true)
@@ -75,6 +78,12 @@ export default function HomePage() {
     const result = await api.createSampleProject()
     if (result?.id && result?.tutorialReviewId) navigate(`/project/${result.id}?sampleTour=1&sampleReviewId=${result.tutorialReviewId}`)
     else if (result?.id) navigate(`/project/${result.id}`)
+  }
+
+  async function handleCreateDefault(templateId) {
+    const result = await api.createDefaultProject(templateId)
+    setShowTemplates(false)
+    if (result?.id) navigate(`/project/${result.id}`)
   }
 
   async function handleSaveName() {
@@ -349,6 +358,11 @@ export default function HomePage() {
           <button className="btn btn-secondary btn-sm" onClick={handleTrySample} title="Open a ready-made example project with a guided walkthrough">
             <GraduationCap size={14} /> Sample Project
           </button>
+          {defaultProjects.length > 0 && (
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowTemplates(true)} title="Create a project from a built-in template">
+              <ClipboardList size={14} /> Template Project
+            </button>
+          )}
           <button id="tut-new" className="btn btn-primary btn-sm" onClick={() => setShowCreate(true)}>
             <Plus size={14} /> New Project
           </button>
@@ -383,6 +397,11 @@ export default function HomePage() {
               <button className="btn btn-secondary" onClick={handleTrySample}>
                 <GraduationCap size={14} /> Try Sample Project
               </button>
+              {defaultProjects.length > 0 && (
+                <button className="btn btn-secondary" onClick={() => setShowTemplates(true)}>
+                  <ClipboardList size={14} /> Template Project
+                </button>
+              )}
               <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
                 <Plus size={14} /> Create Project
               </button>
@@ -439,6 +458,36 @@ export default function HomePage() {
           </div>
         )}
       </div>
+
+      {/* Template Modal */}
+      <Modal
+        open={showTemplates}
+        onClose={() => setShowTemplates(false)}
+        title="Template Project"
+        footer={<button className="btn btn-secondary" onClick={() => setShowTemplates(false)}>Cancel</button>}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+            Start from a built-in project template with forms and media types already configured.
+          </p>
+          {defaultProjects.map(template => (
+            <button
+              key={template.id}
+              className="btn btn-secondary"
+              onClick={() => handleCreateDefault(template.id)}
+              style={{ justifyContent: 'flex-start', gap: 12, padding: '14px 16px', height: 'auto', textAlign: 'left' }}
+            >
+              <ClipboardList size={18} style={{ flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{template.name}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                  {template.description || 'Default forms and media types'}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </Modal>
 
       {/* Create Modal */}
       <Modal

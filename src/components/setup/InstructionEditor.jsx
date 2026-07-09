@@ -1,17 +1,38 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { ChevronLeft, Upload, FileText, File } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '../../lib/api'
+import PdfViewer from '../ui/PdfViewer'
 
 export default function InstructionEditor({ projectId, instruction, onSave, onCancel }) {
   const [name, setName] = useState(instruction.name || '')
   const [content, setContent] = useState(instruction.content || '')
   const [contentType, setContentType] = useState(instruction.content_type || 'markdown')
   const [filePath, setFilePath] = useState(instruction.file_path || null)
+  const [pdfUrl, setPdfUrl] = useState(null)
+  const [pdfError, setPdfError] = useState('')
   const [preview, setPreview] = useState(false)
   const [saving, setSaving] = useState(false)
   const fileInputRef = useRef(null)
+
+  useEffect(() => {
+    let active = true
+    setPdfUrl(null)
+    setPdfError('')
+    if (contentType !== 'pdf' || !filePath) return () => { active = false }
+    const loadUrl = instruction.id && filePath === instruction.file_path
+      ? api.getInstructionFileUrl(instruction.id)
+      : api.getUploadedPdfUrl(projectId, filePath)
+    loadUrl.then(url => {
+      if (!active) return
+      if (url) setPdfUrl(url)
+      else setPdfError('PDF file could not be loaded.')
+    }).catch(() => {
+      if (active) setPdfError('PDF file could not be loaded.')
+    })
+    return () => { active = false }
+  }, [contentType, filePath, instruction.id, projectId])
 
   async function handleSave() {
     if (!name.trim()) return
@@ -111,22 +132,28 @@ export default function InstructionEditor({ projectId, instruction, onSave, onCa
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {isPdf ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12 }}>
+          <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             {filePath ? (
-              <>
-                <File size={32} color="var(--text-secondary)" />
-                <p style={{ fontWeight: 500, fontSize: 14 }}>{filePath.split('/').pop().replace(/^\d+-/, '')}</p>
-                <p className="text-muted text-sm">PDF will be shown in the workspace tab during review</p>
-              </>
+              pdfUrl ? (
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <PdfViewer url={pdfUrl} title={name || 'PDF instruction'} />
+                </div>
+              ) : (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12 }}>
+                  <File size={32} color="var(--text-secondary)" />
+                  <p style={{ fontWeight: 500, fontSize: 14 }}>{filePath.split('/').pop().replace(/^\d+-/, '')}</p>
+                  <p className="text-muted text-sm">{pdfError || 'Loading PDF…'}</p>
+                </div>
+              )
             ) : (
-              <>
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12 }}>
                 <File size={40} color="var(--text-muted)" />
                 <p style={{ fontWeight: 500, fontSize: 14 }}>No PDF uploaded yet</p>
                 <p className="text-muted text-sm">Click "Upload PDF" to attach a PDF file</p>
                 <button className="btn btn-primary btn-sm" onClick={handlePdfUpload}>
                   <Upload size={13} /> Upload PDF
                 </button>
-              </>
+              </div>
             )}
           </div>
         ) : !preview ? (

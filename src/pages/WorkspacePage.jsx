@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm'
 import { api } from '../lib/api'
 import FormRenderer from '../components/forms/FormRenderer'
 import Modal from '../components/ui/Modal'
+import PdfViewer from '../components/ui/PdfViewer'
 
 function hydrateWorkspaceSnapshot(snapshot) {
   const formSchemas = {}
@@ -19,6 +20,44 @@ function hydrateWorkspaceSnapshot(snapshot) {
     formSchemas,
     instructions,
   }
+}
+
+function patchSnapshotPdfPaths(instructions, liveInstructions = []) {
+  const liveById = new Map(liveInstructions.map(instr => [String(instr.id), instr]))
+  const liveBySyncId = new Map(liveInstructions.filter(instr => instr.sync_id).map(instr => [instr.sync_id, instr]))
+  const liveByName = new Map(liveInstructions.map(instr => [instr.name, instr]))
+  return Object.fromEntries(Object.entries(instructions || {}).map(([id, instr]) => {
+    if (instr?.content_type !== 'pdf' || instr.file_path) return [id, instr]
+    const live = liveById.get(String(instr.id)) || liveById.get(String(id)) || liveBySyncId.get(instr.sync_id) || liveByName.get(instr.name)
+    return [id, { ...instr, file_path: live?.file_path || null }]
+  }))
+}
+
+function PdfInstructionFrame({ instruction }) {
+  const [url, setUrl] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    setUrl(null)
+    setError('')
+    if (!instruction?.id) {
+      setError('PDF file not found for this instruction.')
+      return () => { active = false }
+    }
+    api.getInstructionFileUrl(instruction.id).then(nextUrl => {
+      if (!active) return
+      if (nextUrl) setUrl(nextUrl)
+      else setError('PDF file not found for this instruction.')
+    }).catch(() => {
+      if (active) setError('PDF file could not be loaded.')
+    })
+    return () => { active = false }
+  }, [instruction?.id])
+
+  if (error) return <div className="empty-state"><p className="text-sm">{error}</p></div>
+  if (!url) return <div className="empty-state"><div className="spinner" /></div>
+  return <PdfViewer url={url} title={instruction.name} />
 }
 
 function reopenedReasonLabel(reason) {
@@ -89,9 +128,11 @@ export default function WorkspacePage() {
 
     if (rev.workspace_snapshot) {
       const frozen = hydrateWorkspaceSnapshot(rev.workspace_snapshot)
+      const needsPdfPathPatch = Object.values(frozen.instructions || {}).some(instr => instr?.content_type === 'pdf' && !instr.file_path)
+      const liveInstructions = needsPdfPathPatch ? await api.listInstructions(enc.project_id) : []
       setWorkspaceTabs(frozen.workspaceTabs)
       setFormSchemas(frozen.formSchemas)
-      setInstructions(frozen.instructions)
+      setInstructions(patchSnapshotPdfPaths(frozen.instructions, liveInstructions))
       setLoading(false)
       return
     }
@@ -188,6 +229,8 @@ export default function WorkspacePage() {
   if (!review) return <div className="empty-state" style={{ height: '100vh' }}><p className="text-sm">Review not found.</p></div>
 
   const currentTab = workspaceTabs[activeTab]
+  const isFormWorkspaceTab = currentTab?.tab_type === 'form'
+  const isPdfWorkspaceTab = currentTab?.tab_type === 'instruction' && instructions[currentTab?.ref_id]?.content_type === 'pdf'
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)', overflow: 'hidden' }}>
@@ -246,7 +289,12 @@ export default function WorkspacePage() {
       )}
 
       {/* Content */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '24px 28px', maxWidth: 820, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+      <div style={isPdfWorkspaceTab
+        ? { flex: 1, overflow: 'hidden', padding: 0, width: '100%', minHeight: 0, boxSizing: 'border-box' }
+        : isFormWorkspaceTab
+          ? { flex: 1, overflow: 'auto', padding: '0 28px 24px', maxWidth: 820, width: '100%', margin: '0 auto', boxSizing: 'border-box' }
+        : { flex: 1, overflow: 'auto', padding: '24px 28px', maxWidth: 820, width: '100%', margin: '0 auto', boxSizing: 'border-box' }
+      }>
         {currentTab ? (
           currentTab.tab_type === 'form' ? (
             formSchemas[currentTab.ref_id]
@@ -262,8 +310,8 @@ export default function WorkspacePage() {
             (() => {
               const instr = instructions[currentTab.ref_id]
               if (!instr) return <div className="empty-state"><p className="text-sm">Instruction not found.</p></div>
-              if (instr.content_type === 'pdf' && instr.file_path) {
-                return <iframe src={`localfile://${encodeURIComponent(instr.file_path)}`} style={{ width: '100%', height: '100%', border: 'none', minHeight: 600 }} title={instr.name} />
+              if (instr.content_type === 'pdf') {
+                return <PdfInstructionFrame instruction={instr} />
               }
               return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]}>{instr.content || ''}</ReactMarkdown></div>
             })()

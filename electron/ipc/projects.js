@@ -17,6 +17,7 @@ const {
 const structureService = require('../services/structure')
 const snapshotService = require('../services/snapshots')
 const { seedSampleProject } = require('../services/sampleProject')
+const { listDefaultProjects, seedDefaultProject } = require('../services/defaultProjects')
 
 // In-memory unlock sessions — cleared on app restart. A project is "unlocked"
 // when its password has been entered this session (or it has no password).
@@ -105,6 +106,14 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('projects:createSample', () => {
     return seedSampleProject(getDb())
+  })
+
+  ipcMain.handle('projects:listDefaults', () => {
+    return listDefaultProjects()
+  })
+
+  ipcMain.handle('projects:createDefault', (_, templateId) => {
+    return seedDefaultProject(getDb(), templateId)
   })
 
   ipcMain.handle('projects:update', (_, id, data) => {
@@ -305,6 +314,27 @@ module.exports = function (ipcMain) {
     return db.prepare('SELECT COUNT(*) as n FROM form_responses WHERE form_id=?').get(id).n
   })
 
+  ipcMain.handle('setup:countFormUsage', (_, projectId, id) => {
+    const db = getDb()
+    const mediaTypeCount = db.prepare(`
+      SELECT COUNT(DISTINCT media_type_id) as n
+      FROM workspace_tabs
+      WHERE tab_type='form' AND ref_id=?
+    `).get(id).n
+    const reviewCount = db.prepare(`
+      SELECT COUNT(DISTINCT r.id) as n
+      FROM reviews r
+      JOIN media_files mf ON r.media_file_id=mf.id
+      JOIN encounters e ON mf.encounter_id=e.id
+      WHERE e.project_id=? AND r.deleted_at IS NULL
+        AND mf.media_type_id IN (
+          SELECT media_type_id FROM workspace_tabs WHERE tab_type='form' AND ref_id=?
+        )
+    `).get(projectId, id).n
+    const responseCount = db.prepare('SELECT COUNT(*) as n FROM form_responses WHERE form_id=?').get(id).n
+    return { mediaTypes: mediaTypeCount, reviews: reviewCount, responses: responseCount }
+  })
+
   ipcMain.handle('setup:deleteForm', (_, projectId, id) => {
     const db = getDb()
     requireUnlocked(db, projectId)
@@ -361,9 +391,46 @@ module.exports = function (ipcMain) {
     return structureService.deleteInstruction(db, projectId, id)
   })
 
+  ipcMain.handle('setup:countInstructionUsage', (_, projectId, id) => {
+    const db = getDb()
+    const mediaTypeCount = db.prepare(`
+      SELECT COUNT(DISTINCT media_type_id) as n
+      FROM workspace_tabs
+      WHERE tab_type='instruction' AND ref_id=?
+    `).get(id).n
+    const reviewCount = db.prepare(`
+      SELECT COUNT(DISTINCT r.id) as n
+      FROM reviews r
+      JOIN media_files mf ON r.media_file_id=mf.id
+      JOIN encounters e ON mf.encounter_id=e.id
+      WHERE e.project_id=? AND r.deleted_at IS NULL
+        AND mf.media_type_id IN (
+          SELECT media_type_id FROM workspace_tabs WHERE tab_type='instruction' AND ref_id=?
+        )
+    `).get(projectId, id).n
+    return { mediaTypes: mediaTypeCount, reviews: reviewCount }
+  })
+
   ipcMain.handle('setup:listInstructions', (_, projectId) => {
     const db = getDb()
     return db.prepare('SELECT * FROM instructions WHERE project_id=?').all(projectId)
+  })
+
+  ipcMain.handle('setup:getInstructionFileUrl', async (_, instructionId) => {
+    const db = getDb()
+    const instruction = db.prepare('SELECT file_path FROM instructions WHERE id=? AND content_type=?').get(instructionId, 'pdf')
+    if (!instruction?.file_path || !fs.existsSync(instruction.file_path)) return null
+    const { getMediaUrl } = require('../mediaServer')
+    return getMediaUrl(instruction.file_path)
+  })
+
+  ipcMain.handle('setup:getUploadedPdfUrl', async (_, projectId, filePath) => {
+    if (!filePath || path.extname(filePath).toLowerCase() !== '.pdf' || !fs.existsSync(filePath)) return null
+    const projectDir = path.resolve(path.join(app.getPath('userData'), 'projects', String(projectId)))
+    const resolved = path.resolve(filePath)
+    if (resolved !== projectDir && !resolved.startsWith(projectDir + path.sep)) return null
+    const { getMediaUrl } = require('../mediaServer')
+    return getMediaUrl(resolved)
   })
 
   ipcMain.handle('setup:uploadPdf', async (_, projectId) => {

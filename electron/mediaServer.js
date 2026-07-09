@@ -20,7 +20,18 @@ function contentTypeForPath(filePath) {
     case '.mp3': return 'audio/mpeg'
     case '.wav': return 'audio/wav'
     case '.ogg': return 'audio/ogg'
+    case '.pdf': return 'application/pdf'
     default: return 'application/octet-stream'
+  }
+}
+
+function corsHeaders(extra = {}) {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+    'Access-Control-Allow-Headers': 'Range, Content-Type, Accept',
+    'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Length, Content-Range, Content-Type',
+    ...extra,
   }
 }
 
@@ -38,11 +49,11 @@ function sendFile(req, res, filePath) {
   const range = req.headers.range
 
   if (!range) {
-    res.writeHead(200, {
+    res.writeHead(200, corsHeaders({
       'Accept-Ranges': 'bytes',
       'Content-Length': fileSize,
       'Content-Type': contentType,
-    })
+    }))
     if (req.method === 'HEAD') return res.end()
     fs.createReadStream(filePath).pipe(res)
     return
@@ -50,7 +61,7 @@ function sendFile(req, res, filePath) {
 
   const match = /^bytes=(\d*)-(\d*)$/.exec(range)
   if (!match) {
-    res.writeHead(416, { 'Content-Range': `bytes */${fileSize}` }).end()
+    res.writeHead(416, corsHeaders({ 'Content-Range': `bytes */${fileSize}` })).end()
     return
   }
 
@@ -66,25 +77,29 @@ function sendFile(req, res, filePath) {
   }
 
   if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start < 0 || end >= fileSize) {
-    res.writeHead(416, {
+    res.writeHead(416, corsHeaders({
       'Accept-Ranges': 'bytes',
       'Content-Range': `bytes */${fileSize}`,
-    }).end()
+    })).end()
     return
   }
 
-  res.writeHead(206, {
+  res.writeHead(206, corsHeaders({
     'Accept-Ranges': 'bytes',
     'Content-Range': `bytes ${start}-${end}/${fileSize}`,
     'Content-Length': end - start + 1,
     'Content-Type': contentType,
-  })
+  }))
   if (req.method === 'HEAD') return res.end()
   fs.createReadStream(filePath, { start, end }).pipe(res)
 }
 
 function handleRequest(req, res) {
   try {
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, corsHeaders()).end()
+      return
+    }
     const url = new URL(req.url, 'http://127.0.0.1')
     const parts = url.pathname.split('/').filter(Boolean)
     if (parts[0] !== 'media' || !parts[1]) {

@@ -367,9 +367,19 @@ function getSchemaSections(formSnapshot) {
   return []
 }
 
-export function computeInterraterAgreementForMediaFile({ mediaName, encounterName, reviewDetails = [], weights = DEFAULT_AGREEMENT_WEIGHTS }) {
+export function computeInterraterAgreementForMediaFile({
+  mediaName,
+  encounterName,
+  reviewDetails = [],
+  weights = DEFAULT_AGREEMENT_WEIGHTS,
+  questionIds = null,
+  globalOnly = false,
+}) {
   const questionSummaries = []
   const formResponsesByQuestion = new Map()
+  const selectedQuestionIds = Array.isArray(questionIds) && questionIds.length > 0
+    ? new Set(questionIds.map(id => String(id)))
+    : null
 
   for (const review of reviewDetails) {
     const responses = review?.form_responses || []
@@ -379,6 +389,8 @@ export function computeInterraterAgreementForMediaFile({ mediaName, encounterNam
       const elements = sections.flatMap(section => section?.elements || [])
       const values = formResponse?.responses || {}
       for (const element of elements) {
+        if (globalOnly && element?.global_agreement_question !== true) continue
+        if (selectedQuestionIds && !selectedQuestionIds.has(String(element?.id))) continue
         const questionKey = `${formResponse?.form_id || 'form'}:${element?.id}`
         if (!formResponsesByQuestion.has(questionKey)) {
           formResponsesByQuestion.set(questionKey, {

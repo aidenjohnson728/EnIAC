@@ -6,6 +6,7 @@ const crypto = require('crypto')
 const { bumpAndSync, recordMediaTombstone } = require('../sync')
 const { getBaseFolder, setBaseFolder, resolveLink, upsertLink } = require('../mediaLinks')
 const { getMediaUrl } = require('../mediaServer')
+const { migrateMediaFileReviews } = require('../services/snapshots')
 
 const VIDEO_EXTS = ['.mp4', '.mp3', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.wav', '.ogg']
 const DOC_EXTS = ['.pdf', '.txt', '.md', '.docx']
@@ -22,6 +23,15 @@ function augmentWithLink(db, file, projectId) {
   file.link_status = status
   file.resolved_path = resolved_path
   return file
+}
+
+function requireProjectUnlocked(db, projectId) {
+  const pid = Number(projectId)
+  const project = db.prepare('SELECT owner_password_hash FROM projects WHERE id=?').get(pid)
+  const unlockedProjects = require('./projects').unlockedProjects
+  if (project?.owner_password_hash && !unlockedProjects?.has(pid)) {
+    throw new Error('Project is locked')
+  }
 }
 
 // Recursively collect all media files under a directory.
@@ -82,9 +92,11 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('media:updateType', (_, id, mediaTypeId) => {
     const db = getDb()
-    db.prepare("UPDATE media_files SET media_type_id=?, updated_at=datetime('now') WHERE id=?").run(mediaTypeId || null, id)
     const mf = db.prepare('SELECT encounter_id FROM media_files WHERE id=?').get(id)
     const enc = mf ? db.prepare('SELECT project_id FROM encounters WHERE id=?').get(mf.encounter_id) : null
+    if (enc?.project_id) requireProjectUnlocked(db, enc.project_id)
+    db.prepare("UPDATE media_files SET media_type_id=?, updated_at=datetime('now') WHERE id=?").run(mediaTypeId || null, id)
+    migrateMediaFileReviews(db, id, 'media_type_version_changed')
     if (enc?.project_id) {
       bumpAndSync(db, enc.project_id)
     }
@@ -278,11 +290,11 @@ module.exports = function (ipcMain) {
   ipcMain.handle('media:bulkUpdateType', (_, projectId, ids, mediaTypeId) => {
     const db = getDb()
     if (!Array.isArray(ids) || ids.length === 0) return { updated: 0 }
-    db.transaction(() => {
-      for (const id of ids) {
-        db.prepare("UPDATE media_files SET media_type_id=?, updated_at=datetime('now') WHERE id=?").run(mediaTypeId || null, id)
-      }
-    })()
+    requireProjectUnlocked(db, projectId)
+    for (const id of ids) {
+      db.prepare("UPDATE media_files SET media_type_id=?, updated_at=datetime('now') WHERE id=?").run(mediaTypeId || null, id)
+      migrateMediaFileReviews(db, id, 'media_type_version_changed')
+    }
     bumpAndSync(db, projectId)
     return { updated: ids.length }
   })

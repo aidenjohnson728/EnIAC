@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld('api', {
   listProjects: () => ipcRenderer.invoke('projects:list'),
   createProject: (data) => ipcRenderer.invoke('projects:create', data),
   createSampleProject: () => ipcRenderer.invoke('projects:createSample'),
+  listDefaultProjects: () => ipcRenderer.invoke('projects:listDefaults'),
+  createDefaultProject: (templateId) => ipcRenderer.invoke('projects:createDefault', templateId),
   getProject: (id) => ipcRenderer.invoke('projects:get', id),
   updateProject: (id, data) => ipcRenderer.invoke('projects:update', id, data),
   deleteProject: (id) => ipcRenderer.invoke('projects:delete', id),
@@ -98,6 +100,7 @@ contextBridge.exposeInMainWorld('api', {
   listForms: (projectId) => ipcRenderer.invoke('setup:listForms', projectId),
   getForm: (id) => ipcRenderer.invoke('setup:getForm', id),
   countFormResponses: (id) => ipcRenderer.invoke('setup:countFormResponses', id),
+  countFormUsage: (projectId, id) => ipcRenderer.invoke('setup:countFormUsage', projectId, id),
   deleteForm: (projectId, id) => ipcRenderer.invoke('setup:deleteForm', projectId, id),
   previewStructureMigration: (projectId, data) => ipcRenderer.invoke('setup:previewStructureMigration', projectId, data),
   migrateStructureReviews: (projectId, data) => ipcRenderer.invoke('setup:migrateStructureReviews', projectId, data),
@@ -106,6 +109,9 @@ contextBridge.exposeInMainWorld('api', {
   saveInstruction: (projectId, data) => ipcRenderer.invoke('setup:saveInstruction', projectId, data),
   listInstructions: (projectId) => ipcRenderer.invoke('setup:listInstructions', projectId),
   deleteInstruction: (projectId, id) => ipcRenderer.invoke('setup:deleteInstruction', projectId, id),
+  countInstructionUsage: (projectId, id) => ipcRenderer.invoke('setup:countInstructionUsage', projectId, id),
+  getInstructionFileUrl: (instructionId) => ipcRenderer.invoke('setup:getInstructionFileUrl', instructionId),
+  getUploadedPdfUrl: (projectId, filePath) => ipcRenderer.invoke('setup:getUploadedPdfUrl', projectId, filePath),
   uploadPdf: (projectId) => ipcRenderer.invoke('setup:uploadPdf', projectId),
 
   // App settings

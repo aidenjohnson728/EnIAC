@@ -66,7 +66,7 @@ export default function SetupPage() {
   const [newPwConfirm, setNewPwConfirm] = useState('')
   const [pwSaved, setPwSaved] = useState(false)
   // Delete confirmation modal state
-  const [deleteConfirm, setDeleteConfirm] = useState(null) // { type, item, count }
+  const [deleteConfirm, setDeleteConfirm] = useState(null) // { type, item, count, usage }
   const [deleteLoading, setDeleteLoading] = useState(false)
   // Per-project reviewer name
   const [projectReviewerName, setProjectReviewerName] = useState('')
@@ -393,10 +393,13 @@ export default function SetupPage() {
   async function handleDeleteRequest(type, item) {
     setDeleteLoading(true)
     let count = 0
+    let usage = null
     if (type === 'form') count = await api.countFormResponses(item.id)
+    if (type === 'form') usage = await api.countFormUsage(projectId, item.id)
+    if (type === 'instruction') usage = await api.countInstructionUsage(projectId, item.id)
     if (type === 'mediaType') count = await api.countMediaTypeReviews(item.id)
     setDeleteLoading(false)
-    setDeleteConfirm({ type, item, count })
+    setDeleteConfirm({ type, item, count, usage })
   }
 
   async function handleDeleteConfirm() {
@@ -984,16 +987,52 @@ export default function SetupPage() {
               </div>
             )}
             {deleteConfirm.type === 'form' && deleteConfirm.count > 0 && (
-              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b91c1c', display: 'flex', gap: 8 }}>
-                <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                <span><strong>{deleteConfirm.count} saved response{deleteConfirm.count !== 1 ? 's' : ''}</strong> use this form. The form will be archived and removed from future workspaces, but existing answers are kept for export and review history.</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b91c1c', display: 'flex', gap: 8 }}>
+                  <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span><strong>{deleteConfirm.count} saved response{deleteConfirm.count !== 1 ? 's' : ''}</strong> use this form. The form will be archived and removed from future workspaces, but existing answers are kept for export and review history.</span>
+                </div>
+                {(deleteConfirm.usage?.mediaTypes > 0 || deleteConfirm.usage?.reviews > 0) && (
+                  <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#92400e', display: 'flex', gap: 8 }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <span>
+                      This form is attached to <strong>{deleteConfirm.usage?.mediaTypes || 0} media type{deleteConfirm.usage?.mediaTypes === 1 ? '' : 's'}</strong>
+                      {deleteConfirm.usage?.reviews > 0 ? <> with <strong> {deleteConfirm.usage.reviews} review{deleteConfirm.usage.reviews !== 1 ? 's' : ''}</strong>. Removing it changes those media type workspaces.</> : '. Removing it changes those media type workspaces.'}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
             {deleteConfirm.type === 'form' && deleteConfirm.count === 0 && (
-              <p className="text-secondary" style={{ fontSize: 13 }}>No responses have been saved for this form. It is safe to delete.</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <p className="text-secondary" style={{ fontSize: 13 }}>
+                  No responses have been saved for this form.
+                  {(deleteConfirm.usage?.mediaTypes || 0) === 0 ? ' It is safe to delete.' : ''}
+                </p>
+                {(deleteConfirm.usage?.mediaTypes > 0 || deleteConfirm.usage?.reviews > 0) && (
+                  <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#92400e', display: 'flex', gap: 8 }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <span>
+                      This form is attached to <strong>{deleteConfirm.usage?.mediaTypes || 0} media type{deleteConfirm.usage?.mediaTypes === 1 ? '' : 's'}</strong>
+                      {deleteConfirm.usage?.reviews > 0 ? <> with <strong> {deleteConfirm.usage.reviews} review{deleteConfirm.usage.reviews !== 1 ? 's' : ''}</strong>. Removing it changes those media type workspaces.</> : '. Removing it changes those media type workspaces.'}
+                    </span>
+                  </div>
+                )}
+              </div>
             )}
             {deleteConfirm.type === 'instruction' && (
-              <p className="text-secondary" style={{ fontSize: 13 }}>This instruction page will be removed from all media type workspaces that reference it.</p>
+              (deleteConfirm.usage?.mediaTypes || 0) > 0 ? (
+                <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#92400e', display: 'flex', gap: 8 }}>
+                  <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span>
+                    This instruction page is attached to <strong>{deleteConfirm.usage?.mediaTypes || 0} media type{deleteConfirm.usage?.mediaTypes === 1 ? '' : 's'}</strong>
+                    {deleteConfirm.usage?.reviews > 0 ? <> with <strong> {deleteConfirm.usage.reviews} review{deleteConfirm.usage.reviews !== 1 ? 's' : ''}</strong>.</> : '.'}
+                    {' '}It will be removed from those workspaces, and affected reviews will be reopened to use the updated media type layout.
+                  </span>
+                </div>
+              ) : (
+                <p className="text-secondary" style={{ fontSize: 13 }}>This instruction page is not attached to any media type. It is safe to delete.</p>
+              )
             )}
           </div>
         )}

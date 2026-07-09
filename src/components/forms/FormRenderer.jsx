@@ -69,12 +69,13 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
         <div style={{
           position: 'sticky', top: 0, zIndex: 10,
           background: 'var(--bg)',
-          paddingBottom: 8, marginBottom: 16,
+          padding: '6px 0 8px',
+          marginBottom: 16,
           borderBottom: '1px solid var(--border)',
         }}>
           <div style={{
             background: 'var(--bg-secondary)',
-            borderRadius: 8,
+            borderRadius: '0 0 8px 8px',
             padding: '3px 4px',
             display: 'flex', flexWrap: 'wrap', gap: 2,
           }}>
@@ -135,14 +136,36 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
 
 function countAnswered(section, values) {
   const questions = (section.elements || []).filter(el => el.type !== 'text_block')
-  const answered = questions.filter(el => {
-    const v = values[el.id]
-    if (v === null || v === undefined || v === '') return false
-    if (Array.isArray(v)) return v.length > 0
-    if (typeof v === 'object') return Object.keys(v).length > 0
-    return true
-  })
+  const answered = questions.filter(el => isElementAnswered(el, values[el.id]))
   return { answered: answered.length, total: questions.length }
+}
+
+function isValueAnswered(value) {
+  if (isNA(value)) return true
+  if (value === null || value === undefined || value === '') return false
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'object') return Object.keys(value).length > 0
+  return true
+}
+
+function isElementAnswered(el, value) {
+  if (el.type === 'likert_group') {
+    const items = el.items || []
+    if (items.length === 0) return false
+    const groupVal = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {}
+    return items.every(item => isValueAnswered(groupVal[item.id]))
+  }
+  if (el.type === 'table') {
+    const rows = el.rows || []
+    const columns = el.columns || []
+    if (rows.length === 0 || columns.length === 0) return false
+    const tableVal = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {}
+    return rows.every((_, rowIndex) => {
+      const rowVal = (tableVal[String(rowIndex)] && typeof tableVal[String(rowIndex)] === 'object') ? tableVal[String(rowIndex)] : {}
+      return columns.every(col => isValueAnswered(rowVal[col.id]))
+    })
+  }
+  return isValueAnswered(value)
 }
 
 function FormSection({ section, sectionIndex, values, onChange, collapsed, onToggle, sectionRef, readOnly, timestamps }) {

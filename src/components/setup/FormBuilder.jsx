@@ -128,7 +128,7 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
     const copy = JSON.parse(JSON.stringify(sec))
     copy.id = newId()
     copy.title = sec.title + ' (copy)'
-    copy.elements = copy.elements.map(el => ({ ...el, id: newId() }))
+    copy.elements = copy.elements.map(el => ({ ...el, id: newId(), global_agreement_question: false }))
     setSections(s => [...s, copy])
   }
 
@@ -139,6 +139,16 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
 
   function updateElement(sectionId, elId, changes) {
     setSections(s => s.map(sec => {
+      if (changes.global_agreement_question === true) {
+        return {
+          ...sec,
+          elements: sec.elements.map(el => {
+            if (sec.id === sectionId && el.id === elId) return { ...el, ...changes }
+            if (el.global_agreement_question === true) return { ...el, global_agreement_question: false }
+            return el
+          }),
+        }
+      }
       if (sec.id !== sectionId) return sec
       return { ...sec, elements: sec.elements.map(el => el.id === elId ? { ...el, ...changes } : el) }
     }))
@@ -356,150 +366,191 @@ function SectionEditor({ section, collapsed, onToggle, onChange, onRemove, onDup
 }
 
 function ElementEditor({ el, onChange, onRemove }) {
+  const [agrOpen, setAgrOpen] = useState(false)
   const typeLabel = ELEMENT_TYPES.find(t => t.type === el.type)?.label
 
   if (el.type === 'text_block') {
     return (
-      <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-          <span className="text-secondary text-sm">Markdown Text / Images</span>
+      <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
+          <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>Text / Image Block</span>
           <button className="btn btn-ghost btn-icon btn-sm" onClick={onRemove}><Trash2 size={12} /></button>
         </div>
-        <MarkdownBlockEditor
-          value={el.content || ''}
-          assets={el.assets || []}
-          onChange={changes => onChange(changes)}
-        />
+        <div style={{ padding: 12 }}>
+          <MarkdownBlockEditor
+            value={el.content || ''}
+            assets={el.assets || []}
+            onChange={changes => onChange(changes)}
+          />
+        </div>
       </div>
     )
   }
 
+  const agrEnabled = el.agreement_enabled ?? defaultAgreementEnabledForType(el.type)
+  const agrOptions = agreementMethodOptionsForType(el.type)
+  const agrMethod = agrOptions.includes(el.agreement_method) ? el.agreement_method : 'auto'
+  const resolvedAgrMethod = agrMethod === 'auto' ? defaultAgreementMethodForType(el.type) : agrMethod
+  const agrSummary = agrEnabled ? (AGREEMENT_METHOD_LABELS[resolvedAgrMethod] || resolvedAgrMethod) : 'Excluded'
+
+  const hasTypeContent =
+    el.type === 'multiple_choice' || el.type === 'multiselect' || el.type === 'rating' ||
+    el.type === 'likert' || el.type === 'likert_group' ||
+    el.type === 'slider' || el.type === 'dial' || el.type === 'vertical_slider' ||
+    el.type === 'short_answer' || el.type === 'paragraph' || el.type === 'table'
+
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        {el.type !== 'checkbox' && (
-          <input
-            value={el.label || ''}
-            onChange={e => onChange({ label: e.target.value })}
-            placeholder={el.type === 'likert_group' ? 'Group header (optional)' : 'Question text'}
-            style={{ flex: 1, fontWeight: 500 }}
-          />
-        )}
-        {el.type === 'checkbox' && (
-          <input
-            value={el.label || ''}
-            onChange={e => onChange({ label: e.target.value })}
-            placeholder="Checkbox label text"
-            style={{ flex: 1, fontWeight: 500 }}
-          />
-        )}
-        {el.type !== 'checkbox' && el.type !== 'likert_group' && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', marginBottom: 0, whiteSpace: 'nowrap' }}>
-            <input type="checkbox" checked={!!el.required} onChange={e => onChange({ required: e.target.checked })} />
-            Required
-          </label>
-        )}
-        <span className="badge badge-muted" style={{ fontSize: 10 }}>{typeLabel}</span>
-        <button className="btn btn-ghost btn-icon btn-sm" onClick={onRemove}><Trash2 size={12} /></button>
+    <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+      {/* Label + compact properties bar */}
+      <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 7 }}>
+        <input
+          value={el.label || ''}
+          onChange={e => onChange({ label: e.target.value })}
+          placeholder={
+            el.type === 'likert_group' ? 'Group header (optional)' :
+            el.type === 'checkbox' ? 'Checkbox label text' :
+            'Question text'
+          }
+          style={{ fontWeight: 500 }}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="badge badge-muted" style={{ fontSize: 10 }}>{typeLabel}</span>
+          {el.type !== 'checkbox' && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
+              <input type="checkbox" checked={!!el.required} onChange={e => onChange({ required: e.target.checked })} />
+              Required
+            </label>
+          )}
+          {el.type !== 'table' && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
+              <input type="checkbox" checked={!!el.has_na} onChange={e => onChange({ has_na: e.target.checked })} />
+              N/A
+            </label>
+          )}
+          <div style={{ flex: 1 }} />
+          <button className="btn btn-ghost btn-icon btn-sm" onClick={onRemove}><Trash2 size={12} /></button>
+        </div>
       </div>
 
-      {el.type !== 'table' && (
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
-          <input type="checkbox" checked={!!el.has_na} onChange={e => onChange({ has_na: e.target.checked })} />
-          Include N/A option
-        </label>
-      )}
+      {/* Type-specific controls */}
+      {hasTypeContent && (
+        <div style={{ borderTop: '1px solid var(--border)', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {(el.type === 'multiple_choice' || el.type === 'multiselect' || el.type === 'rating') && (
+            <OptionsEditor options={el.options || []} onChange={opts => onChange({ options: opts })} />
+          )}
 
-      <AgreementSettingsEditor el={el} onChange={onChange} />
+          {el.type === 'likert' && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+              <div className="form-field" style={{ flex: '0 0 84px' }}>
+                <label>Points</label>
+                <select value={el.scale || 5} onChange={e => onChange({ scale: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }}>
+                  {[3,4,5,6,7].map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+              <div className="form-field" style={{ flex: 1 }}>
+                <label>← Low end</label>
+                <input value={el.low_label || ''} onChange={e => onChange({ low_label: e.target.value })} placeholder="e.g. Strongly Disagree" style={{ height: 32, fontSize: 13 }} />
+              </div>
+              <div className="form-field" style={{ flex: 1 }}>
+                <label>High end →</label>
+                <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. Strongly Agree" style={{ height: 32, fontSize: 13 }} />
+              </div>
+            </div>
+          )}
 
-      {(el.type === 'multiple_choice' || el.type === 'multiselect' || el.type === 'rating') && (
-        <OptionsEditor options={el.options || []} onChange={opts => onChange({ options: opts })} />
-      )}
+          {el.type === 'likert_group' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <input
+                value={el.description || ''}
+                onChange={e => onChange({ description: e.target.value })}
+                placeholder="Instructions / description (optional)"
+                style={{ fontSize: 13 }}
+              />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Scale</span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                  <div className="form-field" style={{ flex: '0 0 84px' }}>
+                    <label>Points</label>
+                    <select value={el.scale || 5} onChange={e => onChange({ scale: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }}>
+                      {[3,4,5,6,7].map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </div>
+                  <div className="form-field" style={{ flex: 1 }}>
+                    <label>← Low end</label>
+                    <input value={el.low_label || ''} onChange={e => onChange({ low_label: e.target.value })} placeholder="e.g. Strongly Disagree" style={{ height: 32, fontSize: 13 }} />
+                  </div>
+                  <div className="form-field" style={{ flex: 1 }}>
+                    <label>High end →</label>
+                    <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. Strongly Agree" style={{ height: 32, fontSize: 13 }} />
+                  </div>
+                </div>
+              </div>
+              <LikertGroupItemsEditor items={el.items || []} onChange={items => onChange({ items })} />
+            </div>
+          )}
 
-      {el.type === 'likert' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <div className="form-field" style={{ flex: 1, minWidth: 100 }}>
-              <label>Scale</label>
-              <select value={el.scale || 5} onChange={e => onChange({ scale: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }}>
-                {[3,4,5,6,7].map(n => <option key={n} value={n}>{n}-point</option>)}
-              </select>
+          {(el.type === 'slider' || el.type === 'dial' || el.type === 'vertical_slider') && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {[['min','Min',0],['max','Max',100],['step','Step',1]].map(([key,lbl,def]) => (
+                  <div key={key} className="form-field" style={{ flex: 1 }}>
+                    <label>{lbl}</label>
+                    <input type="number" value={el[key] ?? def} onChange={e => onChange({ [key]: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }} />
+                  </div>
+                ))}
+                <div className="form-field" style={{ flex: 1 }}>
+                  <label title="How many independent sliders to show"># Sliders</label>
+                  <input type="number" min={1} max={5} value={el.count ?? 1} onChange={e => onChange({ count: Math.min(5, Math.max(1, Number(e.target.value) || 1)) })} style={{ height: 32, fontSize: 13 }} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <div className="form-field" style={{ flex: 1 }}>
+                  <label>← Low end</label>
+                  <input value={el.low_label || ''} onChange={e => onChange({ low_label: e.target.value })} placeholder="e.g. Low" style={{ height: 32, fontSize: 13 }} />
+                </div>
+                <div className="form-field" style={{ flex: 1 }}>
+                  <label>High end →</label>
+                  <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. High" style={{ height: 32, fontSize: 13 }} />
+                </div>
+              </div>
             </div>
-            <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
-              <label>Low label</label>
-              <input value={el.low_label || ''} onChange={e => onChange({ low_label: e.target.value })} placeholder="e.g. Strongly Disagree" style={{ height: 32, fontSize: 13 }} />
-            </div>
-            <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
-              <label>High label</label>
-              <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. Strongly Agree" style={{ height: 32, fontSize: 13 }} />
-            </div>
-          </div>
+          )}
+
+          {(el.type === 'short_answer' || el.type === 'paragraph') && (
+            <input value={el.placeholder || ''} onChange={e => onChange({ placeholder: e.target.value })} placeholder="Placeholder text (optional)" style={{ fontSize: 13 }} />
+          )}
+
+          {el.type === 'table' && (
+            <TableEditor
+              rows={el.rows || []}
+              columns={el.columns || []}
+              onRowsChange={rows => onChange({ rows })}
+              onColumnsChange={columns => onChange({ columns })}
+            />
+          )}
         </div>
       )}
 
-      {el.type === 'likert_group' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <input
-            value={el.description || ''}
-            onChange={e => onChange({ description: e.target.value })}
-            placeholder="Group description (optional)"
-            style={{ fontSize: 13 }}
-          />
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <div className="form-field" style={{ flex: 1, minWidth: 100 }}>
-              <label>Scale</label>
-              <select value={el.scale || 5} onChange={e => onChange({ scale: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }}>
-                {[3,4,5,6,7].map(n => <option key={n} value={n}>{n}-point</option>)}
-              </select>
-            </div>
-            <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
-              <label>Low label</label>
-              <input value={el.low_label || ''} onChange={e => onChange({ low_label: e.target.value })} placeholder="e.g. Strongly Disagree" style={{ height: 32, fontSize: 13 }} />
-            </div>
-            <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
-              <label>High label</label>
-              <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. Strongly Agree" style={{ height: 32, fontSize: 13 }} />
-            </div>
+      {/* Agreement — collapsible */}
+      <div style={{ borderTop: '1px solid var(--border)' }}>
+        <button
+          onClick={() => setAgrOpen(o => !o)}
+          style={{
+            width: '100%', display: 'flex', alignItems: 'center', gap: 6,
+            padding: '6px 12px', fontSize: 12, background: 'none', border: 'none',
+            cursor: 'pointer', color: 'var(--text-secondary)', textAlign: 'left',
+          }}
+        >
+          {agrOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          <span style={{ fontWeight: 500 }}>Agreement</span>
+          <span style={{ color: 'var(--text-muted)', marginLeft: 2 }}>· {agrSummary}</span>
+        </button>
+        {agrOpen && (
+          <div style={{ padding: '0 12px 12px' }}>
+            <AgreementSettingsEditor el={el} onChange={onChange} />
           </div>
-          <LikertGroupItemsEditor items={el.items || []} onChange={items => onChange({ items })} />
-        </div>
-      )}
-
-      {(el.type === 'slider' || el.type === 'dial' || el.type === 'vertical_slider') && (
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {[['min','Min',0],['max','Max',100],['step','Step',1]].map(([key,lbl,def]) => (
-            <div key={key} className="form-field" style={{ flex: 1, minWidth: 70 }}>
-              <label>{lbl}</label>
-              <input type="number" value={el[key] ?? def} onChange={e => onChange({ [key]: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }} />
-            </div>
-          ))}
-          <div className="form-field" style={{ flex: 1, minWidth: 90 }}>
-            <label>Controls</label>
-            <input type="number" min={1} max={5} value={el.count ?? 1} onChange={e => onChange({ count: Math.min(5, Math.max(1, Number(e.target.value) || 1)) })} style={{ height: 32, fontSize: 13 }} />
-          </div>
-          <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
-            <label>Low label</label>
-            <input value={el.low_label || ''} onChange={e => onChange({ low_label: e.target.value })} style={{ height: 32, fontSize: 13 }} />
-          </div>
-          <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
-            <label>High label</label>
-            <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} style={{ height: 32, fontSize: 13 }} />
-          </div>
-        </div>
-      )}
-
-      {(el.type === 'short_answer' || el.type === 'paragraph') && (
-        <input value={el.placeholder || ''} onChange={e => onChange({ placeholder: e.target.value })} placeholder="Placeholder text (optional)" style={{ fontSize: 13 }} />
-      )}
-
-      {el.type === 'table' && (
-        <TableEditor
-          rows={el.rows || []}
-          columns={el.columns || []}
-          onRowsChange={rows => onChange({ rows })}
-          onColumnsChange={columns => onChange({ columns })}
-        />
-      )}
+        )}
+      </div>
     </div>
   )
 }
@@ -510,22 +561,18 @@ function AgreementSettingsEditor({ el, onChange }) {
   const method = options.includes(el.agreement_method) ? el.agreement_method : 'auto'
   const weight = el.agreement_weight ?? DEFAULT_QUESTION_WEIGHT_BY_TYPE[el.type] ?? 1
   const warning = agreementWarningForElement(el, enabled, method)
+  const canBeFinalEvaluation = el.type !== 'text_block'
 
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-secondary)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', marginBottom: 0 }}>
-          <input
-            type="checkbox"
-            checked={!!enabled}
-            onChange={e => onChange({ agreement_enabled: e.target.checked })}
-          />
-          Include in agreement
-        </label>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          {enabled ? AGREEMENT_METHOD_LABELS[method === 'auto' ? defaultAgreementMethodForType(el.type) : method] : 'Excluded'}
-        </span>
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', marginBottom: 0 }}>
+        <input
+          type="checkbox"
+          checked={!!enabled}
+          onChange={e => onChange({ agreement_enabled: e.target.checked })}
+        />
+        Include in agreement
+      </label>
       {enabled && (
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 1fr) 88px', gap: 8 }}>
           <div className="form-field" style={{ margin: 0 }}>
@@ -553,6 +600,22 @@ function AgreementSettingsEditor({ el, onChange }) {
             />
           </div>
         </div>
+      )}
+      {canBeFinalEvaluation && (
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 0, lineHeight: 1.35 }}>
+          <input
+            type="checkbox"
+            checked={el.global_agreement_question === true}
+            onChange={e => onChange({ global_agreement_question: e.target.checked })}
+            style={{ marginTop: 2 }}
+          />
+          <span>
+            <strong>Use as final evaluation question</strong>
+            <span style={{ display: 'block', color: 'var(--text-muted)', fontWeight: 400 }}>
+              Used for Final Evaluation Agreement in data visualization.
+            </span>
+          </span>
+        </label>
       )}
       {warning && (
         <div style={{ fontSize: 11, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 5, padding: '6px 8px', lineHeight: 1.4 }}>
@@ -734,12 +797,13 @@ function OptionsEditor({ options, onChange }) {
 
 function TableEditor({ rows, columns, onRowsChange, onColumnsChange }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.6fr', gap: 16, alignItems: 'start' }}>
+      {/* Rows */}
       <div>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 6 }}>Rows</span>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 6 }}>Rows</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {rows.map((row, i) => (
-            <div key={i} style={{ display: 'flex', gap: 6 }}>
+            <div key={i} style={{ display: 'flex', gap: 4 }}>
               <input
                 value={row}
                 onChange={e => { const r = [...rows]; r[i] = e.target.value; onRowsChange(r) }}
@@ -748,46 +812,48 @@ function TableEditor({ rows, columns, onRowsChange, onColumnsChange }) {
               <button className="btn btn-ghost btn-icon btn-sm" onClick={() => onRowsChange(rows.filter((_, j) => j !== i))}><Trash2 size={12} /></button>
             </div>
           ))}
-          <button className="btn btn-ghost btn-sm" onClick={() => onRowsChange([...rows, `Row ${rows.length + 1}`])} style={{ alignSelf: 'flex-start', fontSize: 12 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => onRowsChange([...rows, `Row ${rows.length + 1}`])} style={{ alignSelf: 'flex-start', fontSize: 12, marginTop: 2 }}>
             <Plus size={12} /> Add Row
           </button>
         </div>
       </div>
+
+      {/* Columns */}
       <div>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 6 }}>Columns</span>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 6 }}>Columns</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {columns.map((col, i) => (
-            <div key={col.id} style={{ border: '1px solid var(--border)', borderRadius: 5, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <div key={col.id} style={{ border: '1px solid var(--border)', borderRadius: 5, padding: '7px 9px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
                 <input
                   value={col.label}
                   onChange={e => { const c = columns.map((cc, j) => j === i ? { ...cc, label: e.target.value } : cc); onColumnsChange(c) }}
-                  placeholder="Column header"
+                  placeholder="Header"
                   style={{ flex: 1, fontSize: 13 }}
                 />
                 <select
                   value={col.type}
                   onChange={e => { const c = columns.map((cc, j) => j === i ? { ...cc, type: e.target.value, options: undefined } : cc); onColumnsChange(c) }}
-                  style={{ height: 32, fontSize: 12, width: 120, flexShrink: 0 }}
+                  style={{ height: 30, fontSize: 12, width: 96, flexShrink: 0 }}
                 >
                   {TABLE_COL_TYPES.map(ct => <option key={ct.type} value={ct.type}>{ct.label}</option>)}
                 </select>
                 <button className="btn btn-ghost btn-icon btn-sm" onClick={() => onColumnsChange(columns.filter((_, j) => j !== i))}><Trash2 size={12} /></button>
               </div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
                 <input
                   type="checkbox"
                   checked={!!col.has_na}
                   onChange={e => { const c = columns.map((cc, j) => j === i ? { ...cc, has_na: e.target.checked } : cc); onColumnsChange(c) }}
                 />
-                Include N/A option
+                N/A option
               </label>
               {col.type === 'select' && (
                 <OptionsEditor options={col.options || []} onChange={opts => { const c = columns.map((cc, j) => j === i ? { ...cc, options: opts } : cc); onColumnsChange(c) }} />
               )}
             </div>
           ))}
-          <button className="btn btn-ghost btn-sm" onClick={() => onColumnsChange([...columns, { id: newId(), label: `Column ${columns.length + 1}`, type: 'text', has_na: false }])} style={{ alignSelf: 'flex-start', fontSize: 12 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => onColumnsChange([...columns, { id: newId(), label: `Column ${columns.length + 1}`, type: 'text', has_na: false }])} style={{ alignSelf: 'flex-start', fontSize: 12, marginTop: 2 }}>
             <Plus size={12} /> Add Column
           </button>
         </div>
@@ -829,7 +895,7 @@ function makeElement(type) {
   if (type === 'multiple_choice' || type === 'multiselect') return { ...base, options: ['Option 1', 'Option 2'] }
   if (type === 'rating') return { ...base, options: ['Option 1', 'Option 2', 'Option 3', 'Option 4'] }
   if (type === 'likert') return { ...base, scale: 5, low_label: '', high_label: '', has_na: false }
-  if (type === 'likert_group') return { id: newId(), type: 'likert_group', label: '', description: '', scale: 5, low_label: '', high_label: '', has_na: false, items: [{ id: newId(), label: '' }], ...agreement }
+  if (type === 'likert_group') return { id: newId(), type: 'likert_group', label: '', description: '', required: false, scale: 5, low_label: '', high_label: '', has_na: false, items: [{ id: newId(), label: '' }], ...agreement }
   if (type === 'checkbox') return { id: newId(), type: 'checkbox', label: '', required: false, has_na: false, ...agreement }
   if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return { ...base, min: 0, max: 100, step: 1, count: 1, low_label: '', high_label: '' }
   if (type === 'text_block') return { id: newId(), type: 'text_block', content: '', assets: [] }

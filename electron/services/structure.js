@@ -103,6 +103,7 @@ function writeMediaTypeChildren(db, projectId, mediaTypeId, config) {
 
 function saveMediaType(db, projectId, data) {
   let mediaTypeId = data.id || null
+  const isExisting = !!mediaTypeId
   const clock = nowClock()
   db.transaction(() => {
     if (mediaTypeId) {
@@ -116,6 +117,9 @@ function saveMediaType(db, projectId, data) {
     }
     writeMediaTypeChildren(db, projectId, mediaTypeId, data)
   })()
+  if (isExisting) {
+    migrateStructureReviews(db, projectId, 'mediaType', mediaTypeId, 'all')
+  }
   bumpAndSync(db, projectId)
   return mediaTypeId
 }
@@ -276,8 +280,20 @@ function saveInstruction(db, projectId, data) {
 
 function deleteInstruction(db, projectId, id) {
   backupDb('pre-delete-instruction')
+  const clock = nowClock()
+  const affectedMediaTypes = db.prepare(`
+    SELECT DISTINCT media_type_id as id
+    FROM workspace_tabs
+    WHERE tab_type='instruction' AND ref_id=?
+  `).all(id)
   recordStructureTombstone(db, projectId, 'instruction', id)
+  db.prepare("UPDATE media_types SET config_version=COALESCE(config_version,1)+1, updated_at=? WHERE id IN (SELECT media_type_id FROM workspace_tabs WHERE tab_type='instruction' AND ref_id=?)")
+    .run(clock, id)
+  db.prepare("DELETE FROM workspace_tabs WHERE tab_type='instruction' AND ref_id=?").run(id)
   db.prepare('DELETE FROM instructions WHERE id=?').run(id)
+  for (const mediaType of affectedMediaTypes) {
+    migrateStructureReviews(db, projectId, 'mediaType', mediaType.id, 'all')
+  }
   bumpAndSync(db, projectId)
   return true
 }

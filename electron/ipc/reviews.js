@@ -8,17 +8,29 @@ module.exports = function (ipcMain) {
     const db = getDb()
     const reviews = db.prepare(`
       SELECT r.id, r.reviewer_name, r.status, r.media_file_id, r.created_at,
-             mf.name as media_name, mf.encounter_id,
+             r.media_type_sync_id, r.media_type_version, r.workspace_snapshot,
+             mf.name as media_name, mf.encounter_id, mf.media_type_id,
+             mt.name as media_type_name,
              e.name as encounter_name
       FROM reviews r
       JOIN media_files mf ON r.media_file_id = mf.id
       JOIN encounters e ON mf.encounter_id = e.id
+      LEFT JOIN media_types mt ON mf.media_type_id = mt.id
       WHERE e.project_id=? AND r.deleted_at IS NULL
       ORDER BY e.name, mf.name, r.created_at
     `).all(projectId)
 
     const result = []
     for (const review of reviews) {
+      let workspaceSnapshot = null
+      try {
+        workspaceSnapshot = review.workspace_snapshot ? JSON.parse(review.workspace_snapshot) : null
+      } catch {
+        workspaceSnapshot = null
+      }
+      const snapshotMediaType = workspaceSnapshot?.media_type || null
+      const effectiveMediaTypeId = review.media_type_id ?? snapshotMediaType?.id ?? review.media_type_sync_id ?? snapshotMediaType?.sync_id ?? null
+      const effectiveMediaTypeName = review.media_type_name || snapshotMediaType?.name || (effectiveMediaTypeId == null ? 'Untyped' : 'Media type')
       const formResponses = db.prepare(`
         SELECT fr.form_id, fr.responses, fr.form_snapshot, f.schema as current_schema
         FROM form_responses fr
@@ -27,6 +39,9 @@ module.exports = function (ipcMain) {
       `).all(review.id)
       result.push({
         ...review,
+        media_type_id: effectiveMediaTypeId,
+        media_type_name: effectiveMediaTypeName,
+        workspace_snapshot: workspaceSnapshot,
         form_responses: formResponses.map(fr => ({
           form_id: fr.form_id,
           responses: fr.responses ? JSON.parse(fr.responses) : {},
@@ -81,7 +96,15 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('reviews:submit', (_, id, data) => {
     const db = getDb()
-    db.prepare("UPDATE reviews SET status='submitted', notes=?, submitted_at=datetime('now') WHERE id=?").run(data.notes || '', id)
+    db.prepare(`
+      UPDATE reviews
+      SET status='submitted',
+          notes=?,
+          submitted_at=datetime('now'),
+          reopened_at=NULL,
+          reopened_reason=NULL
+      WHERE id=?
+    `).run(data.notes || '', id)
     scheduleSyncForReview(id)
     return true
   })

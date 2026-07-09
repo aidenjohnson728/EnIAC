@@ -76,6 +76,7 @@ function buildWorkspaceSnapshot(db, mediaFileId) {
         name: instr.name,
         content_type: instr.content_type || 'markdown',
         content: instr.content || '',
+        file_path: instr.file_path || null,
       }
     }
     snapshot.workspace_tabs.push(outTab)
@@ -208,6 +209,16 @@ function migrateStructureReviews(db, projectId, kind, id, scope = 'drafts') {
             snapForm.sync_id || ''
           )
         }
+        if (kind === 'mediaType') {
+          const activeFormIds = Object.keys(workspaceSnapshot.forms || {}).map(id => Number(id)).filter(Number.isFinite)
+          if (activeFormIds.length > 0) {
+            const placeholders = activeFormIds.map(() => '?').join(',')
+            db.prepare(`DELETE FROM form_responses WHERE review_id=? AND form_id NOT IN (${placeholders})`)
+              .run(review.id, ...activeFormIds)
+          } else {
+            db.prepare('DELETE FROM form_responses WHERE review_id=?').run(review.id)
+          }
+        }
       } else if (form) {
         const snapForm = currentFormSnapshot(db, form.id)
         if (snapForm) {
@@ -236,6 +247,75 @@ function migrateStructureReviews(db, projectId, kind, id, scope = 'drafts') {
   })
   tx()
   return { ...preview, updated, unsubmitted, reviewIds }
+}
+
+function migrateMediaFileReviews(db, mediaFileId, reason = 'media_type_version_changed') {
+  const reviews = db.prepare('SELECT * FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(mediaFileId)
+  if (reviews.length === 0) return { total: 0, updated: 0, unsubmitted: 0, reviewIds: [] }
+
+  const migratedAt = new Date(Date.now() + 1).toISOString()
+  let updated = 0
+  let unsubmitted = 0
+  const reviewIds = []
+
+  const tx = db.transaction(() => {
+    for (const review of reviews) {
+      reviewIds.push(review.id)
+      const workspaceSnapshot = buildWorkspaceSnapshot(db, mediaFileId)
+      const activeFormIds = Object.keys(workspaceSnapshot?.forms || {}).map(id => Number(id)).filter(Number.isFinite)
+
+      if (workspaceSnapshot) {
+        workspaceSnapshot.captured_at = migratedAt
+        db.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+          .run(
+            JSON.stringify(workspaceSnapshot),
+            workspaceSnapshot.media_type?.sync_id || null,
+            workspaceSnapshot.media_type?.version || null,
+            review.id
+          )
+        for (const snapForm of Object.values(workspaceSnapshot.forms || {})) {
+          db.prepare(`
+            UPDATE form_responses
+            SET form_sync_id=?, form_version=?, form_snapshot=?, updated_at=?
+            WHERE review_id=? AND (form_id=? OR form_sync_id=?)
+          `).run(
+            snapForm.sync_id || null,
+            snapForm.version || null,
+            JSON.stringify(snapForm),
+            migratedAt,
+            review.id,
+            snapForm.id,
+            snapForm.sync_id || ''
+          )
+        }
+      }
+
+      if (activeFormIds.length > 0) {
+        const placeholders = activeFormIds.map(() => '?').join(',')
+        db.prepare(`DELETE FROM form_responses WHERE review_id=? AND form_id NOT IN (${placeholders})`)
+          .run(review.id, ...activeFormIds)
+      } else {
+        db.prepare('DELETE FROM form_responses WHERE review_id=?').run(review.id)
+      }
+
+      if (review.status === 'submitted') {
+        db.prepare(`
+          UPDATE reviews
+          SET status='in_progress',
+              previous_submitted_at=submitted_at,
+              submitted_at=NULL,
+              reopened_at=?,
+              reopened_reason=?
+          WHERE id=?
+        `).run(migratedAt, reason, review.id)
+        unsubmitted++
+      }
+      updated++
+    }
+  })
+  tx()
+
+  return { total: reviews.length, updated, unsubmitted, reviewIds }
 }
 
 function localizeWorkspaceSnapshot(db, projectId, snapshotValue) {
@@ -288,5 +368,6 @@ module.exports = {
   localizeWorkspaceSnapshot,
   previewStructureMigration,
   migrateStructureReviews,
+  migrateMediaFileReviews,
   parseJson,
 }
