@@ -1181,7 +1181,7 @@ function VersionManagementSection({ projectId, forms, mediaTypes, locked, onChan
     <div style={{ maxWidth: 760 }}>
       <h2 style={{ marginBottom: 4 }}>Versions</h2>
       <p className="text-secondary" style={{ fontSize: 13, marginBottom: 20 }}>
-        Move existing reviews onto the current form or media type version. New reviews already use the latest version automatically.
+        Form edits and form restores automatically move matching reviews onto the latest form version and reopen submitted reviews. Use these controls for manual review-version maintenance.
       </p>
       {locked && (
         <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
@@ -1228,7 +1228,7 @@ function VersionManagementSection({ projectId, forms, mediaTypes, locked, onChan
             </div>
             {pending.scope === 'all' && (
               <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 12, color: '#991b1b' }}>
-                This changes version metadata used to interpret submitted reviews. Answers are preserved, but this should be treated as a deliberate research-data migration.
+                This changes version metadata used to interpret submitted reviews and reopens them as drafts. Answers are preserved, but this should be treated as a deliberate research-data migration.
               </div>
             )}
           </div>
@@ -1253,6 +1253,11 @@ function VersionManagementSection({ projectId, forms, mediaTypes, locked, onChan
             <p style={{ margin: 0 }}>
               Restore <strong>{restorePending.item.name}</strong> version <strong>{restorePending.version}</strong> as the new latest version.
             </p>
+            {restorePending.kind === 'form' && (
+              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 12, color: '#991b1b' }}>
+                Matching reviews will use the restored form version, and submitted reviews will be reopened as drafts.
+              </div>
+            )}
             <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
               Existing reviews keep their current snapshots until you use Update Drafts or Update All.
             </div>

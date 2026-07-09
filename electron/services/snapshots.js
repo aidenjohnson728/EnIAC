@@ -39,7 +39,7 @@ function buildWorkspaceSnapshot(db, mediaFileId) {
 
   if (!media.media_type_id) return snapshot
 
-  snapshot.tags = db.prepare('SELECT label, color, description FROM timestamp_tags WHERE media_type_id=?').all(media.media_type_id)
+  snapshot.tags = db.prepare('SELECT label, color, description, category FROM timestamp_tags WHERE media_type_id=?').all(media.media_type_id)
   const tabs = db.prepare('SELECT * FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order').all(media.media_type_id)
   for (const tab of tabs) {
     const outTab = {
@@ -167,11 +167,13 @@ function previewStructureMigration(db, projectId, kind, id, scope = 'drafts') {
 
 function migrateStructureReviews(db, projectId, kind, id, scope = 'drafts') {
   const preview = previewStructureMigration(db, projectId, kind, id, scope)
-  if (preview.total === 0) return { ...preview, updated: 0 }
+  if (preview.total === 0) return { ...preview, updated: 0, unsubmitted: 0, reviewIds: [] }
   const form = kind === 'form' ? db.prepare('SELECT * FROM forms WHERE id=?').get(id) : null
   const mediaType = kind === 'mediaType' ? db.prepare('SELECT * FROM media_types WHERE id=?').get(id) : null
   const migratedAt = new Date(Date.now() + 1).toISOString()
   let updated = 0
+  let unsubmitted = 0
+  const reviewIds = []
 
   const tx = db.transaction(() => {
     for (const review of candidateReviews(db, projectId, scope)) {
@@ -179,6 +181,7 @@ function migrateStructureReviews(db, projectId, kind, id, scope = 'drafts') {
         ? reviewMatchesForm(db, projectId, review, form)
         : reviewMatchesMediaType(review, mediaType)
       if (!matches) continue
+      reviewIds.push(review.id)
 
       const workspaceSnapshot = buildWorkspaceSnapshot(db, review.media_file_id)
       if (workspaceSnapshot) {
@@ -215,11 +218,24 @@ function migrateStructureReviews(db, projectId, kind, id, scope = 'drafts') {
           `).run(snapForm.sync_id || null, snapForm.version || null, JSON.stringify(snapForm), migratedAt, review.id, form.id, form.sync_id || '')
         }
       }
+      if (scope === 'all' && review.status === 'submitted') {
+        const reason = kind === 'form' ? 'form_version_changed' : 'media_type_version_changed'
+        db.prepare(`
+          UPDATE reviews
+          SET status='in_progress',
+              previous_submitted_at=submitted_at,
+              submitted_at=NULL,
+              reopened_at=?,
+              reopened_reason=?
+          WHERE id=?
+        `).run(migratedAt, reason, review.id)
+        unsubmitted++
+      }
       updated++
     }
   })
   tx()
-  return { ...preview, updated }
+  return { ...preview, updated, unsubmitted, reviewIds }
 }
 
 function localizeWorkspaceSnapshot(db, projectId, snapshotValue) {

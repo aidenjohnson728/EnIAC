@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Reviews
   listReviews: (mediaFileId) => ipcRenderer.invoke('reviews:list', mediaFileId),
+  getProjectInterraterAgreementData: (projectId) => ipcRenderer.invoke('reviews:projectAgreementData', projectId),
   createReview: (data) => ipcRenderer.invoke('reviews:create', data),
   getReview: (id) => ipcRenderer.invoke('reviews:get', id),
   submitReview: (id, data) => ipcRenderer.invoke('reviews:submit', id, data),

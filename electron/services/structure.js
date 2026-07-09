@@ -1,6 +1,7 @@
 const { randomUUID } = require('crypto')
 const { backupDb } = require('../db')
 const { bumpAndSync, recordStructureTombstone } = require('../sync')
+const { migrateStructureReviews } = require('./snapshots')
 
 function nowClock() {
   return new Date().toISOString()
@@ -34,7 +35,7 @@ function captureFormVersion(db, formId, clock = nowClock()) {
 function mediaTypeConfig(db, mediaTypeId) {
   const mt = db.prepare('SELECT * FROM media_types WHERE id=?').get(mediaTypeId)
   if (!mt) return null
-  const tags = db.prepare('SELECT label, color, description FROM timestamp_tags WHERE media_type_id=? ORDER BY id').all(mediaTypeId)
+  const tags = db.prepare('SELECT label, color, description, category FROM timestamp_tags WHERE media_type_id=? ORDER BY id').all(mediaTypeId)
   const tabs = db.prepare(`
     SELECT wt.tab_type, wt.ref_id, wt.label, wt.sort_order,
            f.sync_id as form_sync_id, f.name as form_name,
@@ -76,9 +77,9 @@ function writeMediaTypeChildren(db, projectId, mediaTypeId, config) {
   db.prepare('DELETE FROM timestamp_tags WHERE media_type_id=?').run(mediaTypeId)
   db.prepare('DELETE FROM workspace_tabs WHERE media_type_id=?').run(mediaTypeId)
 
-  const insertTag = db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)')
+  const insertTag = db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description, category) VALUES (?,?,?,?,?)')
   for (const tag of (config.tags || [])) {
-    insertTag.run(mediaTypeId, tag.label, tag.color || '#6366f1', tag.description || '')
+    insertTag.run(mediaTypeId, tag.label, tag.color || '#6366f1', tag.description || '', tag.category || null)
   }
 
   const insertTab = db.prepare('INSERT INTO workspace_tabs (media_type_id, tab_type, ref_id, label, sort_order) VALUES (?,?,?,?,?)')
@@ -145,6 +146,7 @@ function saveForm(db, projectId, data) {
   if (data.id) {
     captureFormVersion(db, data.id, clock)
     db.prepare("UPDATE forms SET name=?, schema=?, schema_version=COALESCE(schema_version,1)+1, updated_at=? WHERE id=?").run(data.name, schema, clock, data.id)
+    migrateStructureReviews(db, projectId, 'form', data.id, 'all')
     bumpAndSync(db, projectId)
     return data.id
   }
@@ -236,6 +238,7 @@ function restoreVersion(db, projectId, kind, id, version) {
       restoredVersion = (form.schema_version || 1) + 1
       db.prepare('UPDATE forms SET name=?, schema=?, schema_version=?, archived_at=NULL, updated_at=? WHERE id=?')
         .run(historical.name, historical.schema, restoredVersion, clock, id)
+      migrateStructureReviews(db, projectId, 'form', id, 'all')
     } else if (kind === 'mediaType') {
       const mt = db.prepare('SELECT * FROM media_types WHERE project_id=? AND id=?').get(projectId, id)
       if (!mt) throw new Error('Media type not found')

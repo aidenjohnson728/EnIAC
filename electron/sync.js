@@ -260,7 +260,7 @@ function buildConfigExport(db, projectId) {
       reviews_required: mt.reviews_required,
       allow_custom_tags: mt.allow_custom_tags,
       color: mt.color,
-      tags: tags.map(t => ({ label: t.label, color: t.color, description: t.description })),
+      tags: tags.map(t => ({ label: t.label, color: t.color, description: t.description, category: t.category || null })),
       workspace_tabs: tabs,
     }
   })
@@ -352,6 +352,9 @@ function buildReviewExport(db, projectId, reviewerUuid, reviewerName) {
           notes: rev.notes,
           created_at: rev.created_at,
           submitted_at: rev.submitted_at,
+          reopened_at: rev.reopened_at || null,
+          reopened_reason: rev.reopened_reason || null,
+          previous_submitted_at: rev.previous_submitted_at || null,
           media_type_sync_id: rev.media_type_sync_id || null,
           media_type_version: rev.media_type_version || null,
           workspace_snapshot: rev.workspace_snapshot ? safeJsonParse(rev.workspace_snapshot, null) : null,
@@ -410,7 +413,7 @@ function decideWrite(localHash, incomingHash, lClock, iClock) {
 function _writeMediaTypeChildren(db, projectId, mtId, mt) {
   db.prepare('DELETE FROM timestamp_tags WHERE media_type_id=?').run(mtId)
   for (const tag of (mt.tags || [])) {
-    db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)').run(mtId, tag.label, tag.color || '#6366f1', tag.description || '')
+    db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description, category) VALUES (?,?,?,?,?)').run(mtId, tag.label, tag.color || '#6366f1', tag.description || '', tag.category || null)
   }
   db.prepare('DELETE FROM workspace_tabs WHERE media_type_id=?').run(mtId)
   for (let i = 0; i < (mt.workspace_tabs || []).length; i++) {
@@ -429,13 +432,13 @@ function _writeMediaTypeChildren(db, projectId, mtId, mt) {
 
 // Content shapes for tie-break hashing — only the synced fields that define an entity.
 function _localMediaTypeContent(db, row) {
-  const tags = db.prepare('SELECT label, color, description FROM timestamp_tags WHERE media_type_id=? ORDER BY label').all(row.id)
+  const tags = db.prepare('SELECT label, color, description, category FROM timestamp_tags WHERE media_type_id=? ORDER BY label').all(row.id)
   const tabs = db.prepare("SELECT tab_type, label, sort_order, ref_id FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order").all(row.id)
     .map(t => ({ tab_type: t.tab_type, label: t.label, sort_order: t.sort_order }))
   return { name: row.name, reviews_required: row.reviews_required, allow_custom_tags: row.allow_custom_tags ? 1 : 0, color: row.color, tags, tabs: tabs.length }
 }
 function _incomingMediaTypeContent(mt) {
-  const tags = (mt.tags || []).map(t => ({ label: t.label, color: t.color, description: t.description })).sort((a, b) => (a.label > b.label ? 1 : -1))
+  const tags = (mt.tags || []).map(t => ({ label: t.label, color: t.color, description: t.description, category: t.category || null })).sort((a, b) => (a.label > b.label ? 1 : -1))
   return { name: mt.name, reviews_required: mt.reviews_required, allow_custom_tags: mt.allow_custom_tags ? 1 : 0, color: mt.color, tags, tabs: (mt.workspace_tabs || []).length }
 }
 
@@ -716,9 +719,10 @@ function mergeReviewFile(db, projectId, reviewData, ownUuid) {
 
       if (existing) {
         // The file is the single authoritative source for this UUID's reviews — always replace
-        db.prepare("UPDATE reviews SET status=?, notes=?, reviewer_uuid=?, submitted_at=?, media_type_sync_id=?, media_type_version=?, workspace_snapshot=? WHERE id=?")
+        db.prepare("UPDATE reviews SET status=?, notes=?, reviewer_uuid=?, submitted_at=?, reopened_at=?, reopened_reason=?, previous_submitted_at=?, media_type_sync_id=?, media_type_version=?, workspace_snapshot=? WHERE id=?")
           .run(
             rev.status, rev.notes || '', reviewData.reviewer_uuid || null, rev.submitted_at,
+            rev.reopened_at || null, rev.reopened_reason || null, rev.previous_submitted_at || null,
             rev.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
             rev.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
             workspaceSnapshotJson,
@@ -731,10 +735,11 @@ function mergeReviewFile(db, projectId, reviewData, ownUuid) {
         continue
       }
 
-      const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, media_type_sync_id, media_type_version, workspace_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, reopened_at, reopened_reason, previous_submitted_at, media_type_sync_id, media_type_version, workspace_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .run(
           localMedia.id, reviewData.reviewer_name, reviewData.reviewer_uuid || null, rev.review_sync_id || crypto.randomUUID(),
           rev.status, rev.notes || '', rev.created_at, rev.submitted_at,
+          rev.reopened_at || null, rev.reopened_reason || null, rev.previous_submitted_at || null,
           rev.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
           rev.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
           workspaceSnapshotJson
@@ -1155,6 +1160,9 @@ function buildReviewStateExport(db, projectId) {
       notes: rev.notes || '',
       created_at: rev.created_at,
       submitted_at: rev.submitted_at || null,
+      reopened_at: rev.reopened_at || null,
+      reopened_reason: rev.reopened_reason || null,
+      previous_submitted_at: rev.previous_submitted_at || null,
       deleted_at: rev.deleted_at || null,
       restored_at: rev.restored_at || null,
       media_type_sync_id: rev.media_type_sync_id || null,
@@ -1163,6 +1171,8 @@ function buildReviewStateExport(db, projectId) {
       updated_at: maxClock(
         rev.created_at,
         rev.submitted_at,
+        rev.reopened_at,
+        rev.previous_submitted_at,
         rev.deleted_at,
         rev.restored_at,
         workspaceSnapshot?.captured_at,
@@ -1294,6 +1304,9 @@ function canonicalizeProjectState(state) {
       notes: rev.notes || '',
       created_at: rev.created_at,
       submitted_at: rev.submitted_at || null,
+      reopened_at: rev.reopened_at || null,
+      reopened_reason: rev.reopened_reason || null,
+      previous_submitted_at: rev.previous_submitted_at || null,
       deleted_at: rev.deleted_at || null,
       restored_at: rev.restored_at || null,
       media_type_sync_id: rev.media_type_sync_id || null,
@@ -1397,6 +1410,9 @@ function buildReviewHash(review) {
     notes: review.notes || '',
     created_at: review.created_at,
     submitted_at: review.submitted_at || null,
+    reopened_at: review.reopened_at || null,
+    reopened_reason: review.reopened_reason || null,
+    previous_submitted_at: review.previous_submitted_at || null,
     deleted_at: review.deleted_at || null,
     restored_at: review.restored_at || null,
     media_type_sync_id: review.media_type_sync_id || null,
@@ -1492,12 +1508,13 @@ function applyReviewState(db, projectId, review, { merge = false, localReviewLoo
     db.prepare(`
       UPDATE reviews
       SET media_file_id=?, reviewer_name=?, reviewer_uuid=?, review_sync_id=COALESCE(review_sync_id, ?),
-          status=?, notes=?, created_at=?, submitted_at=?, deleted_at=?, restored_at=?,
+          status=?, notes=?, created_at=?, submitted_at=?, reopened_at=?, reopened_reason=?, previous_submitted_at=?, deleted_at=?, restored_at=?,
           media_type_sync_id=?, media_type_version=?, workspace_snapshot=?
       WHERE id=?
     `).run(
       localMedia.id, review.reviewer_name, review.reviewer_uuid || null, review.review_sync_id || null,
       review.status, review.notes || '', review.created_at, review.submitted_at || null,
+      review.reopened_at || null, review.reopened_reason || null, review.previous_submitted_at || null,
       review.deleted_at || null, review.restored_at || null,
       review.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
       review.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
@@ -1530,11 +1547,12 @@ function applyReviewState(db, projectId, review, { merge = false, localReviewLoo
   }
 
   const r = db.prepare(`
-    INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, deleted_at, restored_at, media_type_sync_id, media_type_version, workspace_snapshot)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, reopened_at, reopened_reason, previous_submitted_at, deleted_at, restored_at, media_type_sync_id, media_type_version, workspace_snapshot)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     localMedia.id, review.reviewer_name, review.reviewer_uuid || null, review.review_sync_id || crypto.randomUUID(),
     review.status, review.notes || '', review.created_at, review.submitted_at || null,
+    review.reopened_at || null, review.reopened_reason || null, review.previous_submitted_at || null,
     review.deleted_at || null, review.restored_at || null,
     review.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
     review.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
@@ -2096,7 +2114,19 @@ async function _doCloudSync(db, projectId, provider, folderId, uuid, name, optio
 function buildReviewsWorkbook(db, projectId) {
   const XLSX = require('xlsx')
   const wb = XLSX.utils.book_new()
-  const FIXED = ['Review ID', 'Encounter', 'Media File', 'Reviewer', 'Status', 'Created At', 'Submitted At', 'Review Notes']
+  const FIXED = ['Review ID', 'Encounter', 'Media File', 'Reviewer', 'Status', 'Created At', 'Submitted At', 'Reopened At', 'Reopened Reason', 'Previous Submitted At', 'Review Notes']
+  const AGREEMENT_METHOD_LABELS = {
+    auto: 'Auto',
+    percent: 'Percent agreement',
+    cohen_kappa: "Cohen's kappa",
+    weighted_kappa: 'Weighted kappa',
+    ordinal: 'Ordinal distance',
+    numeric: 'Numeric distance',
+    set_overlap: 'Set overlap',
+    timestamp: 'Timestamp tolerance',
+    exact_text: 'Exact text match',
+    item_group: 'Item-level agreement',
+  }
 
   function sheetName(base, suffix) {
     // Excel sheet name limit: 31 chars. Reserve space for suffix so pairs never collide.
@@ -2174,6 +2204,33 @@ function buildReviewsWorkbook(db, projectId) {
     if (el.type === 'short_answer' || el.type === 'paragraph') return withNA('Free text')
     if (el.type === 'table') return 'Table grid'
     return ''
+  }
+
+  function defaultAgreementEnabledForType(type) {
+    return !['text_block', 'short_answer', 'paragraph'].includes(type)
+  }
+
+  function defaultAgreementMethodForType(type) {
+    if (type === 'multiselect') return 'set_overlap'
+    if (type === 'timestamp_select') return 'timestamp'
+    if (type === 'likert_group' || type === 'table') return 'item_group'
+    if (type === 'likert' || type === 'rating') return 'ordinal'
+    if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return 'numeric'
+    if (type === 'short_answer' || type === 'paragraph') return 'exact_text'
+    return 'percent'
+  }
+
+  function agreementInfoForElement(el = {}) {
+    const enabled = el.agreement_enabled ?? defaultAgreementEnabledForType(el.type)
+    const rawMethod = el.agreement_method || 'auto'
+    const method = rawMethod === 'auto' ? defaultAgreementMethodForType(el.type) : rawMethod
+    const weight = typeof el.agreement_weight === 'number' ? el.agreement_weight : (el.type === 'table' ? 0.6 : 1)
+    return {
+      enabled: enabled ? 'Yes' : 'No',
+      method,
+      methodLabel: AGREEMENT_METHOD_LABELS[method] || method,
+      weight: enabled ? weight : 0,
+    }
   }
 
   function validValuesForTableColumn(col) {
@@ -2296,6 +2353,7 @@ function buildReviewsWorkbook(db, projectId) {
   const seenMediaFiles = new Set()
 
   function codebookRow(mediaTypeName, form, section, el, component) {
+    const agreement = agreementInfoForElement(el || {})
     return {
       'Media Type': mediaTypeName,
       'Form ID': form?.syncId || form?.id || '',
@@ -2312,6 +2370,10 @@ function buildReviewsWorkbook(db, projectId) {
       'Column Header': component?.header || '',
       'Valid Values': component?.validValues || validValuesForElement(el || {}),
       'Required': el?.required ? 'Yes' : 'No',
+      'Agreement Included': agreement.enabled,
+      'Agreement Method': agreement.methodLabel,
+      'Agreement Method ID': agreement.method,
+      'Agreement Weight': agreement.weight,
     }
   }
 
@@ -2630,6 +2692,9 @@ function buildReviewsWorkbook(db, projectId) {
             'Status': rev.status === 'submitted' ? 'Submitted' : 'Draft',
             'Created At': rev.created_at,
             'Submitted At': rev.submitted_at || '',
+            'Reopened At': rev.reopened_at || '',
+            'Reopened Reason': rev.reopened_reason || '',
+            'Previous Submitted At': rev.previous_submitted_at || '',
             'Review Notes': rev.notes || '',
           }
           for (const qc of qCols) {
@@ -2641,6 +2706,9 @@ function buildReviewsWorkbook(db, projectId) {
             'Status': rev.status === 'submitted' ? 'Submitted' : 'Draft',
             'Created At': rev.created_at,
             'Submitted At': rev.submitted_at || '',
+            'Reopened At': rev.reopened_at || '',
+            'Reopened Reason': rev.reopened_reason || '',
+            'Previous Submitted At': rev.previous_submitted_at || '',
             'Review Notes': rev.notes || '',
           })
 
@@ -2725,11 +2793,11 @@ function buildReviewsWorkbook(db, projectId) {
     ['Export Format Version', '3'],
     [],
     ['Sheet', 'Description'],
-    ['Reviews', 'One row per non-deleted review. Stable IDs are included for joins.'],
+    ['Reviews', 'One row per non-deleted review. Stable IDs, submitted/reopened timestamps, and reopen reasons are included for audit trails.'],
     ['Responses_Long', 'Canonical analysis sheet: one row per answer/component. This is the safest sheet for R, Python, SPSS, and future question types. Each answer is recorded against the form version the review was actually filled with, so old labels are preserved after a form is edited.'],
     ['Media_Files', 'One row per media file included in the export.'],
     ['Timestamps', 'One row per timestamp logged during review.'],
-    ['Codebook', 'One row per exported question/component: stable IDs, labels, type, valid values, the matching wide column header, the current form version, and "In Current Form" (No = the question was answered under an older form version and has since been removed).'],
+    ['Codebook', 'One row per exported question/component: stable IDs, labels, type, valid values, agreement inclusion/method/weight, the matching wide column header, the current form version, and "In Current Form" (No = the question was answered under an older form version and has since been removed).'],
     ['<Media Type> Reviews', 'Readable wide convenience sheets: one row per review and one column per question/component. Columns ending in "(removed)" hold answers to questions that no longer exist in the current form — no answered data is dropped when forms or media types are edited.'],
     ['<Media Type> Timestamps', 'Readable per-media timestamp convenience sheets.'],
     [],
@@ -2741,11 +2809,12 @@ function buildReviewsWorkbook(db, projectId) {
     'Section ID', 'Section', 'Question ID',
     'Question Label', 'Question Type', 'Component ID', 'Component Label',
     'Column Header', 'Valid Values', 'Required',
+    'Agreement Included', 'Agreement Method', 'Agreement Method ID', 'Agreement Weight',
   ])
   appendSheet('Reviews', normalizedReviewRows, [
     'Review ID', 'Encounter ID', 'Encounter', 'Media File ID', 'Media File',
     'Media Type ID', 'Media Type', 'Reviewer', 'Status', 'Created At',
-    'Submitted At', 'Review Notes',
+    'Submitted At', 'Reopened At', 'Reopened Reason', 'Previous Submitted At', 'Review Notes',
   ])
   appendSheet('Responses_Long', normalizedResponseRows, [
     'Review ID', 'Encounter ID', 'Encounter', 'Media File ID', 'Media File',
@@ -2838,6 +2907,9 @@ function buildExport(db, projectId) {
             notes: rev.notes,
             created_at: rev.created_at,
             submitted_at: rev.submitted_at,
+            reopened_at: rev.reopened_at || null,
+            reopened_reason: rev.reopened_reason || null,
+            previous_submitted_at: rev.previous_submitted_at || null,
             media_type_sync_id: rev.media_type_sync_id || null,
             media_type_version: rev.media_type_version || null,
             workspace_snapshot: rev.workspace_snapshot ? safeJsonParse(rev.workspace_snapshot, null) : null,
@@ -3021,9 +3093,10 @@ function mergeImport(db, projectId, data) {
 
           if (existing) {
             if (rev.status === 'submitted' && existing.status === 'in_progress') {
-              db.prepare("UPDATE reviews SET status=?, notes=?, reviewer_uuid=?, submitted_at=?, media_type_sync_id=?, media_type_version=?, workspace_snapshot=? WHERE id=?")
+              db.prepare("UPDATE reviews SET status=?, notes=?, reviewer_uuid=?, submitted_at=?, reopened_at=?, reopened_reason=?, previous_submitted_at=?, media_type_sync_id=?, media_type_version=?, workspace_snapshot=? WHERE id=?")
                 .run(
                   rev.status, rev.notes || '', rev.reviewer_uuid || null, rev.submitted_at,
+                  rev.reopened_at || null, rev.reopened_reason || null, rev.previous_submitted_at || null,
                   rev.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
                   rev.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
                   workspaceSnapshotJson,
@@ -3038,10 +3111,11 @@ function mergeImport(db, projectId, data) {
             continue
           }
 
-          const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, media_type_sync_id, media_type_version, workspace_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+          const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, reopened_at, reopened_reason, previous_submitted_at, media_type_sync_id, media_type_version, workspace_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
             .run(
               localMedia.id, rev.reviewer_name, rev.reviewer_uuid || null, rev.review_sync_id || crypto.randomUUID(),
               rev.status, rev.notes || '', rev.created_at, rev.submitted_at,
+              rev.reopened_at || null, rev.reopened_reason || null, rev.previous_submitted_at || null,
               rev.media_type_sync_id || localizedWorkspaceSnapshot?.media_type?.sync_id || null,
               rev.media_type_version || localizedWorkspaceSnapshot?.media_type?.version || null,
               workspaceSnapshotJson

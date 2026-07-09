@@ -4,6 +4,40 @@ const { getOrCreateUUID } = require('../settings')
 const { buildWorkspaceSnapshot, getFormSnapshotFromReview, currentFormSnapshot } = require('../services/snapshots')
 
 module.exports = function (ipcMain) {
+  ipcMain.handle('reviews:projectAgreementData', (_, projectId) => {
+    const db = getDb()
+    const reviews = db.prepare(`
+      SELECT r.id, r.reviewer_name, r.status, r.media_file_id, r.created_at,
+             mf.name as media_name, mf.encounter_id,
+             e.name as encounter_name
+      FROM reviews r
+      JOIN media_files mf ON r.media_file_id = mf.id
+      JOIN encounters e ON mf.encounter_id = e.id
+      WHERE e.project_id=? AND r.deleted_at IS NULL
+      ORDER BY e.name, mf.name, r.created_at
+    `).all(projectId)
+
+    const result = []
+    for (const review of reviews) {
+      const formResponses = db.prepare(`
+        SELECT fr.form_id, fr.responses, fr.form_snapshot, f.schema as current_schema
+        FROM form_responses fr
+        LEFT JOIN forms f ON fr.form_id = f.id
+        WHERE fr.review_id=?
+      `).all(review.id)
+      result.push({
+        ...review,
+        form_responses: formResponses.map(fr => ({
+          form_id: fr.form_id,
+          responses: fr.responses ? JSON.parse(fr.responses) : {},
+          form_snapshot: fr.form_snapshot ? JSON.parse(fr.form_snapshot) : (fr.current_schema ? JSON.parse(fr.current_schema) : null),
+        })),
+      })
+    }
+
+    return result
+  })
+
   ipcMain.handle('reviews:list', (_, mediaFileId) => {
     const db = getDb()
     return db.prepare('SELECT * FROM reviews WHERE media_file_id=? AND deleted_at IS NULL ORDER BY created_at').all(mediaFileId)

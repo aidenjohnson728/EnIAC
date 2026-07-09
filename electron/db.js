@@ -140,6 +140,7 @@ function migrate(db) {
     "ALTER TABLE instructions ADD COLUMN content_type TEXT NOT NULL DEFAULT 'markdown'",
     "ALTER TABLE instructions ADD COLUMN file_path TEXT",
     "ALTER TABLE timestamps ADD COLUMN tag_color TEXT",
+    "ALTER TABLE timestamp_tags ADD COLUMN category TEXT",
     "ALTER TABLE projects ADD COLUMN keybinds TEXT DEFAULT '[]'",
     "ALTER TABLE projects ADD COLUMN sync_folder TEXT",
     "ALTER TABLE projects ADD COLUMN owner_name TEXT",
@@ -209,6 +210,9 @@ function migrate(db) {
     "ALTER TABLE reviews ADD COLUMN media_type_sync_id TEXT",
     "ALTER TABLE reviews ADD COLUMN media_type_version INTEGER",
     "ALTER TABLE reviews ADD COLUMN workspace_snapshot TEXT",
+    "ALTER TABLE reviews ADD COLUMN reopened_at TEXT",
+    "ALTER TABLE reviews ADD COLUMN reopened_reason TEXT",
+    "ALTER TABLE reviews ADD COLUMN previous_submitted_at TEXT",
     "ALTER TABLE form_responses ADD COLUMN form_sync_id TEXT",
     "ALTER TABLE form_responses ADD COLUMN form_version INTEGER",
     "ALTER TABLE form_responses ADD COLUMN form_snapshot TEXT",
@@ -324,7 +328,10 @@ function initSchema(db) {
       status TEXT NOT NULL DEFAULT 'in_progress',
       notes TEXT,
       created_at TEXT DEFAULT (datetime('now')),
-      submitted_at TEXT
+      submitted_at TEXT,
+      reopened_at TEXT,
+      reopened_reason TEXT,
+      previous_submitted_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS timestamps (

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import { SETUP_SECTIONS } from '../lib/setupSections'
+import { AGREEMENT_METHOD_LABELS, computeInterraterAgreementForMediaFile } from '../lib/interraterAgreement.mjs'
 import Modal from '../components/ui/Modal'
 import NewReviewModal from '../components/encounters/NewReviewModal'
 import FilterPanel from '../components/encounters/FilterPanel'
@@ -713,7 +714,7 @@ export default function ProjectPage() {
           {activePage === 'activity' && <ActivityView encounters={encounters} />}
 
           {/* ── DATA VISUALIZATION ── */}
-          {activePage === 'dataviz' && <DataVizView />}
+          {activePage === 'dataviz' && <DataVizView projectId={projectId} />}
 
         </div>
       </div>
@@ -945,6 +946,12 @@ function linkStatusBadge(status) {
   return <span style={{ fontSize: 10, fontWeight: 600, color: '#d97706', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 3, padding: '1px 5px' }}>Not linked</span>
 }
 
+function reopenedReasonLabel(reason) {
+  if (reason === 'form_version_changed') return 'Reopened after form update'
+  if (reason === 'media_type_version_changed') return 'Reopened after media type update'
+  return 'Reopened'
+}
+
 function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onManualLink, onMarkNA, onClearLink, linkSaving, isFirst }) {
   const Icon = MEDIA_ICONS[mediaFile.file_type] || File
   const required = mediaFile.reviews_required
@@ -1020,6 +1027,11 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
               <Play size={9} />
               {r.reviewer_name}
               {r.status === 'submitted' && <CheckCircle2 size={9} color="var(--success)" />}
+              {r.status !== 'submitted' && r.reopened_at && (
+                <span title={reopenedReasonLabel(r.reopened_reason)} style={{ fontSize: 9, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 3, padding: '0 4px' }}>
+                  Reopened
+                </span>
+              )}
             </button>
             <button
               onClick={() => onDeleteReview(r)}
@@ -1224,19 +1236,111 @@ function ActivityView({ encounters }) {
 }
 
 // ── Data Visualization View ───────────────────────────────────────────────────
-function DataVizView() {
+function DataVizView({ projectId }) {
+  const [agreementRows, setAgreementRows] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!projectId) return
+    let active = true
+    async function load() {
+      setLoading(true)
+      try {
+        const raw = await api.getProjectInterraterAgreementData(projectId)
+        if (!active) return
+        const grouped = new Map()
+        for (const review of raw || []) {
+          if (!review?.form_responses?.length) continue
+          const key = `${review.media_file_id}`
+          if (!grouped.has(key)) {
+            grouped.set(key, { mediaName: review.media_name, encounterName: review.encounter_name, reviews: [] })
+          }
+          grouped.get(key).reviews.push(review)
+        }
+        const rows = Array.from(grouped.values()).map(entry => computeInterraterAgreementForMediaFile({
+          mediaName: entry.mediaName,
+          encounterName: entry.encounterName,
+          reviewDetails: entry.reviews,
+        })).filter(item => item.reviewCount >= 2)
+        rows.sort((a, b) => (b.overallAgreement ?? -1) - (a.overallAgreement ?? -1))
+        setAgreementRows(rows)
+      } catch {
+        setAgreementRows([])
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    load()
+    return () => { active = false }
+  }, [projectId])
+
+  const scoredAgreementRows = agreementRows.filter(row => row.overallAgreement != null)
+  const averageAgreement = scoredAgreementRows.length > 0
+    ? scoredAgreementRows.reduce((sum, row) => sum + row.overallAgreement, 0) / scoredAgreementRows.length
+    : null
+
   return (
-    <div style={{ maxWidth: 600 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Data Visualization</h1>
-      <p className="text-secondary text-sm" style={{ marginBottom: 32 }}>Charts and analysis coming soon.</p>
-      <div style={{
-        border: '2px dashed var(--border)', borderRadius: 12,
-        padding: '64px 32px', textAlign: 'center', color: 'var(--text-muted)',
-      }}>
-        <LineChart size={40} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
-        <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>Nothing here yet</p>
-        <p style={{ fontSize: 13 }}>This is where charts and data analysis will live.</p>
+    <div style={{ maxWidth: 860 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 20 }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Data Visualization</h1>
+          <p className="text-secondary text-sm" style={{ margin: 0 }}>Interrater agreement by video, using the agreement settings saved on each form question.</p>
+        </div>
       </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
+        <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Videos Compared</div>
+          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{agreementRows.length}</div>
+        </div>
+        <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Average Agreement</div>
+          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{averageAgreement == null ? '—' : `${Math.round(averageAgreement * 100)}%`}</div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="empty-state"><p>Calculating agreement…</p></div>
+      ) : agreementRows.length === 0 ? (
+        <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
+          <LineChart size={38} style={{ margin: '0 auto 14px', opacity: 0.35 }} />
+          <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>No multi-review video comparisons yet</p>
+          <p style={{ fontSize: 13 }}>Submit at least two reviews for the same video to see interrater agreement here.</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {agreementRows.map(row => (
+            <div key={`${row.encounterName}-${row.mediaName}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mediaName}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    {row.encounterName} · {row.reviewCount} reviews
+                    {row.excludedQuestionCount > 0 ? ` · ${row.excludedQuestionCount} excluded` : ''}
+                  </div>
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: row.overallAgreement >= 0.8 ? 'var(--success)' : row.overallAgreement >= 0.6 ? 'var(--accent)' : 'var(--danger)' }}>
+                  {row.overallAgreement == null ? '—' : `${Math.round(row.overallAgreement * 100)}%`}
+                </div>
+              </div>
+              {row.questions.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {row.questions.slice(0, 6).map(question => (
+                    <div key={`${row.mediaName}-${question.label}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '6px 8px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
+                      <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{question.label}</span>
+                      <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                        {AGREEMENT_METHOD_LABELS[question.method] || question.type} · w{question.weight ?? 1} · {Math.round((question.agreement || 0) * 100)}%
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No comparable form questions were found for this video.</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -15,6 +15,154 @@ function tmpDir(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)) 
 
 // ─── Config export/import round-trip ────────────────────────────────────────────
 
+test('agreement: nested form schema snapshots produce comparable questions', async () => {
+  const { computeInterraterAgreementForMediaFile } = await import('../src/lib/interraterAgreement.mjs')
+  const result = computeInterraterAgreementForMediaFile({
+    mediaName: 'Visit A',
+    encounterName: 'Encounter 1',
+    reviewDetails: [{
+      form_responses: [{
+        form_id: 7,
+        responses: { q1: 'Yes' },
+        form_snapshot: {
+          id: 7,
+          schema: {
+            sections: [{
+              id: 's1',
+              title: 'Section 1',
+              elements: [{ id: 'q1', type: 'multiple_choice', label: 'Question 1' }],
+            }],
+          },
+        },
+      }],
+    }, {
+      form_responses: [{
+        form_id: 7,
+        responses: { q1: 'Yes' },
+        form_snapshot: {
+          id: 7,
+          schema: {
+            sections: [{
+              id: 's1',
+              title: 'Section 1',
+              elements: [{ id: 'q1', type: 'multiple_choice', label: 'Question 1' }],
+            }],
+          },
+        },
+      }],
+    }],
+  })
+
+  assert.strictEqual(result.questionCount, 1)
+  assert.strictEqual(result.questions[0].label, 'Question 1')
+})
+
+test('agreement: likert_group responses use graded item-level agreement', async () => {
+  const { computeAgreementForQuestion } = await import('../src/lib/interraterAgreement.mjs')
+  const result = computeAgreementForQuestion('likert_group', [{ a: 1, b: 2, c: 3, d: 4, e: 5 }, { a: 1, b: 2, c: 3, d: 4, e: 4 }], { default: 1 }, { scale: 5 })
+  assert.strictEqual(result.score, 0.95)
+})
+
+test('agreement: likert_group supports weighted kappa method item-by-item', async () => {
+  const { computeAgreementForQuestion } = await import('../src/lib/interraterAgreement.mjs')
+  const result = computeAgreementForQuestion(
+    'likert_group',
+    [{ a: 1, b: 2, c: 5 }, { a: 1, b: 3, c: 4 }],
+    { default: 1 },
+    { scale: 5, agreement_method: 'weighted_kappa' }
+  )
+  assert.strictEqual(result.method, 'weighted_kappa')
+  assert.strictEqual(result.score, 0.9583333333333334)
+})
+
+test('agreement: categorical disagreement is not counted as half agreement', async () => {
+  const { computeAgreementForQuestion } = await import('../src/lib/interraterAgreement.mjs')
+  const result = computeAgreementForQuestion('multiple_choice', ['Yes', 'No'])
+  assert.strictEqual(result.score, 0)
+})
+
+test('agreement: multiselect responses use set overlap', async () => {
+  const { computeAgreementForQuestion } = await import('../src/lib/interraterAgreement.mjs')
+  const result = computeAgreementForQuestion('multiselect', [['A', 'B'], ['B', 'C']])
+  assert.strictEqual(result.score, 1 / 3)
+})
+
+test('agreement: per-question weights are preserved in overall score', async () => {
+  const { computeInterraterAgreementForMediaFile } = await import('../src/lib/interraterAgreement.mjs')
+  const schema = {
+    schema: {
+      sections: [{
+        id: 's1',
+        elements: [
+          { id: 'important', type: 'multiple_choice', label: 'Important' },
+          { id: 'ignored', type: 'multiple_choice', label: 'Ignored' },
+        ],
+      }],
+    },
+  }
+  const result = computeInterraterAgreementForMediaFile({
+    reviewDetails: [{
+      form_responses: [{ form_id: 10, form_snapshot: schema, responses: { important: 'Yes', ignored: 'A' } }],
+    }, {
+      form_responses: [{ form_id: 10, form_snapshot: schema, responses: { important: 'Yes', ignored: 'B' } }],
+    }],
+    weights: {
+      questionTypeWeights: { default: 1 },
+      questionWeights: { 10: { ignored: 0 } },
+    },
+  })
+  assert.strictEqual(result.overallAgreement, 1)
+})
+
+test('agreement: text questions are excluded by default', async () => {
+  const { computeAgreementForQuestion } = await import('../src/lib/interraterAgreement.mjs')
+  const result = computeAgreementForQuestion('short_answer', ['same', 'same'])
+  assert.strictEqual(result, null)
+})
+
+test('agreement: form question settings control inclusion, method, and weight', async () => {
+  const { computeInterraterAgreementForMediaFile } = await import('../src/lib/interraterAgreement.mjs')
+  const schema = {
+    schema: {
+      sections: [{
+        id: 's1',
+        elements: [
+          { id: 'scored', type: 'multiple_choice', label: 'Scored', agreement_enabled: true, agreement_weight: 2, agreement_method: 'percent' },
+          { id: 'excluded', type: 'multiple_choice', label: 'Excluded', agreement_enabled: false, agreement_weight: 10 },
+          { id: 'text', type: 'short_answer', label: 'Text', agreement_enabled: true, agreement_weight: 1, agreement_method: 'exact_text' },
+        ],
+      }],
+    },
+  }
+  const result = computeInterraterAgreementForMediaFile({
+    reviewDetails: [{
+      form_responses: [{ form_id: 11, form_snapshot: schema, responses: { scored: 'Yes', excluded: 'A', text: 'Matched' } }],
+    }, {
+      form_responses: [{ form_id: 11, form_snapshot: schema, responses: { scored: 'No', excluded: 'B', text: ' matched ' } }],
+    }],
+  })
+
+  assert.strictEqual(result.questionCount, 2)
+  assert.deepStrictEqual(result.questions.map(q => q.label).sort(), ['Scored', 'Text'])
+  assert.strictEqual(result.questions.find(q => q.label === 'Scored').weight, 2)
+  assert.strictEqual(result.questions.find(q => q.label === 'Text').method, 'exact_text')
+  assert.strictEqual(result.overallAgreement, 1 / 3)
+})
+
+test('config: timestamp tag categories survive export', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const mtId = addMediaType(db, p, 'Video')
+  db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description, category) VALUES (?,?,?,?,?)')
+    .run(mtId, 'Greeting', '#111111', '', 'Communication')
+
+  const config = sync.buildConfigExport(db, p)
+  const mt = config.media_types.find(m => m.name === 'Video')
+
+  assert.deepStrictEqual(mt.tags, [{ label: 'Greeting', color: '#111111', description: '', category: 'Communication' }])
+  db.close()
+})
+
 test('config: buildConfigExport → mergeConfigImport replicates structure', () => {
   const src = makeDb()
   const p1 = createProject(src, 'Study A')
@@ -440,6 +588,9 @@ test('reviews report: builds readable wide sheets plus normalized research sheet
   assert.strictEqual(codebook[0]['Form ID'], 'form-intake')
   assert.strictEqual(codebook[0]['Question ID'], 'q1')
   assert.strictEqual(codebook[0]['Column Header'], '[Intake] Outcome')
+  assert.strictEqual(codebook[0]['Agreement Included'], 'Yes')
+  assert.strictEqual(codebook[0]['Agreement Method ID'], 'percent')
+  assert.strictEqual(codebook[0]['Agreement Weight'], 1)
 
   const allTs = XLSX.utils.sheet_to_json(wb.Sheets.Timestamps)
   assert.strictEqual(allTs[0]['Time (seconds)'], 65)
@@ -577,6 +728,45 @@ test('version history: form edits can be restored as a new latest version', () =
   db.close()
 })
 
+test('version history: restoring a form applies to reviews and unsubmits submitted reviews', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const formId = addForm(db, p, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'Old label' }] }],
+  }, { sync_id: 'form-intake' })
+  const mtId = addMediaType(db, p, 'Video', { sync_id: 'mt-video' })
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId })
+  const oldSnap = snapshots.buildWorkspaceSnapshot(db, media.id)
+  const submitted = addReview(db, media.id, 'Alice', { status: 'submitted', submitted_at: '2024-01-01T00:00:00.000Z' })
+  db.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+    .run(JSON.stringify(oldSnap), oldSnap.media_type.sync_id, oldSnap.media_type.version, submitted.id)
+  db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+    .run(submitted.id, formId, JSON.stringify({ q1: 'kept' }), 'form-intake', 1, JSON.stringify(oldSnap.forms[String(formId)]))
+
+  structure.saveForm(db, p, {
+    id: formId,
+    name: 'Intake',
+    schema: { sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'New label' }] }] },
+  })
+  db.prepare("UPDATE reviews SET status='submitted', submitted_at=? WHERE id=?").run('2024-01-02T00:00:00.000Z', submitted.id)
+
+  structure.restoreVersion(db, p, 'form', formId, 1)
+
+  const review = db.prepare('SELECT status, submitted_at, reopened_at, reopened_reason, previous_submitted_at FROM reviews WHERE id=?').get(submitted.id)
+  const fr = db.prepare('SELECT form_version, form_snapshot, responses FROM form_responses WHERE review_id=?').get(submitted.id)
+  assert.strictEqual(review.status, 'in_progress')
+  assert.strictEqual(review.submitted_at, null)
+  assert.ok(review.reopened_at)
+  assert.strictEqual(review.reopened_reason, 'form_version_changed')
+  assert.strictEqual(review.previous_submitted_at, '2024-01-02T00:00:00.000Z')
+  assert.strictEqual(fr.form_version, 3)
+  assert.strictEqual(JSON.parse(fr.form_snapshot).schema.sections[0].elements[0].label, 'Old label')
+  assert.strictEqual(JSON.parse(fr.responses).q1, 'kept')
+  db.close()
+})
+
 test('version history: form history is preserved through project-state sync', () => {
   const a = makeDb()
   const b = makeDb()
@@ -660,11 +850,8 @@ test('review migration: updates drafts to current snapshots without touching sub
       .run(rev.id, formId, JSON.stringify({ q1: 'kept' }), 'form-intake', 1, JSON.stringify(oldSnap.forms[String(formId)]))
   }
 
-  structure.saveForm(db, p, {
-    id: formId,
-    name: 'Intake',
-    schema: { sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'New label' }] }] },
-  })
+  db.prepare('UPDATE forms SET schema=?, schema_version=2 WHERE id=?')
+    .run(JSON.stringify({ sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'New label' }] }] }), formId)
   const result = snapshots.migrateStructureReviews(db, p, 'form', formId, 'drafts')
 
   assert.strictEqual(result.updated, 1)
@@ -675,6 +862,90 @@ test('review migration: updates drafts to current snapshots without touching sub
   assert.strictEqual(JSON.parse(draftFr.responses).q1, 'kept')
   assert.strictEqual(submittedFr.form_version, 1)
   db.close()
+})
+
+test('review migration: saving a form applies to all reviews and unsubmits submitted reviews', () => {
+  const db = makeDb()
+  const p = createProject(db, 'P')
+  const formId = addForm(db, p, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'Old label' }] }],
+  }, { sync_id: 'form-intake' })
+  const mtId = addMediaType(db, p, 'Video', { sync_id: 'mt-video' })
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Intake', sort_order: 0 })
+  const enc = addEncounter(db, p, 'Patient 1')
+  const media = addMedia(db, enc.id, 'visit.mp4', { media_type_id: mtId })
+  const oldSnap = snapshots.buildWorkspaceSnapshot(db, media.id)
+  const submitted = addReview(db, media.id, 'Alice', { status: 'submitted', submitted_at: '2024-01-01T00:00:00.000Z' })
+  db.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+    .run(JSON.stringify(oldSnap), oldSnap.media_type.sync_id, oldSnap.media_type.version, submitted.id)
+  db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+    .run(submitted.id, formId, JSON.stringify({ q1: 'kept' }), 'form-intake', 1, JSON.stringify(oldSnap.forms[String(formId)]))
+
+  structure.saveForm(db, p, {
+    id: formId,
+    name: 'Intake',
+    schema: { sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'New label' }] }] },
+  })
+
+  const review = db.prepare('SELECT status, submitted_at, reopened_at, reopened_reason, previous_submitted_at FROM reviews WHERE id=?').get(submitted.id)
+  const fr = db.prepare('SELECT form_version, form_snapshot, responses FROM form_responses WHERE review_id=?').get(submitted.id)
+  assert.strictEqual(review.status, 'in_progress')
+  assert.strictEqual(review.submitted_at, null)
+  assert.ok(review.reopened_at)
+  assert.strictEqual(review.reopened_reason, 'form_version_changed')
+  assert.strictEqual(review.previous_submitted_at, '2024-01-01T00:00:00.000Z')
+  assert.strictEqual(fr.form_version, 2)
+  assert.strictEqual(JSON.parse(fr.form_snapshot).schema.sections[0].elements[0].label, 'New label')
+  assert.strictEqual(JSON.parse(fr.responses).q1, 'kept')
+  db.close()
+})
+
+test('review migration: reopened review audit fields sync through project state', () => {
+  const a = makeDb()
+  const b = makeDb()
+  const pa = createProject(a, 'P')
+  const pb = createProject(b, 'P')
+  const formA = addForm(a, pa, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'Old label' }] }],
+  }, { sync_id: 'form-intake' })
+  const formB = addForm(b, pb, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'Old label' }] }],
+  }, { sync_id: 'form-intake' })
+  const mtA = addMediaType(a, pa, 'Video', { sync_id: 'mt-video' })
+  const mtB = addMediaType(b, pb, 'Video', { sync_id: 'mt-video' })
+  addWorkspaceTab(a, mtA, { tab_type: 'form', ref_id: formA, label: 'Intake', sort_order: 0 })
+  addWorkspaceTab(b, mtB, { tab_type: 'form', ref_id: formB, label: 'Intake', sort_order: 0 })
+  const encA = addEncounter(a, pa, 'Patient 1', 'enc-1')
+  const encB = addEncounter(b, pb, 'Patient 1', 'enc-1')
+  const mediaA = addMedia(a, encA.id, 'visit.mp4', { sync_id: 'media-1', media_type_id: mtA })
+  addMedia(b, encB.id, 'visit.mp4', { sync_id: 'media-1', media_type_id: mtB })
+  const oldSnap = snapshots.buildWorkspaceSnapshot(a, mediaA.id)
+  const reviewA = addReview(a, mediaA.id, 'Alice', {
+    status: 'submitted',
+    review_sync_id: 'review-1',
+    submitted_at: '2024-01-01T00:00:00.000Z',
+  })
+  a.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+    .run(JSON.stringify(oldSnap), oldSnap.media_type.sync_id, oldSnap.media_type.version, reviewA.id)
+  a.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
+    .run(reviewA.id, formA, JSON.stringify({ q1: 'kept' }), 'form-intake', 1, JSON.stringify(oldSnap.forms[String(formA)]))
+
+  structure.saveForm(a, pa, {
+    id: formA,
+    name: 'Intake',
+    schema: { sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'short_answer', label: 'New label' }] }] },
+  })
+
+  const state = sync.buildProjectStateExport(a, pa)
+  sync.mergeProjectStateImport(b, pb, state, { merge: true })
+  const synced = b.prepare('SELECT status, submitted_at, reopened_at, reopened_reason, previous_submitted_at FROM reviews WHERE review_sync_id=?').get('review-1')
+  assert.strictEqual(synced.status, 'in_progress')
+  assert.strictEqual(synced.submitted_at, null)
+  assert.ok(synced.reopened_at)
+  assert.strictEqual(synced.reopened_reason, 'form_version_changed')
+  assert.strictEqual(synced.previous_submitted_at, '2024-01-01T00:00:00.000Z')
+  a.close()
+  b.close()
 })
 
 test('review migration: apply-all wins over stale synced review state without conflict', () => {

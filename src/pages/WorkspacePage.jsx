@@ -21,6 +21,12 @@ function hydrateWorkspaceSnapshot(snapshot) {
   }
 }
 
+function reopenedReasonLabel(reason) {
+  if (reason === 'form_version_changed') return 'Reopened after form update'
+  if (reason === 'media_type_version_changed') return 'Reopened after media type update'
+  return 'Reopened'
+}
+
 export default function WorkspacePage() {
   const { reviewId } = useParams()
 
@@ -199,6 +205,11 @@ export default function WorkspacePage() {
             {mediaFile?.name}
           </span>
           {submitted && <span className="badge badge-success"><CheckCircle2 size={10} /> Submitted</span>}
+          {!submitted && review?.reopened_at && (
+            <span className="badge badge-muted" title={reopenedReasonLabel(review.reopened_reason)} style={{ color: '#b45309', background: '#fffbeb', borderColor: '#fde68a' }}>
+              <AlertCircle size={10} /> Reopened
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 6, WebkitAppRegion: 'no-drag' }}>
           {submitted ? (

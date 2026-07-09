@@ -389,6 +389,78 @@ function NAToggle({ selected, onChange, readOnly, compact = false }) {
   )
 }
 
+function DialControl({ value, min, max, step, disabled, onChange, label }) {
+  const safeValue = Number.isFinite(value) ? value : min
+  const bounded = Math.min(max, Math.max(min, safeValue))
+  const pct = max === min ? 0 : ((bounded - min) / (max - min)) * 100
+  const angle = -135 + (pct / 100) * 270
+
+  function adjust(delta) {
+    if (disabled) return
+    const next = bounded + delta
+    onChange(Math.min(max, Math.max(min, next)))
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, minWidth: 92 }}>
+      <div
+        tabIndex={disabled ? -1 : 0}
+        onWheel={e => { e.preventDefault(); adjust(e.deltaY < 0 ? step : -step) }}
+        onKeyDown={e => {
+          if (disabled) return
+          if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); adjust(step) }
+          if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); adjust(-step) }
+        }}
+        style={{ cursor: disabled ? 'default' : 'grab', outline: 'none' }}
+      >
+        <svg width="72" height="72" viewBox="0 0 100 100" aria-label={label || 'Dial'}>
+          <circle cx="50" cy="50" r="36" stroke="rgba(255,255,255,0.16)" strokeWidth="10" fill="none" />
+          <circle
+            cx="50"
+            cy="50"
+            r="36"
+            stroke="var(--accent)"
+            strokeWidth="10"
+            fill="none"
+            strokeLinecap="round"
+            strokeDasharray={2 * Math.PI * 36}
+            strokeDashoffset={2 * Math.PI * 36 * (1 - pct / 100)}
+          />
+          <line x1="50" y1="50" x2="50" y2="18" stroke="#fff" strokeWidth="3" strokeLinecap="round" transform={`rotate(${angle} 50 50)`} />
+          <circle cx="50" cy="50" r="10" fill="#fff" />
+        </svg>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.2 }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>{bounded}</div>
+    </div>
+  )
+}
+
+function VerticalSliderControl({ value, min, max, step, disabled, onChange, label }) {
+  const safeValue = Number.isFinite(value) ? value : min
+  const bounded = Math.min(max, Math.max(min, safeValue))
+  const pct = max === min ? 0 : ((bounded - min) / (max - min)) * 100
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, minWidth: 92 }}>
+      <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={bounded}
+          disabled={disabled}
+          onChange={e => onChange(Number(e.target.value))}
+          style={{ height: 140, width: 140, transform: 'rotate(-90deg)', accentColor: 'var(--accent)', cursor: disabled ? 'default' : 'pointer' }}
+        />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.2 }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>{bounded}</div>
+      <div style={{ width: 42, height: 6, borderRadius: 99, background: `linear-gradient(90deg, var(--accent) 0%, var(--accent) ${pct}%, rgba(255,255,255,0.12) ${pct}%, rgba(255,255,255,0.12) 100%)` }} />
+    </div>
+  )
+}
+
 function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
   if (el.type === 'text_block') {
     return (
@@ -611,6 +683,65 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
           <span>{el.low_label || min}</span><span>{el.high_label || max}</span>
         </div>
         {el.has_na && <div style={{ marginTop: 6 }}><NAToggle selected={na} onChange={onChange} readOnly={readOnly} /></div>}
+      </div>
+    )
+  }
+
+  if (el.type === 'dial' || el.type === 'vertical_slider') {
+    const min = el.min ?? 0
+    const max = el.max ?? 100
+    const step = el.step ?? 1
+    const count = Math.min(5, Math.max(1, Number(el.count || 1)))
+    const na = isNA(value)
+    const values = Array.isArray(value) ? value : Array(count).fill(null)
+
+    function updateAt(index, nextValue) {
+      if (readOnly || na) return
+      const next = Array.from({ length: count }, (_, i) => {
+        if (Array.isArray(value) && i < value.length) return value[i]
+        return null
+      })
+      next[index] = Math.min(max, Math.max(min, Number(nextValue)))
+      onChange(next)
+    }
+
+    return (
+      <div>
+        <QLabel el={el} />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-start', opacity: na ? 0.55 : 1 }}>
+          {Array.from({ length: count }, (_, idx) => {
+            const current = values[idx]
+            const safeCurrent = Number.isFinite(current) ? current : min
+            const label = `Control ${idx + 1}`
+            return el.type === 'dial' ? (
+              <DialControl
+                key={`${el.id}-${idx}`}
+                value={safeCurrent}
+                min={min}
+                max={max}
+                step={step}
+                disabled={readOnly || na}
+                onChange={next => updateAt(idx, next)}
+                label={label}
+              />
+            ) : (
+              <VerticalSliderControl
+                key={`${el.id}-${idx}`}
+                value={safeCurrent}
+                min={min}
+                max={max}
+                step={step}
+                disabled={readOnly || na}
+                onChange={next => updateAt(idx, next)}
+                label={label}
+              />
+            )
+          })}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+          <span>{el.low_label || min}</span><span>{el.high_label || max}</span>
+        </div>
+        {el.has_na && <div style={{ marginTop: 8 }}><NAToggle selected={na} onChange={onChange} readOnly={readOnly} /></div>}
       </div>
     )
   }

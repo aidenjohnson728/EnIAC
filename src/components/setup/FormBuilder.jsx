@@ -3,6 +3,7 @@ import { ChevronLeft, Plus, Trash2, ChevronDown, ChevronRight, Copy, ImagePlus }
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '../../lib/api'
+import { AGREEMENT_METHOD_LABELS, defaultAgreementEnabledForType, defaultAgreementMethodForType } from '../../lib/interraterAgreement.mjs'
 import Modal from '../ui/Modal'
 
 const ELEMENT_TYPES = [
@@ -15,6 +16,8 @@ const ELEMENT_TYPES = [
   { type: 'rating', label: 'Rating (labeled)' },
   { type: 'checkbox', label: 'Checkbox' },
   { type: 'slider', label: 'Slider' },
+  { type: 'dial', label: 'Dial' },
+  { type: 'vertical_slider', label: 'Vertical Slider' },
   { type: 'timestamp_select', label: 'Timestamp Select' },
   { type: 'table', label: 'Table Grid' },
 ]
@@ -25,6 +28,37 @@ const TABLE_COL_TYPES = [
   { type: 'select', label: 'Dropdown' },
   { type: 'timestamp_select', label: 'Timestamp' },
 ]
+
+const DEFAULT_QUESTION_WEIGHT_BY_TYPE = {
+  table: 0.6,
+}
+
+function agreementMethodOptionsForType(type) {
+  if (type === 'multiple_choice' || type === 'checkbox') return ['auto', 'percent', 'cohen_kappa']
+  if (type === 'likert' || type === 'rating') return ['auto', 'ordinal', 'weighted_kappa', 'percent']
+  if (type === 'likert_group') return ['auto', 'item_group', 'weighted_kappa']
+  if (type === 'multiselect') return ['auto', 'set_overlap', 'percent']
+  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return ['auto', 'numeric']
+  if (type === 'timestamp_select') return ['auto', 'timestamp']
+  if (type === 'short_answer' || type === 'paragraph') return ['auto', 'exact_text']
+  if (type === 'table') return ['auto', 'item_group']
+  return ['auto', 'percent']
+}
+
+function agreementWarningForElement(el, enabled, method) {
+  if (!enabled) return ''
+  const resolved = method === 'auto' ? defaultAgreementMethodForType(el.type) : method
+  if ((el.type === 'short_answer' || el.type === 'paragraph') && resolved === 'exact_text') {
+    return 'Text agreement uses exact normalized matches only. Most teams leave text questions excluded.'
+  }
+  if ((resolved === 'cohen_kappa' || resolved === 'weighted_kappa') && el.type !== 'likert_group') {
+    return 'Kappa-style methods are most interpretable with exactly two reviewers.'
+  }
+  if (el.type === 'likert_group' && resolved === 'weighted_kappa') {
+    return 'Weighted kappa is calculated per statement, then averaged across the group.'
+  }
+  return ''
+}
 
 function newId() { return `el_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` }
 function friendlySaveError(e) {
@@ -117,16 +151,13 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
     }))
   }
 
-  async function doSave(scope = 'future') {
+  async function doSave() {
     if (!name.trim()) return
     setSaving(true)
     setSaveError('')
     try {
       if (!(await ensureUnlocked())) return
       const savedId = await api.saveForm(projectId, { id: form.id || undefined, name: name.trim(), schema: { sections } })
-      if (scope !== 'future' && savedId) {
-        await api.migrateStructureReviews(projectId, { kind: 'form', id: savedId, scope })
-      }
       onSave()
     } catch (e) {
       console.error('[FormBuilder] save failed:', e)
@@ -156,7 +187,7 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
         setSaving(false)
       }
     }
-    doSave('future')
+    doSave()
   }
 
   return (
@@ -218,14 +249,8 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
         footer={
           <>
             <button className="btn btn-secondary" disabled={saving} onClick={() => setMigrationPreview(null)}>Cancel</button>
-            <button className="btn btn-secondary" disabled={saving} onClick={() => doSave('future')}>
-              Future Reviews Only
-            </button>
-            <button className="btn btn-primary" disabled={saving || (migrationPreview?.drafts || 0) === 0} onClick={() => doSave('drafts')}>
-              Update Drafts
-            </button>
-            <button className="btn btn-danger" disabled={saving} onClick={() => doSave('all')}>
-              Update All Reviews
+            <button className={(migrationPreview?.submitted || 0) > 0 ? 'btn btn-danger' : 'btn btn-primary'} disabled={saving} onClick={doSave}>
+              {saving ? 'Saving…' : (migrationPreview?.submitted || 0) > 0 ? 'Save and Reopen Reviews' : 'Save and Apply'}
             </button>
           </>
         }
@@ -239,15 +264,21 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
             )}
             <p style={{ margin: 0 }}>
               This form is already used by <strong>{migrationPreview.total}</strong> review{migrationPreview.total !== 1 ? 's' : ''}.
-              Existing reviews keep the version coders saw unless you migrate them.
+              Saving will apply the latest form to every matching review.
             </p>
             <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
               <div><strong>{migrationPreview.drafts}</strong> draft review{migrationPreview.drafts !== 1 ? 's' : ''}</div>
               <div><strong>{migrationPreview.submitted}</strong> submitted review{migrationPreview.submitted !== 1 ? 's' : ''}</div>
             </div>
-            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 12, color: '#991b1b' }}>
-              Updating all reviews changes the form version used to interpret submitted data. Answers are preserved by question ID where possible, but this should be used only when you intentionally want old reviews reinterpreted under the new form.
-            </div>
+            {(migrationPreview.submitted || 0) > 0 ? (
+              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 12, color: '#991b1b' }}>
+                Submitted reviews will be reopened as drafts. Existing answers are preserved by question ID where possible.
+              </div>
+            ) : (
+              <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, color: 'var(--text-secondary)' }}>
+                Existing draft answers are preserved by question ID where possible.
+              </div>
+            )}
           </div>
         )}
       </Modal>
@@ -379,6 +410,8 @@ function ElementEditor({ el, onChange, onRemove }) {
         </label>
       )}
 
+      <AgreementSettingsEditor el={el} onChange={onChange} />
+
       {(el.type === 'multiple_choice' || el.type === 'multiselect' || el.type === 'rating') && (
         <OptionsEditor options={el.options || []} onChange={opts => onChange({ options: opts })} />
       )}
@@ -432,7 +465,7 @@ function ElementEditor({ el, onChange, onRemove }) {
         </div>
       )}
 
-      {el.type === 'slider' && (
+      {(el.type === 'slider' || el.type === 'dial' || el.type === 'vertical_slider') && (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {[['min','Min',0],['max','Max',100],['step','Step',1]].map(([key,lbl,def]) => (
             <div key={key} className="form-field" style={{ flex: 1, minWidth: 70 }}>
@@ -440,6 +473,10 @@ function ElementEditor({ el, onChange, onRemove }) {
               <input type="number" value={el[key] ?? def} onChange={e => onChange({ [key]: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }} />
             </div>
           ))}
+          <div className="form-field" style={{ flex: 1, minWidth: 90 }}>
+            <label>Controls</label>
+            <input type="number" min={1} max={5} value={el.count ?? 1} onChange={e => onChange({ count: Math.min(5, Math.max(1, Number(e.target.value) || 1)) })} style={{ height: 32, fontSize: 13 }} />
+          </div>
           <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
             <label>Low label</label>
             <input value={el.low_label || ''} onChange={e => onChange({ low_label: e.target.value })} style={{ height: 32, fontSize: 13 }} />
@@ -462,6 +499,65 @@ function ElementEditor({ el, onChange, onRemove }) {
           onRowsChange={rows => onChange({ rows })}
           onColumnsChange={columns => onChange({ columns })}
         />
+      )}
+    </div>
+  )
+}
+
+function AgreementSettingsEditor({ el, onChange }) {
+  const enabled = el.agreement_enabled ?? defaultAgreementEnabledForType(el.type)
+  const options = agreementMethodOptionsForType(el.type)
+  const method = options.includes(el.agreement_method) ? el.agreement_method : 'auto'
+  const weight = el.agreement_weight ?? DEFAULT_QUESTION_WEIGHT_BY_TYPE[el.type] ?? 1
+  const warning = agreementWarningForElement(el, enabled, method)
+
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-secondary)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', marginBottom: 0 }}>
+          <input
+            type="checkbox"
+            checked={!!enabled}
+            onChange={e => onChange({ agreement_enabled: e.target.checked })}
+          />
+          Include in agreement
+        </label>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {enabled ? AGREEMENT_METHOD_LABELS[method === 'auto' ? defaultAgreementMethodForType(el.type) : method] : 'Excluded'}
+        </span>
+      </div>
+      {enabled && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 1fr) 88px', gap: 8 }}>
+          <div className="form-field" style={{ margin: 0 }}>
+            <label>Method</label>
+            <select
+              value={method}
+              onChange={e => onChange({ agreement_method: e.target.value })}
+              style={{ height: 32, fontSize: 12 }}
+            >
+              {options.map(option => (
+                <option key={option} value={option}>{AGREEMENT_METHOD_LABELS[option] || option}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-field" style={{ margin: 0 }}>
+            <label>Weight</label>
+            <input
+              type="number"
+              min="0"
+              max="3"
+              step="0.1"
+              value={weight}
+              onChange={e => onChange({ agreement_weight: Number(e.target.value) || 0 })}
+              style={{ height: 32, fontSize: 12 }}
+            />
+          </div>
+        </div>
+      )}
+      {warning && (
+        <div style={{ fontSize: 11, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 5, padding: '6px 8px', lineHeight: 1.4 }}>
+          {warning}
+        </div>
       )}
     </div>
   )
@@ -724,13 +820,18 @@ function LikertGroupItemsEditor({ items, onChange }) {
 }
 
 function makeElement(type) {
-  const base = { id: newId(), type, label: '', required: false, has_na: false }
+  const agreement = {
+    agreement_enabled: defaultAgreementEnabledForType(type),
+    agreement_weight: DEFAULT_QUESTION_WEIGHT_BY_TYPE[type] ?? 1,
+    agreement_method: 'auto',
+  }
+  const base = { id: newId(), type, label: '', required: false, has_na: false, ...agreement }
   if (type === 'multiple_choice' || type === 'multiselect') return { ...base, options: ['Option 1', 'Option 2'] }
   if (type === 'rating') return { ...base, options: ['Option 1', 'Option 2', 'Option 3', 'Option 4'] }
   if (type === 'likert') return { ...base, scale: 5, low_label: '', high_label: '', has_na: false }
-  if (type === 'likert_group') return { id: newId(), type: 'likert_group', label: '', description: '', scale: 5, low_label: '', high_label: '', has_na: false, items: [{ id: newId(), label: '' }] }
-  if (type === 'checkbox') return { id: newId(), type: 'checkbox', label: '', required: false, has_na: false }
-  if (type === 'slider') return { ...base, min: 0, max: 100, step: 1, low_label: '', high_label: '' }
+  if (type === 'likert_group') return { id: newId(), type: 'likert_group', label: '', description: '', scale: 5, low_label: '', high_label: '', has_na: false, items: [{ id: newId(), label: '' }], ...agreement }
+  if (type === 'checkbox') return { id: newId(), type: 'checkbox', label: '', required: false, has_na: false, ...agreement }
+  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return { ...base, min: 0, max: 100, step: 1, count: 1, low_label: '', high_label: '' }
   if (type === 'text_block') return { id: newId(), type: 'text_block', content: '', assets: [] }
   if (type === 'timestamp_select') return base
   if (type === 'table') return { ...base, has_na: false, rows: ['Row 1', 'Row 2'], columns: [{ id: newId(), label: 'Column 1', type: 'text', has_na: false }] }

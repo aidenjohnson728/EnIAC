@@ -30,7 +30,7 @@ export default function MediaTypeEditor({ projectId, mediaType, forms, instructi
     return false
   }
 
-  function addTag() { setTags(t => [...t, { label: '', color: randomTagColor(), description: '' }]) }
+  function addTag() { setTags(t => [...t, { label: '', color: randomTagColor(), description: '', category: '' }]) }
   function updateTag(i, changes) { setTags(t => t.map((tag, j) => j === i ? { ...tag, ...changes } : tag)) }
   function removeTag(i) { setTags(t => t.filter((_, j) => j !== i)) }
 
@@ -176,7 +176,8 @@ export default function MediaTypeEditor({ projectId, mediaType, forms, instructi
                       style={{ width: 32, height: 32, padding: 2, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', background: 'none' }}
                     />
                     <input value={tag.label} onChange={e => updateTag(i, { label: e.target.value })} placeholder="Tag label" style={{ flex: 1 }} />
-                    <input value={tag.description || ''} onChange={e => updateTag(i, { description: e.target.value })} placeholder="Description (optional)" style={{ flex: 2 }} />
+                    <input value={tag.category || ''} onChange={e => updateTag(i, { category: e.target.value })} placeholder="Category (optional)" style={{ flex: 1.1 }} />
+                    <input value={tag.description || ''} onChange={e => updateTag(i, { description: e.target.value })} placeholder="Description (optional)" style={{ flex: 1.8 }} />
                     <button className="btn btn-ghost btn-icon btn-sm" onClick={() => removeTag(i)}><Trash2 size={13} /></button>
                   </div>
                 ))}

@@ -82,6 +82,7 @@ const contracts = {
   'media:healthCheck': [isIntLike],
 
   'reviews:list': [isIntLike],
+  'reviews:projectAgreementData': [isIntLike],
   'reviews:create': [isObject],
   'reviews:get': [isIntLike],
   'reviews:submit': [isIntLike, isObject],

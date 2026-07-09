@@ -57,7 +57,7 @@ module.exports = function (ipcMain) {
     `).all(encounterId)
 
     for (const f of files) {
-      f.reviews = db.prepare('SELECT id, reviewer_name, status, created_at, submitted_at FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(f.id)
+      f.reviews = db.prepare('SELECT id, reviewer_name, status, created_at, submitted_at, reopened_at, reopened_reason, previous_submitted_at FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(f.id)
       f.reviews_completed = f.reviews.filter(r => r.status === 'submitted').length
       augmentWithLink(db, f, projectId)
     }

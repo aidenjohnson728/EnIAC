@@ -39,6 +39,7 @@ export const api = isElectron ? window.api : {
   getVideoUrl: async (p) => p,
   getMediaPlaybackInfo: async () => ({ status: 'not_linked', resolved_path: null, url: null, file_type: 'other' }),
   listReviews: async () => [],
+  getProjectInterraterAgreementData: async () => [],
   createReview: async (d) => ({ id: Date.now(), ...d, status: 'in_progress', created_at: new Date().toISOString() }),
   getReview: async () => null,
   submitReview: async () => true,

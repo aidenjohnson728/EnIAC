@@ -13,7 +13,7 @@ module.exports = function (ipcMain) {
     for (const enc of encounters) {
       const media = db.prepare('SELECT mf.*, mt.name as media_type_name, mt.reviews_required, mt.color as media_type_color FROM media_files mf LEFT JOIN media_types mt ON mf.media_type_id = mt.id WHERE mf.encounter_id=? ORDER BY mf.name').all(enc.id)
       for (const m of media) {
-        const reviews = db.prepare('SELECT id, reviewer_name, status, created_at, submitted_at FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(m.id)
+        const reviews = db.prepare('SELECT id, reviewer_name, status, created_at, submitted_at, reopened_at, reopened_reason, previous_submitted_at FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(m.id)
         m.reviews = reviews
         m.reviews_completed = reviews.filter(r => r.status === 'submitted').length
         const { status, resolved_path } = resolveLink(db, m.id, enc.project_id)

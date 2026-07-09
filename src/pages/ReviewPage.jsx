@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   ChevronLeft, Plus, Maximize2, Minimize2,
@@ -96,6 +96,12 @@ function findTimestampTag(tags, ts) {
 
 function sampleReviewTourKey(reviewId) { return `sdmo_sample_review_tour_started_v1:${reviewId}` }
 
+function reopenedReasonLabel(reason) {
+  if (reason === 'form_version_changed') return 'Reopened after form update'
+  if (reason === 'media_type_version_changed') return 'Reopened after media type update'
+  return 'Reopened'
+}
+
 export default function ReviewPage() {
   const { reviewId } = useParams()
   const navigate = useNavigate()
@@ -119,6 +125,7 @@ export default function ReviewPage() {
 
   const [activeTab, setActiveTab] = useState(0)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [tagSelectionTargetId, setTagSelectionTargetId] = useState(null)
   const [videoExpanded, setVideoExpanded] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [workspaceExpanded, setWorkspaceExpanded] = useState(false)
@@ -387,6 +394,7 @@ export default function ReviewPage() {
   }
 
   async function addTimestampWithTag(tagId) {
+    if (submitted) return null
     const t = videoRef.current?.currentTime ?? 0
     const tag = tagId != null ? tags.find(tg => tg.id == tagId) : null
     const id = await api.saveTimestamp(reviewId, {
@@ -398,9 +406,12 @@ export default function ReviewPage() {
     })
     const newTs = { id, time_seconds: t, notes: '', tag_id: tag?.id || null, tag_label: tag?.label || null, tag_color: tag?.color || null }
     setTimestamps(ts => [...ts, newTs].sort((a, b) => a.time_seconds - b.time_seconds))
+    setTagSelectionTargetId(id)
+    setSidebarOpen(true)
   }
 
   async function updateTimestamp(id, changes) {
+    if (submitted) return
     if ('tag_id' in changes) {
       const tag = changes.tag_id != null
         ? tags.find(t => t.id == changes.tag_id)
@@ -412,11 +423,13 @@ export default function ReviewPage() {
   }
 
   async function deleteTimestamp(id) {
+    if (submitted) return
     await api.deleteTimestamp(id)
     setTimestamps(ts => ts.filter(t => t.id !== id))
   }
 
   async function saveFormResponse(formId, responses) {
+    if (submitted) return
     await api.saveFormResponse(reviewId, { form_id: formId, responses })
     setFormResponses(r => ({ ...r, [formId]: responses }))
   }
@@ -547,7 +560,7 @@ export default function ReviewPage() {
         instruction={currentTab?.tab_type === 'instruction' ? instructions[currentTab?.ref_id] : null}
         responses={currentTab?.tab_type === 'form' ? formResponses[currentTab?.ref_id] : null}
         onSave={(resp) => saveFormResponse(currentTab.ref_id, resp)}
-        readOnly={false}
+        readOnly={submitted}
         timestamps={timestamps}
       />
     </div>
@@ -572,6 +585,11 @@ export default function ReviewPage() {
               {mediaFile?.name}
             </span>
             {submitted && <span className="badge badge-success"><CheckCircle2 size={10} /> Submitted</span>}
+            {!submitted && review?.reopened_at && (
+              <span className="badge badge-muted" title={reopenedReasonLabel(review.reopened_reason)} style={{ color: '#b45309', background: '#fffbeb', borderColor: '#fde68a' }}>
+                <AlertCircle size={10} /> Reopened
+              </span>
+            )}
           </div>
           <div id="tut-rev-submit" style={{ display: 'flex', gap: 6, WebkitAppRegion: 'no-drag' }}>
             <button className="btn btn-ghost btn-icon btn-sm" onClick={tour.start} title="Show tutorial">
@@ -863,17 +881,33 @@ export default function ReviewPage() {
                 <p className="text-sm">No timestamps yet.<br />Click "Add Timestamp" while the video plays.</p>
               </div>
             ) : (
-              timestamps.map(ts => (
-                <TimestampBubble
-                  key={ts.id}
-                  ts={ts}
+              tagSelectionTargetId != null ? (
+                <TagSelectionPanel
+                  key={tagSelectionTargetId}
+                  timestamp={timestamps.find(ts => ts.id === tagSelectionTargetId) || null}
                   tags={tags}
-                  onSeek={() => seekTo(ts.time_seconds)}
-                  onChange={(changes) => updateTimestamp(ts.id, changes)}
-                  onDelete={() => deleteTimestamp(ts.id)}
-                  readOnly={false}
+                  onSelect={(changes) => {
+                    if (tagSelectionTargetId != null) {
+                      updateTimestamp(tagSelectionTargetId, changes)
+                      setTagSelectionTargetId(null)
+                    }
+                  }}
+                  onBack={() => setTagSelectionTargetId(null)}
                 />
-              ))
+              ) : (
+                timestamps.map(ts => (
+                  <TimestampBubble
+                    key={ts.id}
+                    ts={ts}
+                    tags={tags}
+                    onSeek={() => seekTo(ts.time_seconds)}
+                    onChange={(changes) => updateTimestamp(ts.id, changes)}
+                    onDelete={() => deleteTimestamp(ts.id)}
+                    onTagClick={() => setTagSelectionTargetId(ts.id)}
+                    readOnly={submitted}
+                  />
+                ))
+              )
             )}
           </div>
           </div>
@@ -1096,21 +1130,10 @@ function VideoControls({
   )
 }
 
-function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, readOnly }) {
+function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, onTagClick, readOnly }) {
   const [expanded, setExpanded] = useState(true)
-  const [tagMenuOpen, setTagMenuOpen] = useState(false)
-  const menuRef = useRef(null)
   const tag = findTimestampTag(tags, ts)
   const tagColor = tag?.color || ts.tag_color || null
-
-  useEffect(() => {
-    if (!tagMenuOpen) return
-    function onDown(e) {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setTagMenuOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [tagMenuOpen])
 
   return (
     <div style={{
@@ -1133,51 +1156,22 @@ function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, readOnly }) {
           {formatTime(ts.time_seconds)}
         </button>
 
-        {/* Tag pill dropdown */}
         {tags.length > 0 && (
-          <div ref={menuRef} style={{ position: 'relative', minWidth: 0 }}>
-            <button
-              disabled={readOnly}
-              onClick={() => setTagMenuOpen(o => !o)}
-              style={{
-                fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 99,
-                background: tagColor ? tagColor + '1a' : 'var(--bg-active)',
-                color: tagColor || 'var(--text-secondary)',
-                border: `1px solid ${tagColor ? tagColor + '44' : 'var(--border)'}`,
-                cursor: readOnly ? 'default' : 'pointer',
-                fontFamily: 'var(--font)', lineHeight: 1.6, whiteSpace: 'nowrap',
-                transition: 'background 0.1s',
-              }}
-            >
-              {tag?.label || 'No tag'}
-            </button>
-            {tagMenuOpen && (
-              <div style={{
-                position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 200,
-                background: 'var(--bg)', border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow)',
-                minWidth: 150, overflow: 'hidden',
-              }}>
-                <button
-                  className="dropdown-item"
-                  onClick={() => { onChange({ tag_id: null, tag_label: null, tag_color: null }); setTagMenuOpen(false) }}
-                >
-                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--border-strong)', flexShrink: 0 }} />
-                  No tag
-                </button>
-                {tags.map(t => (
-                  <button
-                    key={tagOptionValue(t)}
-                    className="dropdown-item"
-                    onClick={() => { onChange({ tag_id: t.id, tag_label: t.label, tag_color: t.color || null }); setTagMenuOpen(false) }}
-                  >
-                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color || '#9ca3af', flexShrink: 0 }} />
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <button
+            disabled={readOnly}
+            onClick={() => onTagClick?.()}
+            style={{
+              fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 99,
+              background: tagColor ? tagColor + '1a' : 'var(--bg-active)',
+              color: tagColor || 'var(--text-secondary)',
+              border: `1px solid ${tagColor ? tagColor + '44' : 'var(--border)'}`,
+              cursor: readOnly ? 'default' : 'pointer',
+              fontFamily: 'var(--font)', lineHeight: 1.6, whiteSpace: 'nowrap',
+              transition: 'background 0.1s',
+            }}
+          >
+            {tag?.label || 'No tag'}
+          </button>
         )}
 
         <div style={{ flex: 1 }} />
@@ -1210,6 +1204,61 @@ function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, readOnly }) {
             style={{ fontSize: 12, resize: 'none', minHeight: 'unset' }}
           />
         </div>
+      )}
+    </div>
+  )
+}
+
+function TagSelectionPanel({ timestamp, tags, onSelect, onBack }) {
+  const groupedTags = useMemo(() => {
+    const buckets = new Map()
+    for (const tagItem of tags) {
+      const category = (tagItem.category || '').trim()
+      const bucket = category || 'General'
+      if (!buckets.has(bucket)) buckets.set(bucket, [])
+      buckets.get(bucket).push(tagItem)
+    }
+    return Array.from(buckets.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+  }, [tags])
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700 }}>Choose a tag</div>
+          {timestamp && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{formatTime(timestamp.time_seconds)}</div>
+          )}
+        </div>
+        <button className="btn btn-ghost btn-sm" onClick={onBack}>Back</button>
+      </div>
+      <button
+        className="dropdown-item"
+        onClick={() => onSelect({ tag_id: null, tag_label: null, tag_color: null })}
+      >
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--border-strong)', flexShrink: 0 }} />
+        No tag
+      </button>
+      {groupedTags.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 2px' }}>No tags are available for this media type yet.</div>
+      ) : (
+        groupedTags.map(([category, categoryTags]) => (
+          <div key={category}>
+            <div style={{ padding: '8px 2px 4px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)' }}>
+              {category}
+            </div>
+            {categoryTags.map(t => (
+              <button
+                key={tagOptionValue(t)}
+                className="dropdown-item"
+                onClick={() => onSelect({ tag_id: t.id, tag_label: t.label, tag_color: t.color || null })}
+              >
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color || '#9ca3af', flexShrink: 0 }} />
+                {t.label}
+              </button>
+            ))}
+          </div>
+        ))
       )}
     </div>
   )
