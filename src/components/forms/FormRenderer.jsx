@@ -149,6 +149,9 @@ function isValueAnswered(value) {
 }
 
 function isElementAnswered(el, value) {
+  if (el.type === 'checkbox') {
+    return value === true || isNA(value)
+  }
   if (el.type === 'likert_group') {
     const items = el.items || []
     if (items.length === 0) return false
@@ -238,16 +241,22 @@ function FormSection({ section, sectionIndex, values, onChange, collapsed, onTog
           marginLeft: 0,
           transition: 'border-color 0.25s',
         }}>
-          {(section.elements || []).map(el => (
-            <FormElement
-              key={el.id}
-              el={el}
-              value={values[el.id]}
-              onChange={v => onChange(el.id, v)}
-              readOnly={readOnly}
-              timestamps={timestamps}
-            />
-          ))}
+          {(section.elements || []).map((el, elementIndex) => {
+            const questionNumber = (section.elements || [])
+              .slice(0, elementIndex + 1)
+              .filter(item => item.type !== 'text_block').length
+            return (
+              <FormElement
+                key={el.id}
+                el={el}
+                questionNumber={questionNumber}
+                value={values[el.id]}
+                onChange={v => onChange(el.id, v)}
+                readOnly={readOnly}
+                timestamps={timestamps}
+              />
+            )
+          })}
         </div>
       </div>
     </div>
@@ -376,10 +385,14 @@ function RadioDot({ selected, onClick, readOnly }) {
   )
 }
 
-function QLabel({ el }) {
+function questionLabel(el, questionNumber) {
+  return el.label || `Question ${questionNumber || ''}`.trim()
+}
+
+function QLabel({ el, questionNumber }) {
   return (
     <div style={{ marginBottom: 6 }}>
-      <span style={{ fontWeight: 600, fontSize: 13, letterSpacing: '-0.01em' }}>{el.label}</span>
+      <span style={{ fontWeight: 600, fontSize: 13, letterSpacing: '-0.01em' }}>{questionLabel(el, questionNumber)}</span>
       {el.required && <span style={{ color: 'var(--danger)', marginLeft: 3, fontSize: 12 }}>*</span>}
     </div>
   )
@@ -412,79 +425,182 @@ function NAToggle({ selected, onChange, readOnly, compact = false }) {
   )
 }
 
-function DialControl({ value, min, max, step, disabled, onChange, label }) {
+function ScaleEndpointLabels({ low, high, min, max, vertical = false }) {
+  const lowText = low || min
+  const highText = high || max
+  if (vertical) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: 132, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.25, minWidth: 42 }}>
+        <span style={{ textAlign: 'left' }}>{highText}</span>
+        <span style={{ textAlign: 'left' }}>{lowText}</span>
+      </div>
+    )
+  }
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.25 }}>
+      <span>{lowText}</span>
+      <span style={{ textAlign: 'right' }}>{highText}</span>
+    </div>
+  )
+}
+
+function NumericStepper({ value, min, max, step, disabled, onChange }) {
+  function apply(nextValue) {
+    if (disabled) return
+    const n = Number(nextValue)
+    if (Number.isFinite(n)) onChange(Math.min(max, Math.max(min, n)))
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => apply(value - step)}
+        className="btn btn-secondary btn-icon btn-sm"
+        aria-label="Decrease value"
+      >
+        -
+      </button>
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+        onChange={e => apply(e.target.value)}
+        style={{
+          width: 64, textAlign: 'center', fontWeight: 700, fontSize: 14,
+          color: 'var(--accent)', background: 'var(--accent-light)',
+          padding: '4px 6px', borderRadius: 6, border: '1.5px solid transparent',
+          outline: 'none', fontFamily: 'var(--font)',
+        }}
+      />
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => apply(value + step)}
+        className="btn btn-secondary btn-icon btn-sm"
+        aria-label="Increase value"
+      >
+        +
+      </button>
+    </div>
+  )
+}
+
+function DialControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel }) {
   const safeValue = Number.isFinite(value) ? value : min
   const bounded = Math.min(max, Math.max(min, safeValue))
   const pct = max === min ? 0 : ((bounded - min) / (max - min)) * 100
   const angle = -135 + (pct / 100) * 270
-
-  function adjust(delta) {
-    if (disabled) return
-    const next = bounded + delta
-    onChange(Math.min(max, Math.max(min, next)))
-  }
+  const radius = 36
+  const circumference = 2 * Math.PI * radius
+  const arcLength = circumference * 0.75
+  const progressLength = arcLength * (pct / 100)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, minWidth: 92 }}>
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: 8,
+      minWidth: 132,
+      padding: '10px 12px',
+      border: '1px solid var(--border)',
+      borderRadius: 8,
+      background: 'var(--bg)',
+    }}>
+      <div style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'center', lineHeight: 1.2, fontWeight: 600 }}>{label}</div>
       <div
-        tabIndex={disabled ? -1 : 0}
-        onWheel={e => { e.preventDefault(); adjust(e.deltaY < 0 ? step : -step) }}
-        onKeyDown={e => {
-          if (disabled) return
-          if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); adjust(step) }
-          if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); adjust(-step) }
+        style={{
+          cursor: 'default',
+          outline: 'none',
+          width: 92,
+          height: 92,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: '50%',
+          background: 'var(--bg-secondary)',
         }}
-        style={{ cursor: disabled ? 'default' : 'grab', outline: 'none' }}
       >
-        <svg width="72" height="72" viewBox="0 0 100 100" aria-label={label || 'Dial'}>
-          <circle cx="50" cy="50" r="36" stroke="rgba(255,255,255,0.16)" strokeWidth="10" fill="none" />
+        <svg width="82" height="82" viewBox="0 0 100 100" aria-label={label || 'Dial'}>
           <circle
             cx="50"
             cy="50"
-            r="36"
+            r={radius}
+            stroke="var(--border-strong)"
+            strokeWidth="10"
+            fill="none"
+            opacity="0.65"
+            strokeLinecap="round"
+            strokeDasharray={`${arcLength} ${circumference}`}
+            transform="rotate(135 50 50)"
+          />
+          <circle
+            cx="50"
+            cy="50"
+            r={radius}
             stroke="var(--accent)"
             strokeWidth="10"
             fill="none"
             strokeLinecap="round"
-            strokeDasharray={2 * Math.PI * 36}
-            strokeDashoffset={2 * Math.PI * 36 * (1 - pct / 100)}
+            strokeDasharray={`${progressLength} ${circumference}`}
+            transform="rotate(135 50 50)"
           />
-          <line x1="50" y1="50" x2="50" y2="18" stroke="#fff" strokeWidth="3" strokeLinecap="round" transform={`rotate(${angle} 50 50)`} />
-          <circle cx="50" cy="50" r="10" fill="#fff" />
+          <line x1="50" y1="50" x2="50" y2="18" stroke="var(--text)" strokeWidth="4" strokeLinecap="round" transform={`rotate(${angle} 50 50)`} />
+          <circle cx="50" cy="50" r="11" fill="var(--bg)" stroke="var(--accent)" strokeWidth="4" />
         </svg>
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.2 }}>{label}</div>
-      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>{bounded}</div>
+      <NumericStepper value={bounded} min={min} max={max} step={step} disabled={disabled} onChange={onChange} />
+      <div style={{ width: '100%' }}>
+        <ScaleEndpointLabels low={lowLabel} high={highLabel} min={min} max={max} />
+      </div>
     </div>
   )
 }
 
-function VerticalSliderControl({ value, min, max, step, disabled, onChange, label }) {
+function VerticalSliderControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel }) {
   const safeValue = Number.isFinite(value) ? value : min
   const bounded = Math.min(max, Math.max(min, safeValue))
   const pct = max === min ? 0 : ((bounded - min) / (max - min)) * 100
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, minWidth: 92 }}>
-      <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={bounded}
-          disabled={disabled}
-          onChange={e => onChange(Number(e.target.value))}
-          style={{ height: 140, width: 140, transform: 'rotate(-90deg)', accentColor: 'var(--accent)', cursor: disabled ? 'default' : 'pointer' }}
-        />
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: 8,
+      minWidth: 132,
+      padding: '10px 12px',
+      border: '1px solid var(--border)',
+      borderRadius: 8,
+      background: 'var(--bg)',
+    }}>
+      <div style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'center', lineHeight: 1.2, fontWeight: 600 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <ScaleEndpointLabels low={lowLabel} high={highLabel} min={min} max={max} vertical />
+        <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <input
+            type="range"
+            min={min}
+            max={max}
+            step={step}
+            value={bounded}
+            disabled={disabled}
+            onChange={e => onChange(Number(e.target.value))}
+            style={{ height: 140, width: 140, transform: 'rotate(-90deg)', accentColor: 'var(--accent)', cursor: disabled ? 'default' : 'pointer' }}
+          />
+        </div>
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.2 }}>{label}</div>
-      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>{bounded}</div>
-      <div style={{ width: 42, height: 6, borderRadius: 99, background: `linear-gradient(90deg, var(--accent) 0%, var(--accent) ${pct}%, rgba(255,255,255,0.12) ${pct}%, rgba(255,255,255,0.12) 100%)` }} />
+      <NumericStepper value={bounded} min={min} max={max} step={step} disabled={disabled} onChange={onChange} />
+      <div style={{ width: 48, height: 6, borderRadius: 99, background: `linear-gradient(90deg, var(--accent) 0%, var(--accent) ${pct}%, var(--border) ${pct}%, var(--border) 100%)` }} />
     </div>
   )
 }
 
-function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
+function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps = [] }) {
   if (el.type === 'text_block') {
     return (
       <div className="prose form-markdown-block">
@@ -506,6 +622,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     const na = isNA(value)
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <QLabel el={el} questionNumber={questionNumber} />
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: readOnly ? 'default' : 'pointer', opacity: na ? 0.55 : 1 }}
           onClick={() => !readOnly && onChange(checked ? false : true)}>
           <div style={{
@@ -518,7 +635,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
             {checked && <Check size={11} color="#fff" strokeWidth={3} />}
           </div>
           <span style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>
-            {el.label}{el.required && <span style={{ color: 'var(--danger)', marginLeft: 3 }}>*</span>}
+            Checked
           </span>
         </div>
         {el.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} />}
@@ -534,10 +651,12 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     const groupVal = (typeof value === 'object' && value !== null && !Array.isArray(value)) ? value : {}
     return (
       <div>
-        {el.label && <div style={{ fontWeight: 700, fontSize: 13, letterSpacing: '-0.01em', marginBottom: el.description ? 3 : 10 }}>{el.label}</div>}
+        <div style={{ fontWeight: 700, fontSize: 13, letterSpacing: '-0.01em', marginBottom: el.description ? 3 : 10 }}>
+          {questionLabel(el, questionNumber)}{el.required && <span style={{ color: 'var(--danger)', marginLeft: 3, fontSize: 12 }}>*</span>}
+        </div>
         {el.description && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.55 }}>{el.description}</div>}
         <div style={{ display: 'flex', alignItems: 'center', paddingBottom: 6, borderBottom: '1.5px solid var(--border)' }}>
-          <div style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)' }}>{el.low_label && `1 = ${el.low_label}`}</div>
+          <div style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)' }}>{el.low_label ? `1 = ${el.low_label}` : '1'}</div>
           {el.has_na && <div style={{ width: COL_W, textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, flexShrink: 0 }}>N/A</div>}
           {points.map(p => <div key={p} style={{ width: COL_W, textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, flexShrink: 0 }}>{p}</div>)}
         </div>
@@ -545,7 +664,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
           const itemVal = groupVal[item.id]
           return (
             <div key={item.id} style={{ display: 'flex', alignItems: 'center', padding: '5px 6px', background: i % 2 === 1 ? 'rgba(0,0,0,0.025)' : 'transparent', borderRadius: 4 }}>
-              <div style={{ flex: 1, fontSize: 13, paddingRight: 10, lineHeight: 1.4 }}>{item.label}</div>
+              <div style={{ flex: 1, fontSize: 13, paddingRight: 10, lineHeight: 1.4 }}>{item.label || `Statement ${i + 1}`}</div>
               {el.has_na && (
                 <div style={{ width: COL_W, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
                   <RadioDot selected={itemVal === 'N/A'} onClick={() => onChange({ ...groupVal, [item.id]: itemVal === 'N/A' ? undefined : 'N/A' })} readOnly={readOnly} />
@@ -559,7 +678,9 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
             </div>
           )
         })}
-        {el.high_label && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, textAlign: 'right' }}>{scale} = {el.high_label}</div>}
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, textAlign: 'right' }}>
+          {el.high_label ? `${scale} = ${el.high_label}` : scale}
+        </div>
       </div>
     )
   }
@@ -568,7 +689,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     const na = isNA(value)
     return (
       <div>
-        <QLabel el={el} />
+        <QLabel el={el} questionNumber={questionNumber} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <FocusInput value={na ? '' : value} onChange={e => onChange(e.target.value)} placeholder={el.placeholder || ''} disabled={readOnly || na} />
           {el.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} />}
@@ -581,7 +702,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     const na = isNA(value)
     return (
       <div>
-        <QLabel el={el} />
+        <QLabel el={el} questionNumber={questionNumber} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <FocusTextarea value={na ? '' : value} onChange={e => onChange(e.target.value)} placeholder={el.placeholder || ''} disabled={readOnly || na} />
           {el.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} />}
@@ -593,11 +714,14 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
   if (el.type === 'multiple_choice') {
     return (
       <div>
-        <QLabel el={el} />
+        <QLabel el={el} questionNumber={questionNumber} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {(el.options || []).map(opt => (
-            <ChoiceButton key={opt} selected={value === opt} onClick={() => !readOnly && onChange(value === opt ? null : opt)} readOnly={readOnly} multiSelect={false}>{opt}</ChoiceButton>
-          ))}
+          {(el.options || []).map((opt, i) => {
+            const optionValue = opt || `Option ${i + 1}`
+            return (
+              <ChoiceButton key={`${i}:${opt}`} selected={value === optionValue} onClick={() => !readOnly && onChange(value === optionValue ? null : optionValue)} readOnly={readOnly} multiSelect={false}>{optionValue}</ChoiceButton>
+            )
+          })}
           {el.has_na && (
             <ChoiceButton selected={isNA(value)} onClick={() => !readOnly && onChange(isNA(value) ? null : 'N/A')} readOnly={readOnly} multiSelect={false}>N/A</ChoiceButton>
           )}
@@ -611,14 +735,17 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     const na = isNA(value)
     return (
       <div>
-        <QLabel el={el} />
+        <QLabel el={el} questionNumber={questionNumber} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {(el.options || []).map(opt => (
-            <ChoiceButton key={opt} selected={!na && selected.includes(opt)}
-              onClick={() => { if (readOnly) return; const isSel = selected.includes(opt); onChange(isSel ? selected.filter(x => x !== opt) : [...selected, opt]) }}
-              readOnly={readOnly} multiSelect={true}>{opt}
-            </ChoiceButton>
-          ))}
+          {(el.options || []).map((opt, i) => {
+            const optionValue = opt || `Option ${i + 1}`
+            return (
+              <ChoiceButton key={`${i}:${opt}`} selected={!na && selected.includes(optionValue)}
+                onClick={() => { if (readOnly) return; const isSel = selected.includes(optionValue); onChange(isSel ? selected.filter(x => x !== optionValue) : [...selected, optionValue]) }}
+                readOnly={readOnly} multiSelect={true}>{optionValue}
+              </ChoiceButton>
+            )
+          })}
           {el.has_na && (
             <ChoiceButton selected={na} onClick={() => !readOnly && onChange(na ? [] : 'N/A')} readOnly={readOnly} multiSelect={false}>N/A</ChoiceButton>
           )}
@@ -630,12 +757,13 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
   if (el.type === 'rating') {
     return (
       <div>
-        <QLabel el={el} />
+        <QLabel el={el} questionNumber={questionNumber} />
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {(el.options || []).map(opt => {
-            const selected = value === opt
+          {(el.options || []).map((opt, i) => {
+            const optionValue = opt || `Option ${i + 1}`
+            const selected = value === optionValue
             return (
-              <button key={opt} disabled={readOnly} onClick={() => !readOnly && onChange(selected ? null : opt)}
+              <button key={`${i}:${opt}`} disabled={readOnly} onClick={() => !readOnly && onChange(selected ? null : optionValue)}
                 style={{
                   padding: '5px 12px', border: '1.5px solid',
                   borderColor: selected ? 'var(--accent)' : 'var(--border)', borderRadius: 20,
@@ -643,7 +771,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
                   color: selected ? 'var(--accent)' : 'var(--text)',
                   fontSize: 13, fontWeight: selected ? 600 : 400, cursor: readOnly ? 'default' : 'pointer',
                   transition: 'border-color 0.1s, background 0.1s, color 0.1s', fontFamily: 'var(--font)',
-                }}>{opt}</button>
+                }}>{optionValue}</button>
             )
           })}
           {el.has_na && (
@@ -668,12 +796,10 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     const allOptions = el.has_na ? ['N/A', ...points] : points
     return (
       <div>
-        <QLabel el={el} />
-        {(el.low_label || el.high_label) && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 7 }}>
-            <span>{el.low_label}</span><span>{el.high_label}</span>
-          </div>
-        )}
+        <QLabel el={el} questionNumber={questionNumber} />
+        <div style={{ marginBottom: 7 }}>
+          <ScaleEndpointLabels low={el.low_label} high={el.high_label} min={1} max={scale} />
+        </div>
         <SegmentedControl options={allOptions} value={value} onChange={onChange} readOnly={readOnly} />
       </div>
     )
@@ -685,25 +811,27 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     const step = el.step ?? 1
     const na = isNA(value)
     const val = na ? min : (value ?? min)
+    const bounded = Math.min(max, Math.max(min, Number(val)))
     return (
       <div>
-        <QLabel el={el} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, opacity: na ? 0.55 : 1 }}>
-          <input type="range" min={min} max={max} step={step} value={val}
-            onChange={e => !readOnly && onChange(Number(e.target.value))}
-            disabled={readOnly || na} style={{ flex: 1, accentColor: 'var(--accent)' }} />
-          <input type="number" value={val} min={min} max={max} step={step} disabled={readOnly || na}
-            onChange={e => { const n = Number(e.target.value); if (!isNaN(n)) onChange(Math.min(max, Math.max(min, n))) }}
-            style={{
-              width: 56, textAlign: 'center', fontWeight: 700, fontSize: 14,
-              color: 'var(--accent)', background: 'var(--accent-light)',
-              padding: '3px 6px', borderRadius: 6, border: '1.5px solid transparent',
-              outline: 'none', fontFamily: 'var(--font)',
-            }}
-          />
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-          <span>{el.low_label || min}</span><span>{el.high_label || max}</span>
+        <QLabel el={el} questionNumber={questionNumber} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 7, opacity: na ? 0.55 : 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 7 }}>
+              <ScaleEndpointLabels low={el.low_label} high={el.high_label} min={min} max={max} />
+              <input type="range" min={min} max={max} step={step} value={bounded}
+                onChange={e => !readOnly && onChange(Number(e.target.value))}
+                disabled={readOnly || na} style={{ width: '100%', accentColor: 'var(--accent)', cursor: readOnly || na ? 'default' : 'pointer' }} />
+            </div>
+            <NumericStepper
+              value={bounded}
+              min={min}
+              max={max}
+              step={step}
+              disabled={readOnly || na}
+              onChange={onChange}
+            />
+          </div>
         </div>
         {el.has_na && <div style={{ marginTop: 6 }}><NAToggle selected={na} onChange={onChange} readOnly={readOnly} /></div>}
       </div>
@@ -730,12 +858,14 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
 
     return (
       <div>
-        <QLabel el={el} />
+        <QLabel el={el} questionNumber={questionNumber} />
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-start', opacity: na ? 0.55 : 1 }}>
           {Array.from({ length: count }, (_, idx) => {
             const current = values[idx]
             const safeCurrent = Number.isFinite(current) ? current : min
-            const label = `Control ${idx + 1}`
+            const label = count > 1
+              ? `${el.type === 'dial' ? 'Dial' : 'Slider'} ${idx + 1}`
+              : (el.type === 'dial' ? 'Dial' : 'Slider')
             return el.type === 'dial' ? (
               <DialControl
                 key={`${el.id}-${idx}`}
@@ -746,6 +876,8 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
                 disabled={readOnly || na}
                 onChange={next => updateAt(idx, next)}
                 label={label}
+                lowLabel={el.low_label}
+                highLabel={el.high_label}
               />
             ) : (
               <VerticalSliderControl
@@ -757,12 +889,11 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
                 disabled={readOnly || na}
                 onChange={next => updateAt(idx, next)}
                 label={label}
+                lowLabel={el.low_label}
+                highLabel={el.high_label}
               />
             )
           })}
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
-          <span>{el.low_label || min}</span><span>{el.high_label || max}</span>
         </div>
         {el.has_na && <div style={{ marginTop: 8 }}><NAToggle selected={na} onChange={onChange} readOnly={readOnly} /></div>}
       </div>
@@ -772,7 +903,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
   if (el.type === 'timestamp_select') {
     return (
       <div>
-        <QLabel el={el} />
+        <QLabel el={el} questionNumber={questionNumber} />
         <TimestampSelectInput timestamps={timestamps} value={value} onChange={onChange} readOnly={readOnly} allowNA={!!el.has_na} />
       </div>
     )
@@ -784,15 +915,15 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     const tableVal = (typeof value === 'object' && value !== null && !Array.isArray(value)) ? value : {}
     return (
       <div>
-        <QLabel el={el} />
+        <QLabel el={el} questionNumber={questionNumber} />
         <div style={{ overflowX: 'auto' }}>
           <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12, fontFamily: 'var(--font)' }}>
             <thead>
               <tr>
                 <th style={thStyle} />
-                {columns.map(col => (
+                {columns.map((col, colIndex) => (
                   <th key={col.id} style={{ ...thStyle, minWidth: col.type === 'timestamp_select' ? 190 : 100 }}>
-                    {col.label}
+                    {col.label || `Column ${colIndex + 1}`}
                   </th>
                 ))}
               </tr>
@@ -802,7 +933,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
                 const rowVal = (tableVal[String(ri)] && typeof tableVal[String(ri)] === 'object') ? tableVal[String(ri)] : {}
                 return (
                   <tr key={ri}>
-                    <td style={rowHeaderStyle}>{rowLabel}</td>
+                    <td style={rowHeaderStyle}>{rowLabel || `Row ${ri + 1}`}</td>
                     {columns.map(col => (
                       <td key={col.id} style={{ padding: '4px 6px', border: '1px solid var(--border)', verticalAlign: 'middle' }}>
                         <TableCell
@@ -1046,7 +1177,10 @@ function TableCell({ col, value, onChange, readOnly, timestamps }) {
         style={{ ...cellInputStyle, color: value ? 'var(--text)' : 'var(--text-muted)' }}
       >
         <option value="">—</option>
-        {(col.options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        {(col.options || []).map((opt, i) => {
+          const optionValue = opt || `Option ${i + 1}`
+          return <option key={`${i}:${opt}`} value={optionValue}>{optionValue}</option>
+        })}
         {col.has_na && <option value="N/A">N/A</option>}
       </select>
     )

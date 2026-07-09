@@ -7,19 +7,19 @@ import { AGREEMENT_METHOD_LABELS, defaultAgreementEnabledForType, defaultAgreeme
 import Modal from '../ui/Modal'
 
 const ELEMENT_TYPES = [
-  { type: 'short_answer', label: 'Short Answer' },
-  { type: 'paragraph', label: 'Paragraph' },
-  { type: 'multiple_choice', label: 'Multiple Choice' },
-  { type: 'multiselect', label: 'Multi-Select' },
+  { type: 'short_answer', label: 'Short text' },
+  { type: 'paragraph', label: 'Long text' },
+  { type: 'multiple_choice', label: 'Choose one' },
+  { type: 'multiselect', label: 'Choose multiple' },
   { type: 'likert', label: 'Likert Scale' },
   { type: 'likert_group', label: 'Likert Group' },
-  { type: 'rating', label: 'Rating (labeled)' },
+  { type: 'rating', label: 'Labeled rating' },
   { type: 'checkbox', label: 'Checkbox' },
   { type: 'slider', label: 'Slider' },
   { type: 'dial', label: 'Dial' },
   { type: 'vertical_slider', label: 'Vertical Slider' },
-  { type: 'timestamp_select', label: 'Timestamp Select' },
-  { type: 'table', label: 'Table Grid' },
+  { type: 'timestamp_select', label: 'Timestamp picker' },
+  { type: 'table', label: 'Grid / table' },
 ]
 
 const TABLE_COL_TYPES = [
@@ -28,6 +28,8 @@ const TABLE_COL_TYPES = [
   { type: 'select', label: 'Dropdown' },
   { type: 'timestamp_select', label: 'Timestamp' },
 ]
+
+const LIKERT_SCALE_POINTS = [3, 4, 5, 6, 7, 8, 9, 10]
 
 const DEFAULT_QUESTION_WEIGHT_BY_TYPE = {
   table: 0.6,
@@ -225,7 +227,7 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '28px 0' }}>
-        <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 28px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
           {saveError && !migrationPreview && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px', color: '#991b1b', fontSize: 13 }}>
               {saveError}
@@ -308,8 +310,8 @@ function SectionEditor({ section, collapsed, onToggle, onChange, onRemove, onDup
   }, [showAddEl])
 
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 10 }}>
-      <div style={{ background: 'var(--bg-secondary)', padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8, borderRadius: '10px 10px 0 0' }}>
+    <section style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+      <div style={{ padding: '0 0 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
         <button className="btn btn-ghost btn-icon btn-sm" onClick={onToggle}>
           {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
         </button>
@@ -317,24 +319,35 @@ function SectionEditor({ section, collapsed, onToggle, onChange, onRemove, onDup
           value={section.title}
           onChange={e => onChange({ title: e.target.value })}
           placeholder="Section title"
-          style={{ flex: 1, fontWeight: 600, fontSize: 14, border: 'none', background: 'transparent', outline: 'none', padding: 0 }}
+          style={{ flex: 1, fontWeight: 700, fontSize: 15, border: 'none', background: 'transparent', outline: 'none', padding: 0, boxShadow: 'none' }}
         />
         <button className="btn btn-ghost btn-icon btn-sm" title="Duplicate section" onClick={onDuplicate}><Copy size={13} /></button>
         <button className="btn btn-ghost btn-icon btn-sm" title="Remove section" onClick={onRemove}><Trash2 size={13} /></button>
       </div>
 
       {!collapsed && (
-        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ padding: '0 0 0 32px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <input
             value={section.description || ''}
             onChange={e => onChange({ description: e.target.value })}
             placeholder="Section description (optional)"
-            style={{ fontSize: 13, color: 'var(--text-secondary)' }}
+            style={{ fontSize: 13, color: 'var(--text-secondary)', border: 'none', background: 'transparent', padding: '2px 0 8px', boxShadow: 'none' }}
           />
 
-          {section.elements.map(el => (
-            <ElementEditor key={el.id} el={el} onChange={changes => onUpdateElement(el.id, changes)} onRemove={() => onRemoveElement(el.id)} />
-          ))}
+          {section.elements.map((el, elementIndex) => {
+            const questionNumber = (section.elements || [])
+              .slice(0, elementIndex + 1)
+              .filter(item => item.type !== 'text_block').length
+            return (
+              <ElementEditor
+                key={el.id}
+                el={el}
+                questionNumber={questionNumber}
+                onChange={changes => onUpdateElement(el.id, changes)}
+                onRemove={() => onRemoveElement(el.id)}
+              />
+            )
+          })}
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <div ref={dropdownRef} style={{ position: 'relative', display: 'inline-block' }}>
@@ -356,25 +369,131 @@ function SectionEditor({ section, collapsed, onToggle, onChange, onRemove, onDup
               )}
             </div>
             <button className="btn btn-ghost btn-sm" onClick={() => onAddElement('text_block')}>
-              <ImagePlus size={13} /> Add Text/Image as Markdown
+              <ImagePlus size={13} /> Add Instructions / Image
             </button>
           </div>
         </div>
       )}
-    </div>
+    </section>
   )
 }
 
-function ElementEditor({ el, onChange, onRemove }) {
+function questionShapeBadge(el) {
+  if (el.type === 'multiple_choice' || el.type === 'multiselect' || el.type === 'rating') {
+    const count = (el.options || []).filter(Boolean).length
+    return count > 0 ? { label: `${count} option${count === 1 ? '' : 's'}`, tone: 'muted' } : null
+  }
+  if (el.type === 'likert') return { label: `${el.scale || 5} pt`, tone: 'muted' }
+  if (el.type === 'likert_group') {
+    const count = (el.items || []).filter(item => item.label).length || (el.items || []).length
+    return { label: `${count} statement${count === 1 ? '' : 's'}`, tone: 'muted' }
+  }
+  if (el.type === 'table') {
+    const rowCount = (el.rows || []).length
+    const colCount = (el.columns || []).length
+    return { label: `${rowCount}x${colCount}`, tone: 'muted' }
+  }
+  if (el.type === 'slider' || el.type === 'dial' || el.type === 'vertical_slider') {
+    return (el.count || 1) > 1 ? { label: `${el.count} controls`, tone: 'muted' } : null
+  }
+  return null
+}
+
+function QuestionBadge({ tone = 'muted', children }) {
+  const tones = {
+    muted: { background: 'var(--bg-active)', color: 'var(--text-secondary)' },
+    accent: { background: 'var(--accent-light)', color: 'var(--accent)' },
+    success: { background: 'var(--success-light)', color: 'var(--success)' },
+    warning: { background: 'var(--warning-light)', color: 'var(--warning)' },
+  }
+  return (
+    <span style={{
+      ...tones[tone],
+      display: 'inline-flex',
+      alignItems: 'center',
+      height: 20,
+      padding: '0 7px',
+      borderRadius: 99,
+      fontSize: 10,
+      fontWeight: 700,
+      lineHeight: 1,
+      whiteSpace: 'nowrap',
+    }}>
+      {children}
+    </span>
+  )
+}
+
+function ElementEditor({ el, questionNumber, onChange, onRemove }) {
+  const [open, setOpen] = useState(() => !el.label && !(el.type === 'text_block' && el.content))
   const [agrOpen, setAgrOpen] = useState(false)
-  const typeLabel = ELEMENT_TYPES.find(t => t.type === el.type)?.label
+  const typeLabel = el.type === 'text_block' ? 'Instructions / image' : ELEMENT_TYPES.find(t => t.type === el.type)?.label
+  const labelText = el.type === 'text_block'
+    ? (el.content ? el.content.replace(/[#*_`[\]()!]/g, '').trim().split('\n').find(Boolean) : '')
+    : el.label
+  const summaryText = labelText || (el.type === 'text_block' ? 'Instructions / image block' : `Question ${questionNumber || ''}`.trim())
+  const summaryAgrEnabled = el.type !== 'text_block' && (el.agreement_enabled ?? defaultAgreementEnabledForType(el.type))
+  const summaryBadges = [
+    { label: typeLabel || 'Question', tone: 'muted' },
+    el.required ? { label: 'Required', tone: 'accent' } : null,
+    el.has_na ? { label: 'N/A', tone: 'muted' } : null,
+    summaryAgrEnabled ? { label: 'Agreement', tone: 'success' } : null,
+    el.global_agreement_question ? { label: 'Final eval', tone: 'warning' } : null,
+    questionShapeBadge(el),
+  ].filter(Boolean)
+  const shellStyle = {
+    borderRadius: 8,
+    background: open ? 'var(--bg-secondary)' : 'transparent',
+    boxShadow: open ? 'inset 0 0 0 1px var(--border)' : 'none',
+    transition: 'background 0.12s, box-shadow 0.12s',
+  }
+
+  function SummaryRow({ children }) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        title="Expand question"
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+          padding: '9px 10px', border: 'none', background: 'transparent',
+          borderRadius: 8, cursor: 'pointer', textAlign: 'left',
+          fontFamily: 'var(--font)', color: 'var(--text)',
+        }}
+      >
+        {children}
+      </button>
+    )
+  }
+
+  if (!open) {
+    return (
+      <div style={shellStyle}>
+        <SummaryRow>
+          <ChevronRight size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: el.label || el.content ? 'var(--border-strong)' : 'var(--warning)', flexShrink: 0 }} />
+          <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: labelText ? 'var(--text)' : 'var(--text-muted)' }}>
+            {summaryText}
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {summaryBadges.map(badge => (
+              <QuestionBadge key={badge.label} tone={badge.tone}>{badge.label}</QuestionBadge>
+            ))}
+          </span>
+        </SummaryRow>
+      </div>
+    )
+  }
 
   if (el.type === 'text_block') {
     return (
-      <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
+      <div style={{ ...shellStyle, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px 0 12px' }}>
           <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>Text / Image Block</span>
-          <button className="btn btn-ghost btn-icon btn-sm" onClick={onRemove}><Trash2 size={12} /></button>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button className="btn btn-ghost btn-sm" title="Collapse question" onClick={() => setOpen(false)}><ChevronDown size={13} /> Collapse</button>
+            <button className="btn btn-ghost btn-icon btn-sm" onClick={onRemove}><Trash2 size={12} /></button>
+          </div>
         </div>
         <div style={{ padding: 12 }}>
           <MarkdownBlockEditor
@@ -387,7 +506,7 @@ function ElementEditor({ el, onChange, onRemove }) {
     )
   }
 
-  const agrEnabled = el.agreement_enabled ?? defaultAgreementEnabledForType(el.type)
+  const agrEnabled = summaryAgrEnabled
   const agrOptions = agreementMethodOptionsForType(el.type)
   const agrMethod = agrOptions.includes(el.agreement_method) ? el.agreement_method : 'auto'
   const resolvedAgrMethod = agrMethod === 'auto' ? defaultAgreementMethodForType(el.type) : agrMethod
@@ -400,27 +519,24 @@ function ElementEditor({ el, onChange, onRemove }) {
     el.type === 'short_answer' || el.type === 'paragraph' || el.type === 'table'
 
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+    <div style={{ ...shellStyle, overflow: 'hidden' }}>
       {/* Label + compact properties bar */}
-      <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 7 }}>
+      <div style={{ padding: '12px 12px 10px', display: 'flex', flexDirection: 'column', gap: 7 }}>
         <input
           value={el.label || ''}
           onChange={e => onChange({ label: e.target.value })}
           placeholder={
             el.type === 'likert_group' ? 'Group header (optional)' :
-            el.type === 'checkbox' ? 'Checkbox label text' :
-            'Question text'
+            `Question ${questionNumber || ''}`.trim()
           }
           style={{ fontWeight: 500 }}
         />
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="badge badge-muted" style={{ fontSize: 10 }}>{typeLabel}</span>
-          {el.type !== 'checkbox' && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
-              <input type="checkbox" checked={!!el.required} onChange={e => onChange({ required: e.target.checked })} />
-              Required
-            </label>
-          )}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
+            <input type="checkbox" checked={!!el.required} onChange={e => onChange({ required: e.target.checked })} />
+            Required
+          </label>
           {el.type !== 'table' && (
             <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
               <input type="checkbox" checked={!!el.has_na} onChange={e => onChange({ has_na: e.target.checked })} />
@@ -428,13 +544,14 @@ function ElementEditor({ el, onChange, onRemove }) {
             </label>
           )}
           <div style={{ flex: 1 }} />
+          <button className="btn btn-ghost btn-sm" title="Collapse question" onClick={() => setOpen(false)}><ChevronDown size={13} /> Collapse</button>
           <button className="btn btn-ghost btn-icon btn-sm" onClick={onRemove}><Trash2 size={12} /></button>
         </div>
       </div>
 
       {/* Type-specific controls */}
       {hasTypeContent && (
-        <div style={{ borderTop: '1px solid var(--border)', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ padding: '0 12px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           {(el.type === 'multiple_choice' || el.type === 'multiselect' || el.type === 'rating') && (
             <OptionsEditor options={el.options || []} onChange={opts => onChange({ options: opts })} />
           )}
@@ -444,7 +561,7 @@ function ElementEditor({ el, onChange, onRemove }) {
               <div className="form-field" style={{ flex: '0 0 84px' }}>
                 <label>Points</label>
                 <select value={el.scale || 5} onChange={e => onChange({ scale: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }}>
-                  {[3,4,5,6,7].map(n => <option key={n} value={n}>{n}</option>)}
+                  {LIKERT_SCALE_POINTS.map(n => <option key={n} value={n}>{n}</option>)}
                 </select>
               </div>
               <div className="form-field" style={{ flex: 1 }}>
@@ -472,7 +589,7 @@ function ElementEditor({ el, onChange, onRemove }) {
                   <div className="form-field" style={{ flex: '0 0 84px' }}>
                     <label>Points</label>
                     <select value={el.scale || 5} onChange={e => onChange({ scale: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }}>
-                      {[3,4,5,6,7].map(n => <option key={n} value={n}>{n}</option>)}
+                      {LIKERT_SCALE_POINTS.map(n => <option key={n} value={n}>{n}</option>)}
                     </select>
                   </div>
                   <div className="form-field" style={{ flex: 1 }}>
@@ -499,7 +616,7 @@ function ElementEditor({ el, onChange, onRemove }) {
                   </div>
                 ))}
                 <div className="form-field" style={{ flex: 1 }}>
-                  <label title="How many independent sliders to show"># Sliders</label>
+                  <label title="How many independent controls to show"># Controls</label>
                   <input type="number" min={1} max={5} value={el.count ?? 1} onChange={e => onChange({ count: Math.min(5, Math.max(1, Number(e.target.value) || 1)) })} style={{ height: 32, fontSize: 13 }} />
                 </div>
               </div>
@@ -532,12 +649,12 @@ function ElementEditor({ el, onChange, onRemove }) {
       )}
 
       {/* Agreement — collapsible */}
-      <div style={{ borderTop: '1px solid var(--border)' }}>
+      <div>
         <button
           onClick={() => setAgrOpen(o => !o)}
           style={{
             width: '100%', display: 'flex', alignItems: 'center', gap: 6,
-            padding: '6px 12px', fontSize: 12, background: 'none', border: 'none',
+            padding: '7px 12px 9px', fontSize: 12, background: 'none', border: 'none',
             cursor: 'pointer', color: 'var(--text-secondary)', textAlign: 'left',
           }}
         >

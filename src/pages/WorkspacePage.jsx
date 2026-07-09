@@ -173,6 +173,41 @@ export default function WorkspacePage() {
     }
   }, [reviewId])
 
+  function isRequiredResponseAnswered(value) {
+    if (value === 'N/A' || (value && typeof value === 'object' && !Array.isArray(value) && value.__na === true)) return true
+    if (value === undefined || value === null || value === '') return false
+    if (Array.isArray(value)) return value.length > 0
+    if (typeof value === 'object') return Object.keys(value).length > 0
+    return true
+  }
+
+  function isRequiredElementComplete(el, value) {
+    if (el.type === 'checkbox') {
+      return value === true || value === 'N/A' || (value && typeof value === 'object' && !Array.isArray(value) && value.__na === true)
+    }
+    if (el.type === 'likert_group') {
+      const items = el.items || []
+      if (items.length === 0) return false
+      const groupVal = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {}
+      return items.every(item => isRequiredResponseAnswered(groupVal[item.id]))
+    }
+    if (el.type === 'table') {
+      const rows = el.rows || []
+      const columns = el.columns || []
+      if (rows.length === 0 || columns.length === 0) return false
+      const tableVal = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {}
+      return rows.every((_, rowIndex) => {
+        const rowVal = (tableVal[String(rowIndex)] && typeof tableVal[String(rowIndex)] === 'object') ? tableVal[String(rowIndex)] : {}
+        return columns.every(col => isRequiredResponseAnswered(rowVal[col.id]))
+      })
+    }
+    return isRequiredResponseAnswered(value)
+  }
+
+  function requiredElementLabel(el, questionNumber) {
+    return el.label || `Question ${questionNumber || ''}`.trim()
+  }
+
   function getRequiredErrors() {
     const errors = []
     for (const tab of workspaceTabs) {
@@ -181,13 +216,15 @@ export default function WorkspacePage() {
       if (!form?.schema?.sections) continue
       const responses = formResponses[tab.ref_id] || {}
       for (const section of form.schema.sections) {
-        for (const el of (section.elements || [])) {
+        for (const [elementIndex, el] of (section.elements || []).entries()) {
           if (!el.required) continue
           const val = responses[el.id]
-          const empty = val === undefined || val === null || val === '' ||
-            (Array.isArray(val) && val.length === 0) ||
-            (typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length === 0)
-          if (empty) errors.push({ tab: tab.label, question: el.label })
+          const questionNumber = (section.elements || [])
+            .slice(0, elementIndex + 1)
+            .filter(item => item.type !== 'text_block').length
+          if (!isRequiredElementComplete(el, val)) {
+            errors.push({ tab: tab.label, question: requiredElementLabel(el, questionNumber) })
+          }
         }
       }
     }

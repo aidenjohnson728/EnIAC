@@ -484,6 +484,9 @@ export default function ReviewPage() {
   }
 
   function isRequiredElementComplete(el, value) {
+    if (el.type === 'checkbox') {
+      return value === true || value === 'N/A' || (value && typeof value === 'object' && !Array.isArray(value) && value.__na === true)
+    }
     if (el.type === 'likert_group') {
       const items = el.items || []
       if (items.length === 0) return false
@@ -503,11 +506,9 @@ export default function ReviewPage() {
     return isResponseAnswered(value)
   }
 
-  function requiredElementLabel(el) {
+  function requiredElementLabel(el, questionNumber) {
     if (el.label) return el.label
-    if (el.type === 'likert_group') return 'Likert group'
-    if (el.type === 'table') return 'Table'
-    return 'Question'
+    return `Question ${questionNumber || ''}`.trim()
   }
 
   function getRequiredErrors() {
@@ -518,10 +519,13 @@ export default function ReviewPage() {
       if (!form?.schema?.sections) continue
       const responses = formResponses[tab.ref_id] || {}
       for (const section of form.schema.sections) {
-        for (const el of (section.elements || [])) {
+        for (const [elementIndex, el] of (section.elements || []).entries()) {
           if (!el.required) continue
           const val = responses[el.id]
-          if (!isRequiredElementComplete(el, val)) errors.push({ tab: tab.label, question: requiredElementLabel(el) })
+          const questionNumber = (section.elements || [])
+            .slice(0, elementIndex + 1)
+            .filter(item => item.type !== 'text_block').length
+          if (!isRequiredElementComplete(el, val)) errors.push({ tab: tab.label, question: requiredElementLabel(el, questionNumber) })
         }
       }
     }
