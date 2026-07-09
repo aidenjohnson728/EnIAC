@@ -3,6 +3,8 @@ import { ChevronDown, ChevronRight, Check } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
+const HORIZONTAL_SLIDER_INSET = 8
+
 function resolveMarkdownAsset(src, assets = []) {
   const id = String(src || '').replace(/^\.\/sdmo-image-/, '').replace(/^sdmo-image-/, '')
   return assets.find(asset => asset.id === id)?.dataUrl || src
@@ -110,7 +112,7 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
       )}
 
       {/* ── Sections ─────────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: sections.length > 1 ? 0 : 12 }}>
         {sections.map((section, i) => (
           <FormSection
             key={section.id}
@@ -202,13 +204,16 @@ function FormSection({ section, sectionIndex, values, onChange, collapsed, onTog
           {String(sectionIndex + 1).padStart(2, '0')}
         </span>
 
-        <span style={{ fontWeight: 700, fontSize: 13, letterSpacing: '-0.01em', flex: 1 }}>
-          {section.title || 'Section'}
-        </span>
-
-        {section.description && (
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{section.description}</span>
-        )}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, letterSpacing: '-0.01em' }}>
+            {section.title || 'Section'}
+          </div>
+          {section.description && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.35, marginTop: 2 }}>
+              {section.description}
+            </div>
+          )}
+        </div>
 
         {total > 0 && (
           <span style={{
@@ -236,7 +241,7 @@ function FormSection({ section, sectionIndex, values, onChange, collapsed, onTog
       }}>
         <div style={{
           padding: '12px 12px 4px 26px',
-          display: 'flex', flexDirection: 'column', gap: 16,
+          display: 'flex', flexDirection: 'column', gap: 22,
           borderLeft: `3px solid ${complete ? 'rgba(34,197,94,0.25)' : 'var(--border)'}`,
           marginLeft: 0,
           transition: 'border-color 0.25s',
@@ -389,11 +394,257 @@ function questionLabel(el, questionNumber) {
   return el.label || `Question ${questionNumber || ''}`.trim()
 }
 
+function controlLabel(el, index, count) {
+  const custom = Array.isArray(el.control_labels) ? el.control_labels[index] : ''
+  if (custom) return custom
+  if (count > 1) return `${el.type === 'dial' ? 'Dial' : 'Slider'} ${index + 1}`
+  return el.type === 'dial' ? 'Dial' : 'Slider'
+}
+
+function controlEndpointLabel(el, key, index) {
+  const arrayKey = key === 'low' ? 'control_low_labels' : 'control_high_labels'
+  const sharedKey = key === 'low' ? 'low_label' : 'high_label'
+  const custom = Array.isArray(el[arrayKey]) ? el[arrayKey][index] : ''
+  return custom || el[sharedKey] || ''
+}
+
+function decimalPlaces(value) {
+  const text = String(value)
+  if (!text.includes('.')) return 0
+  return text.split('.')[1].replace(/0+$/, '').length
+}
+
+function roundToStep(value, step) {
+  const places = Math.min(6, Math.max(decimalPlaces(value), decimalPlaces(step)))
+  return Number(value.toFixed(places))
+}
+
+function niceTickInterval(span, maxIntervals) {
+  const raw = span / maxIntervals
+  const power = 10 ** Math.floor(Math.log10(raw))
+  const normalized = raw / power
+  const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10
+  return nice * power
+}
+
+function sliderTicks(min, max, step) {
+  const safeMin = Number(min)
+  const safeMax = Number(max)
+  const safeStep = Number(step) > 0 ? Number(step) : 1
+  if (!Number.isFinite(safeMin) || !Number.isFinite(safeMax) || safeMax <= safeMin) return [safeMin || 0]
+
+  const span = safeMax - safeMin
+  const stepCount = Math.floor(span / safeStep)
+  if (stepCount <= 10) {
+    const ticks = []
+    for (let i = 0; i <= stepCount; i++) ticks.push(roundToStep(safeMin + (safeStep * i), safeStep))
+    if (ticks[ticks.length - 1] !== safeMax) ticks.push(safeMax)
+    return ticks
+  }
+
+  const interval = niceTickInterval(span, 6)
+  const ticks = [safeMin]
+  let next = safeMin + interval
+  while (next < safeMax && ticks.length < 9) {
+    ticks.push(roundToStep(next, interval))
+    next += interval
+  }
+  if (ticks[ticks.length - 1] !== safeMax) ticks.push(safeMax)
+  return ticks
+}
+
+function SliderTicks({ min, max, step, inset = 0 }) {
+  const ticks = sliderTicks(min, max, step)
+  const span = max - min || 1
+  return (
+    <div style={{ padding: `0 ${inset}px`, flexShrink: 0 }}>
+      <div style={{ position: 'relative', height: 30 }}>
+        {ticks.map((tick, i) => {
+          const pct = Math.max(0, Math.min(100, ((tick - min) / span) * 100))
+          const first = i === 0
+          const last = i === ticks.length - 1
+          return (
+            <div
+              key={`${tick}-${i}`}
+              style={{
+                position: 'absolute',
+                left: `${pct}%`,
+                top: 0,
+                transform: first ? 'none' : last ? 'translateX(-100%)' : 'translateX(-50%)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: first ? 'flex-start' : last ? 'flex-end' : 'center',
+                minWidth: 34,
+                pointerEvents: 'none',
+              }}
+            >
+              <span style={{ width: 1, height: 7, background: 'var(--border-strong)', borderRadius: 1 }} />
+              <span style={{ marginTop: 3, fontSize: 10, lineHeight: 1, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                {tick}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function HorizontalSliderInput({ min, max, step, value, disabled, onChange }) {
+  const span = max - min || 1
+  const pct = Math.max(0, Math.min(100, ((value - min) / span) * 100))
+  return (
+    <div style={{ padding: `0 ${HORIZONTAL_SLIDER_INSET}px` }}>
+      <div style={{ position: 'relative', height: 24 }}>
+        <div style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          top: '50%',
+          height: 6,
+          transform: 'translateY(-50%)',
+          borderRadius: 99,
+          background: 'var(--bg-active)',
+          boxShadow: 'inset 0 0 0 1px var(--border)',
+          pointerEvents: 'none',
+        }} />
+        <div style={{
+          position: 'absolute',
+          left: 0,
+          width: `${pct}%`,
+          top: '50%',
+          height: 6,
+          transform: 'translateY(-50%)',
+          borderRadius: 99,
+          background: disabled ? 'var(--border-strong)' : 'var(--accent)',
+          pointerEvents: 'none',
+        }} />
+        <div style={{
+          position: 'absolute',
+          left: `${pct}%`,
+          top: '50%',
+          width: 14,
+          height: 14,
+          transform: 'translate(-50%, -50%)',
+          borderRadius: '50%',
+          background: disabled ? 'var(--border-strong)' : 'var(--accent)',
+          border: 'none',
+          boxShadow: 'none',
+          pointerEvents: 'none',
+        }} />
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={e => !disabled && onChange(Number(e.target.value))}
+          disabled={disabled}
+          aria-valuemin={min}
+          aria-valuemax={max}
+          aria-valuenow={value}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            margin: 0,
+            padding: 0,
+            opacity: 0,
+            cursor: disabled ? 'default' : 'pointer',
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function normalizeScaleLabels(labels, min, max) {
+  return (labels || [])
+    .map(item => {
+      const from = Number(item.from ?? item.value ?? min)
+      const to = Number(item.to ?? item.from ?? item.value ?? from)
+      return {
+        from: Math.max(min, Math.min(max, Math.min(from, to))),
+        to: Math.max(min, Math.min(max, Math.max(from, to))),
+        label: String(item.label || '').trim(),
+      }
+    })
+    .filter(item => item.label)
+    .sort((a, b) => a.from - b.from || a.to - b.to)
+}
+
+function scaleLabelRangeText(item) {
+  return item.from === item.to ? `${item.from}` : `${item.from}-${item.to}`
+}
+
+function SliderScaleLabels({ labels, min, max }) {
+  const items = normalizeScaleLabels(labels, min, max)
+  if (!items.length) return null
+  return (
+    <div style={{
+      display: 'flex',
+      flexWrap: 'wrap',
+      gap: 6,
+      marginTop: 2,
+      paddingTop: 2,
+    }}>
+      {items.map((item, i) => (
+        <div
+          key={`${item.from}-${item.to}-${item.label}-${i}`}
+          title={`${scaleLabelRangeText(item)} = ${item.label}`}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            minWidth: 0,
+            maxWidth: '100%',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 6,
+            overflow: 'hidden',
+            background: 'var(--bg)',
+          }}
+        >
+          <span style={{
+            padding: '3px 7px',
+            background: 'var(--bg-active)',
+            borderRight: '1px solid var(--border)',
+            color: 'var(--text)',
+            fontSize: 10,
+            fontWeight: 700,
+            lineHeight: 1.3,
+            fontVariantNumeric: 'tabular-nums',
+            whiteSpace: 'nowrap',
+          }}>
+            {scaleLabelRangeText(item)}
+          </span>
+          <span style={{
+            padding: '3px 8px',
+            color: 'var(--text)',
+            fontSize: 11,
+            fontWeight: 500,
+            lineHeight: 1.3,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}>
+            {item.label}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function QLabel({ el, questionNumber }) {
   return (
     <div style={{ marginBottom: 6 }}>
-      <span style={{ fontWeight: 600, fontSize: 13, letterSpacing: '-0.01em' }}>{questionLabel(el, questionNumber)}</span>
+      <span style={{ fontWeight: 600, fontSize: 14, letterSpacing: '-0.01em' }}>{questionLabel(el, questionNumber)}</span>
       {el.required && <span style={{ color: 'var(--danger)', marginLeft: 3, fontSize: 12 }}>*</span>}
+      {el.description && (
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500, marginTop: 3, lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+          {el.description}
+        </div>
+      )}
     </div>
   )
 }
@@ -425,7 +676,7 @@ function NAToggle({ selected, onChange, readOnly, compact = false }) {
   )
 }
 
-function ScaleEndpointLabels({ low, high, min, max, vertical = false }) {
+function ScaleEndpointLabels({ low, high, min, max, vertical = false, inset = 0 }) {
   const lowText = low || min
   const highText = high || max
   if (vertical) {
@@ -437,7 +688,7 @@ function ScaleEndpointLabels({ low, high, min, max, vertical = false }) {
     )
   }
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.25 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.25, padding: `0 ${inset}px` }}>
       <span>{lowText}</span>
       <span style={{ textAlign: 'right' }}>{highText}</span>
     </div>
@@ -490,6 +741,26 @@ function NumericStepper({ value, min, max, step, disabled, onChange }) {
   )
 }
 
+function ControlTitle({ children }) {
+  return (
+    <div style={{
+      width: '100%',
+      minHeight: 34,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      textAlign: 'center',
+      fontSize: 13,
+      lineHeight: 1.3,
+      fontWeight: 700,
+      color: 'var(--text)',
+      padding: '0 4px',
+    }}>
+      {children}
+    </div>
+  )
+}
+
 function DialControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel }) {
   const safeValue = Number.isFinite(value) ? value : min
   const bounded = Math.min(max, Math.max(min, safeValue))
@@ -505,14 +776,15 @@ function DialControl({ value, min, max, step, disabled, onChange, label, lowLabe
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      gap: 8,
-      minWidth: 132,
-      padding: '10px 12px',
+      gap: 10,
+      minWidth: 156,
+      maxWidth: 220,
+      padding: '12px 14px',
       border: '1px solid var(--border)',
       borderRadius: 8,
       background: 'var(--bg)',
     }}>
-      <div style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'center', lineHeight: 1.2, fontWeight: 600 }}>{label}</div>
+      <ControlTitle>{label}</ControlTitle>
       <div
         style={{
           cursor: 'default',
@@ -571,14 +843,15 @@ function VerticalSliderControl({ value, min, max, step, disabled, onChange, labe
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      gap: 8,
-      minWidth: 132,
-      padding: '10px 12px',
+      gap: 10,
+      minWidth: 156,
+      maxWidth: 220,
+      padding: '12px 14px',
       border: '1px solid var(--border)',
       borderRadius: 8,
       background: 'var(--bg)',
     }}>
-      <div style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'center', lineHeight: 1.2, fontWeight: 600 }}>{label}</div>
+      <ControlTitle>{label}</ControlTitle>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <ScaleEndpointLabels low={lowLabel} high={highLabel} min={min} max={max} vertical />
         <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -651,10 +924,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     const groupVal = (typeof value === 'object' && value !== null && !Array.isArray(value)) ? value : {}
     return (
       <div>
-        <div style={{ fontWeight: 700, fontSize: 13, letterSpacing: '-0.01em', marginBottom: el.description ? 3 : 10 }}>
-          {questionLabel(el, questionNumber)}{el.required && <span style={{ color: 'var(--danger)', marginLeft: 3, fontSize: 12 }}>*</span>}
-        </div>
-        {el.description && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.55 }}>{el.description}</div>}
+        <QLabel el={el} questionNumber={questionNumber} />
         <div style={{ display: 'flex', alignItems: 'center', paddingBottom: 6, borderBottom: '1.5px solid var(--border)' }}>
           <div style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)' }}>{el.low_label ? `1 = ${el.low_label}` : '1'}</div>
           {el.has_na && <div style={{ width: COL_W, textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, flexShrink: 0 }}>N/A</div>}
@@ -817,11 +1087,18 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
         <QLabel el={el} questionNumber={questionNumber} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 7, opacity: na ? 0.55 : 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 7 }}>
-              <ScaleEndpointLabels low={el.low_label} high={el.high_label} min={min} max={max} />
-              <input type="range" min={min} max={max} step={step} value={bounded}
-                onChange={e => !readOnly && onChange(Number(e.target.value))}
-                disabled={readOnly || na} style={{ width: '100%', accentColor: 'var(--accent)', cursor: readOnly || na ? 'default' : 'pointer' }} />
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+              <ScaleEndpointLabels low={el.low_label} high={el.high_label} min={min} max={max} inset={HORIZONTAL_SLIDER_INSET} />
+              <HorizontalSliderInput
+                min={min}
+                max={max}
+                step={step}
+                value={bounded}
+                disabled={readOnly || na}
+                onChange={onChange}
+              />
+              <SliderTicks min={min} max={max} step={step} inset={HORIZONTAL_SLIDER_INSET} />
+              <SliderScaleLabels labels={el.scale_labels} min={min} max={max} />
             </div>
             <NumericStepper
               value={bounded}
@@ -863,9 +1140,9 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
           {Array.from({ length: count }, (_, idx) => {
             const current = values[idx]
             const safeCurrent = Number.isFinite(current) ? current : min
-            const label = count > 1
-              ? `${el.type === 'dial' ? 'Dial' : 'Slider'} ${idx + 1}`
-              : (el.type === 'dial' ? 'Dial' : 'Slider')
+            const label = controlLabel(el, idx, count)
+            const lowLabel = controlEndpointLabel(el, 'low', idx)
+            const highLabel = controlEndpointLabel(el, 'high', idx)
             return el.type === 'dial' ? (
               <DialControl
                 key={`${el.id}-${idx}`}
@@ -876,8 +1153,8 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
                 disabled={readOnly || na}
                 onChange={next => updateAt(idx, next)}
                 label={label}
-                lowLabel={el.low_label}
-                highLabel={el.high_label}
+                lowLabel={lowLabel}
+                highLabel={highLabel}
               />
             ) : (
               <VerticalSliderControl
@@ -889,8 +1166,8 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
                 disabled={readOnly || na}
                 onChange={next => updateAt(idx, next)}
                 label={label}
-                lowLabel={el.low_label}
-                highLabel={el.high_label}
+                lowLabel={lowLabel}
+                highLabel={highLabel}
               />
             )
           })}
@@ -1183,6 +1460,41 @@ function TableCell({ col, value, onChange, readOnly, timestamps }) {
         })}
         {col.has_na && <option value="N/A">N/A</option>}
       </select>
+    )
+  }
+  if (col.type === 'checkbox') {
+    const checked = value === true
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <button
+          type="button"
+          disabled={readOnly || na}
+          onClick={() => !readOnly && !na && onChange(checked ? false : true)}
+          style={{
+            ...cellInputStyle,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minHeight: 30,
+            cursor: readOnly || na ? 'default' : 'pointer',
+            background: checked ? 'var(--accent-light)' : 'var(--bg)',
+          }}
+        >
+          <span style={{
+            width: 18,
+            height: 18,
+            borderRadius: 4,
+            border: `2px solid ${checked ? 'var(--accent)' : 'var(--border-strong)'}`,
+            background: checked ? 'var(--accent)' : 'transparent',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}>
+            {checked && <Check size={11} color="#fff" strokeWidth={3} />}
+          </span>
+        </button>
+        {col.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} compact />}
+      </div>
     )
   }
   if (col.type === 'timestamp_select') {

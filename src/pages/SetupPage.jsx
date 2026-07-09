@@ -2091,9 +2091,9 @@ function OverviewSection() {
       <div style={{ display: 'flex', gap: 12, padding: '14px 16px', border: '1px solid var(--accent)', background: 'var(--accent-light)', borderRadius: 8, marginBottom: 28 }}>
         <span style={{ fontSize: 20, lineHeight: 1, flexShrink: 0, marginTop: 1 }}>🎓</span>
         <div>
-          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, color: 'var(--accent)' }}>New to SDMo? Start with the sample project</div>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, color: 'var(--accent)' }}>New to SDMo? Start with the tutorial project</div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            From the home screen, click <strong>Sample Project</strong> to open a ready-made example with encounters, media, and a coding form already set up. Guided pop-up tips walk you through each page. Look for the <strong>?</strong> button in the top-right of any page to replay a tour.
+            From the home screen, click <strong>Tutorial Project</strong> to open a ready-made example with encounters, media, and a coding form already set up. Guided pop-up tips walk you through each page. Look for the <strong>?</strong> button in the top-right of any page to replay a tour.
           </div>
         </div>
       </div>

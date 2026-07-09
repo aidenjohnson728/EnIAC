@@ -911,7 +911,7 @@ export default function ReviewPage() {
             <div style={isPdfWorkspaceTab
               ? { flex: 1, overflow: 'hidden', padding: 0, width: '100%', minHeight: 0 }
               : isFormWorkspaceTab
-                ? { flex: 1, overflow: 'auto', padding: '0 24px 24px', maxWidth: 800, width: '100%', margin: '0 auto' }
+                ? { flex: 1, overflow: 'auto', padding: '18px 32px 28px', maxWidth: 1120, width: '100%', margin: '0 auto' }
               : { flex: 1, overflow: 'auto', padding: 24, maxWidth: 800, width: '100%', margin: '0 auto' }
             }>
               {workspaceContent}
@@ -1307,7 +1307,7 @@ function TagSelectionPanel({ timestamp, tags, onSelect, onBack }) {
       if (!buckets.has(bucket)) buckets.set(bucket, [])
       buckets.get(bucket).push(tagItem)
     }
-    return Array.from(buckets.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+    return Array.from(buckets.entries())
   }, [tags])
 
   return (

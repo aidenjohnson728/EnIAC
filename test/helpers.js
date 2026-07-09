@@ -32,8 +32,8 @@ function addMediaType(db, projectId, name, opts = {}) {
   const id = db.prepare("INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))")
     .run(projectId, name, opts.reviews_required ?? 1, opts.allow_custom_tags ? 1 : 0, opts.color || '#6366f1', opts.sync_id || crypto.randomUUID()).lastInsertRowid
   for (const t of (opts.tags || [])) {
-    db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)')
-      .run(id, t.label, t.color || '#000000', t.description || '')
+    db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description, category) VALUES (?,?,?,?,?)')
+      .run(id, t.label, t.color || '#000000', t.description || '', t.category || null)
   }
   return id
 }

@@ -243,7 +243,7 @@ function buildConfigExport(db, projectId) {
   )
 
   const mediaTypes = db.prepare('SELECT * FROM media_types WHERE project_id=?').all(projectId).map(mt => {
-    const tags = db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=?').all(mt.id)
+    const tags = db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=? ORDER BY id').all(mt.id)
     const rawTabs = db.prepare('SELECT * FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order').all(mt.id)
     const tabs = rawTabs.map(tab => {
       let refName = null
@@ -432,13 +432,13 @@ function _writeMediaTypeChildren(db, projectId, mtId, mt) {
 
 // Content shapes for tie-break hashing — only the synced fields that define an entity.
 function _localMediaTypeContent(db, row) {
-  const tags = db.prepare('SELECT label, color, description, category FROM timestamp_tags WHERE media_type_id=? ORDER BY label').all(row.id)
+  const tags = db.prepare('SELECT label, color, description, category FROM timestamp_tags WHERE media_type_id=? ORDER BY id').all(row.id)
   const tabs = db.prepare("SELECT tab_type, label, sort_order, ref_id FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order").all(row.id)
     .map(t => ({ tab_type: t.tab_type, label: t.label, sort_order: t.sort_order }))
   return { name: row.name, reviews_required: row.reviews_required, allow_custom_tags: row.allow_custom_tags ? 1 : 0, color: row.color, tags, tabs: tabs.length }
 }
 function _incomingMediaTypeContent(mt) {
-  const tags = (mt.tags || []).map(t => ({ label: t.label, color: t.color, description: t.description, category: t.category || null })).sort((a, b) => (a.label > b.label ? 1 : -1))
+  const tags = (mt.tags || []).map(t => ({ label: t.label, color: t.color, description: t.description, category: t.category || null }))
   return { name: mt.name, reviews_required: mt.reviews_required, allow_custom_tags: mt.allow_custom_tags ? 1 : 0, color: mt.color, tags, tabs: (mt.workspace_tabs || []).length }
 }
 
@@ -695,7 +695,7 @@ function mergeReviewFile(db, projectId, reviewData, ownUuid) {
 
       const mediaFile = db.prepare('SELECT media_type_id FROM media_files WHERE id=?').get(localMedia.id)
       const localTags = mediaFile?.media_type_id
-        ? db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=?').all(mediaFile.media_type_id)
+        ? db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=? ORDER BY id').all(mediaFile.media_type_id)
         : []
 
       const insertTimestamps = (reviewId) => {
@@ -1276,7 +1276,7 @@ function canonicalizeProjectState(state) {
     instructions: sortBy(state.instructions, 'sync_id').map(stripClock),
     media_types: sortBy(state.media_types, 'sync_id').map(mt => ({
       ...stripClock(mt),
-      tags: [...(mt.tags || [])].sort((a, b) => (a.label || '') > (b.label || '') ? 1 : -1),
+      tags: [...(mt.tags || [])],
       workspace_tabs: [...(mt.workspace_tabs || [])].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
     })),
     media_type_versions: sortBy(state.media_type_versions, 'media_type_sync_id').map(v => ({
@@ -1382,11 +1382,12 @@ function canonicalWorkspaceSnapshot(snapshot) {
       allow_custom_tags: snapshot.media_type.allow_custom_tags ? 1 : 0,
       color: snapshot.media_type.color || null,
     } : null,
-    tags: sortStable((snapshot.tags || []).map(t => ({
+    tags: (snapshot.tags || []).map(t => ({
       label: t.label || '',
       color: t.color || null,
       description: t.description || '',
-    })), t => t.label),
+      category: t.category || null,
+    })),
     workspace_tabs: sortStable((snapshot.workspace_tabs || []).map(tab => ({
       tab_type: tab.tab_type || '',
       ref_sync_id: tab.ref_sync_id || null,
@@ -2198,12 +2199,19 @@ function buildReviewsWorkbook(db, projectId) {
     if (el.type === 'rating') return withNA(optionText(el.options))
     if (el.type === 'likert') return withNA(`1-${el.scale || 5}`)
     if (el.type === 'likert_group') return withNA(`1-${el.scale || 5}`)
-    if (el.type === 'slider') return withNA(`${el.min ?? 0}-${el.max ?? 100}`)
+    if (el.type === 'slider' || el.type === 'dial' || el.type === 'vertical_slider') return withNA(`${el.min ?? 0}-${el.max ?? 100}`)
     if (el.type === 'checkbox') return withNA('Yes, No')
     if (el.type === 'timestamp_select') return withNA('Time in seconds plus optional tag label')
     if (el.type === 'short_answer' || el.type === 'paragraph') return withNA('Free text')
     if (el.type === 'table') return 'Table grid'
     return ''
+  }
+
+  function controlLabelForElement(el, index, count) {
+    const custom = Array.isArray(el.control_labels) ? el.control_labels[index] : ''
+    if (custom) return custom
+    if (count > 1) return `${el.type === 'dial' ? 'Dial' : 'Slider'} ${index + 1}`
+    return el.type === 'dial' ? 'Dial' : 'Slider'
   }
 
   function defaultAgreementEnabledForType(type) {
@@ -2237,6 +2245,7 @@ function buildReviewsWorkbook(db, projectId) {
     const withNA = (text) => `${text}${col.has_na ? ', N/A' : ''}`
     if (col.type === 'select') return withNA(optionText(col.options))
     if (col.type === 'number') return withNA('Number')
+    if (col.type === 'checkbox') return withNA('Yes, No')
     if (col.type === 'timestamp_select') return withNA('Time in seconds plus optional tag label')
     return withNA('Free text')
   }
@@ -2433,6 +2442,31 @@ function buildReviewsWorkbook(db, projectId) {
               })
             }
           }
+        } else if (el.type === 'slider' || el.type === 'dial' || el.type === 'vertical_slider') {
+          const count = Math.min(5, Math.max(1, Number(el.count || 1)))
+          if (count > 1) {
+            for (let i = 0; i < count; i++) {
+              entries.push({
+                form,
+                section,
+                el,
+                component: { id: `${el.id}.${i}`, label: controlLabelForElement(el, i, count) },
+                getValue: (resp) => {
+                  const v = resp[el.id]
+                  if (v === 'N/A') return 'N/A'
+                  return Array.isArray(v) ? v[i] : undefined
+                },
+              })
+            }
+          } else {
+            entries.push({
+              form,
+              section,
+              el,
+              component: { id: el.id, label: el.label || el.id },
+              getValue: (resp) => resp[el.id],
+            })
+          }
         } else {
           entries.push({
             form,
@@ -2521,6 +2555,7 @@ function buildReviewsWorkbook(db, projectId) {
                 if (Array.isArray(v)) return v.join('; ')
                 if (v === 'N/A') return 'N/A'
                 if (col.type === 'number') return typeof v === 'number' ? v : (isNaN(Number(v)) ? '' : Number(v))
+                if (col.type === 'checkbox') return v === true ? 'Yes' : v === false ? 'No' : ''
                 return String(v)
               }, `table / ${col.type}`, componentBase.validValues)
             }
@@ -2565,16 +2600,34 @@ function buildReviewsWorkbook(db, projectId) {
         }, 'checkbox', component.validValues)
         addSchemaEntry(form, section, el, component, (resp) => resp[el.id])
 
-      } else if (el.type === 'rating' || el.type === 'likert' || el.type === 'slider') {
+      } else if (el.type === 'rating' || el.type === 'likert' || el.type === 'slider' || el.type === 'dial' || el.type === 'vertical_slider') {
         const validValues = validValuesForElement(el)
-        const component = { id: el.id, label: el.label || el.id, validValues }
-        pushCol(form, section, el, component, prefix, (resp) => {
-          const v = resp[el.id]
-          if (v == null) return ''
-          if (v === 'N/A') return 'N/A'
-          return typeof v === 'number' ? v : (isNaN(Number(v)) ? '' : Number(v))
-        }, el.type, validValues)
-        addSchemaEntry(form, section, el, component, (resp) => resp[el.id])
+        const count = Math.min(5, Math.max(1, Number(el.count || 1)))
+        if ((el.type === 'slider' || el.type === 'dial' || el.type === 'vertical_slider') && count > 1) {
+          for (let i = 0; i < count; i++) {
+            const label = controlLabelForElement(el, i, count)
+            const component = { id: `${el.id}.${i}`, label, validValues }
+            const getControlValue = (resp) => {
+              const v = resp[el.id]
+              if (v === 'N/A') return 'N/A'
+              if (!Array.isArray(v)) return ''
+              const item = v[i]
+              if (item == null) return ''
+              return typeof item === 'number' ? item : (isNaN(Number(item)) ? '' : Number(item))
+            }
+            pushCol(form, section, el, component, `${prefix}: ${label}`, getControlValue, el.type, validValues)
+            addSchemaEntry(form, section, el, component, getControlValue)
+          }
+        } else {
+          const component = { id: el.id, label: el.label || el.id, validValues }
+          pushCol(form, section, el, component, prefix, (resp) => {
+            const v = resp[el.id]
+            if (v == null) return ''
+            if (v === 'N/A') return 'N/A'
+            return typeof v === 'number' ? v : (isNaN(Number(v)) ? '' : Number(v))
+          }, el.type, validValues)
+          addSchemaEntry(form, section, el, component, (resp) => resp[el.id])
+        }
 
       } else if (el.type === 'multiselect') {
         const component = { id: el.id, label: el.label || el.id, validValues: validValuesForElement(el) }
@@ -2863,7 +2916,7 @@ function buildExport(db, projectId) {
   })
 
   const mediaTypes = db.prepare('SELECT * FROM media_types WHERE project_id=?').all(projectId).map(mt => {
-    const tags = db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=?').all(mt.id)
+    const tags = db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=? ORDER BY id').all(mt.id)
     const rawTabs = db.prepare('SELECT * FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order').all(mt.id)
     const tabs = rawTabs.map(tab => {
       let refName = null
@@ -2874,7 +2927,7 @@ function buildExport(db, projectId) {
     return {
       name: mt.name, sync_id: mt.sync_id || null, config_version: mt.config_version || 1, archived_at: mt.archived_at || null,
       reviews_required: mt.reviews_required, allow_custom_tags: mt.allow_custom_tags, color: mt.color,
-      tags: tags.map(t => ({ label: t.label, color: t.color, description: t.description })),
+      tags: tags.map(t => ({ label: t.label, color: t.color, description: t.description, category: t.category || null })),
       workspace_tabs: tabs,
     }
   })
@@ -3012,7 +3065,7 @@ function mergeImport(db, projectId, data) {
       }
       db.prepare('DELETE FROM timestamp_tags WHERE media_type_id=?').run(mtId)
       for (const tag of (mt.tags || [])) {
-        db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)').run(mtId, tag.label, tag.color || '#6366f1', tag.description || '')
+        db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description, category) VALUES (?,?,?,?,?)').run(mtId, tag.label, tag.color || '#6366f1', tag.description || '', tag.category || null)
       }
       db.prepare('DELETE FROM workspace_tabs WHERE media_type_id=?').run(mtId)
       for (let i = 0; i < (mt.workspace_tabs || []).length; i++) {
@@ -3066,7 +3119,7 @@ function mergeImport(db, projectId, data) {
             .run(localEnc.id, media.name, mt?.id || null, media.sync_id || null, media.updated_at || null, localMedia.id)
         }
         const mediaFile = db.prepare('SELECT media_type_id FROM media_files WHERE id=?').get(localMedia.id)
-        const localTags = mediaFile?.media_type_id ? db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=?').all(mediaFile.media_type_id) : []
+        const localTags = mediaFile?.media_type_id ? db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=? ORDER BY id').all(mediaFile.media_type_id) : []
 
         for (const rev of (media.reviews || [])) {
           const existing = db.prepare('SELECT id, status FROM reviews WHERE media_file_id=? AND reviewer_name=?').get(localMedia.id, rev.reviewer_name)

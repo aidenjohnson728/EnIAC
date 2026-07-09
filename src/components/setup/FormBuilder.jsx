@@ -25,6 +25,7 @@ const ELEMENT_TYPES = [
 const TABLE_COL_TYPES = [
   { type: 'text', label: 'Text' },
   { type: 'number', label: 'Number' },
+  { type: 'checkbox', label: 'Checkbox' },
   { type: 'select', label: 'Dropdown' },
   { type: 'timestamp_select', label: 'Timestamp' },
 ]
@@ -327,11 +328,24 @@ function SectionEditor({ section, collapsed, onToggle, onChange, onRemove, onDup
 
       {!collapsed && (
         <div style={{ padding: '0 0 0 32px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <input
+          <textarea
             value={section.description || ''}
             onChange={e => onChange({ description: e.target.value })}
             placeholder="Section description (optional)"
-            style={{ fontSize: 13, color: 'var(--text-secondary)', border: 'none', background: 'transparent', padding: '2px 0 8px', boxShadow: 'none' }}
+            rows={2}
+            style={{
+              fontSize: 13,
+              color: 'var(--text-secondary)',
+              border: 'none',
+              background: 'transparent',
+              padding: '2px 0 8px',
+              boxShadow: 'none',
+              resize: 'vertical',
+              minHeight: 42,
+              lineHeight: 1.45,
+              whiteSpace: 'pre-wrap',
+              overflowWrap: 'anywhere',
+            }}
           />
 
           {section.elements.map((el, elementIndex) => {
@@ -422,6 +436,11 @@ function QuestionBadge({ tone = 'muted', children }) {
       {children}
     </span>
   )
+}
+
+function controlLabelFallback(type, index, count) {
+  if (count > 1) return `${type === 'dial' ? 'Dial' : 'Slider'} ${index + 1}`
+  return type === 'dial' ? 'Dial' : 'Slider'
 }
 
 function ElementEditor({ el, questionNumber, onChange, onRemove }) {
@@ -531,6 +550,21 @@ function ElementEditor({ el, questionNumber, onChange, onRemove }) {
           }
           style={{ fontWeight: 500 }}
         />
+        <textarea
+          value={el.description || ''}
+          onChange={e => onChange({ description: e.target.value })}
+          placeholder="Question description (optional)"
+          rows={2}
+          style={{
+            fontSize: 13,
+            color: 'var(--text-secondary)',
+            minHeight: 42,
+            lineHeight: 1.45,
+            resize: 'vertical',
+            whiteSpace: 'pre-wrap',
+            overflowWrap: 'anywhere',
+          }}
+        />
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="badge badge-muted" style={{ fontSize: 10 }}>{typeLabel}</span>
           <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
@@ -577,12 +611,6 @@ function ElementEditor({ el, questionNumber, onChange, onRemove }) {
 
           {el.type === 'likert_group' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <input
-                value={el.description || ''}
-                onChange={e => onChange({ description: e.target.value })}
-                placeholder="Instructions / description (optional)"
-                style={{ fontSize: 13 }}
-              />
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Scale</span>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
@@ -630,6 +658,27 @@ function ElementEditor({ el, questionNumber, onChange, onRemove }) {
                   <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. High" style={{ height: 32, fontSize: 13 }} />
                 </div>
               </div>
+              {el.type === 'slider' && (
+                <SliderScaleLabelsEditor
+                  labels={el.scale_labels || []}
+                  min={el.min ?? 0}
+                  max={el.max ?? 100}
+                  step={el.step ?? 1}
+                  onChange={scaleLabels => onChange({ scale_labels: scaleLabels })}
+                />
+              )}
+              {(el.count || 1) > 1 && (
+                <ControlSettingsEditor
+                  type={el.type}
+                  count={Math.min(5, Math.max(1, Number(el.count || 1)))}
+                  labels={el.control_labels || []}
+                  lowLabels={el.control_low_labels || []}
+                  highLabels={el.control_high_labels || []}
+                  sharedLowLabel={el.low_label || ''}
+                  sharedHighLabel={el.high_label || ''}
+                  onChange={changes => onChange(changes)}
+                />
+              )}
             </div>
           )}
 
@@ -912,6 +961,123 @@ function OptionsEditor({ options, onChange }) {
   )
 }
 
+function SliderScaleLabelsEditor({ labels, min, max, step, onChange }) {
+  const safeMin = Number.isFinite(Number(min)) ? Number(min) : 0
+  const safeMax = Number.isFinite(Number(max)) ? Number(max) : 100
+  const safeStep = Number(step) > 0 ? Number(step) : 1
+  const rows = (labels || []).map(row => ({
+    from: row.from ?? row.value ?? safeMin,
+    to: row.to ?? row.from ?? row.value ?? row.from ?? safeMin,
+    label: row.label || '',
+  }))
+
+  function updateRow(index, changes) {
+    onChange(rows.map((row, i) => i === index ? { ...row, ...changes } : row))
+  }
+
+  function addRow() {
+    const last = rows[rows.length - 1]
+    const nextFrom = last ? Math.min(safeMax, Number(last.to ?? last.from ?? safeMin) + safeStep) : safeMin
+    onChange([...rows, { from: nextFrom, to: nextFrom, label: '' }])
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          Scale meaning labels
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+          Optional. Use ranges for longer meanings, e.g. 2-3 = Probably not.
+        </div>
+      </div>
+      {rows.map((row, i) => (
+        <div key={i} style={{ display: 'grid', gridTemplateColumns: '76px 76px minmax(150px, 1fr) 28px', gap: 6, alignItems: 'center' }}>
+          <input
+            type="number"
+            min={safeMin}
+            max={safeMax}
+            step={safeStep}
+            value={row.from}
+            onChange={e => updateRow(i, { from: Number(e.target.value) })}
+            aria-label="Scale label from"
+            style={{ height: 32, fontSize: 13 }}
+          />
+          <input
+            type="number"
+            min={safeMin}
+            max={safeMax}
+            step={safeStep}
+            value={row.to}
+            onChange={e => updateRow(i, { to: Number(e.target.value) })}
+            aria-label="Scale label to"
+            style={{ height: 32, fontSize: 13 }}
+          />
+          <input
+            value={row.label}
+            onChange={e => updateRow(i, { label: e.target.value })}
+            placeholder={i === 0 ? 'Definitely not' : 'Meaning'}
+            style={{ height: 32, fontSize: 13 }}
+          />
+          <button className="btn btn-ghost btn-icon btn-sm" onClick={() => onChange(rows.filter((_, j) => j !== i))} title="Remove scale label">
+            <Trash2 size={12} />
+          </button>
+        </div>
+      ))}
+      <button className="btn btn-ghost btn-sm" onClick={addRow} style={{ alignSelf: 'flex-start', fontSize: 12 }}>
+        <Plus size={12} /> Add Meaning
+      </button>
+    </div>
+  )
+}
+
+function ControlSettingsEditor({ type, count, labels, lowLabels, highLabels, sharedLowLabel, sharedHighLabel, onChange }) {
+  const safeLabels = Array.from({ length: count }, (_, i) => labels[i] || '')
+  const safeLowLabels = Array.from({ length: count }, (_, i) => lowLabels[i] || '')
+  const safeHighLabels = Array.from({ length: count }, (_, i) => highLabels[i] || '')
+
+  function updateArray(key, values, index, value) {
+    const next = [...values]
+    next[index] = value
+    onChange({ [key]: next })
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+        Per-control labels
+      </span>
+      {safeLabels.map((label, i) => (
+        <div key={i} style={{ display: 'grid', gridTemplateColumns: '20px minmax(160px, 1.8fr) minmax(90px, 1fr) minmax(90px, 1fr)', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'right' }}>{i + 1}.</span>
+          <input
+            value={label}
+            onChange={e => {
+              const next = [...safeLabels]
+              next[i] = e.target.value
+              onChange({ control_labels: next })
+            }}
+            placeholder={`${controlLabelFallback(type, i, count)} statement`}
+            style={{ fontSize: 13, height: 32 }}
+          />
+          <input
+            value={safeLowLabels[i]}
+            onChange={e => updateArray('control_low_labels', safeLowLabels, i, e.target.value)}
+            placeholder={sharedLowLabel || 'Low end'}
+            style={{ fontSize: 13, height: 32 }}
+          />
+          <input
+            value={safeHighLabels[i]}
+            onChange={e => updateArray('control_high_labels', safeHighLabels, i, e.target.value)}
+            placeholder={sharedHighLabel || 'High end'}
+            style={{ fontSize: 13, height: 32 }}
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function TableEditor({ rows, columns, onRowsChange, onColumnsChange }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.6fr', gap: 16, alignItems: 'start' }}>
@@ -1008,13 +1174,13 @@ function makeElement(type) {
     agreement_weight: DEFAULT_QUESTION_WEIGHT_BY_TYPE[type] ?? 1,
     agreement_method: 'auto',
   }
-  const base = { id: newId(), type, label: '', required: false, has_na: false, ...agreement }
+  const base = { id: newId(), type, label: '', description: '', required: false, has_na: false, ...agreement }
   if (type === 'multiple_choice' || type === 'multiselect') return { ...base, options: ['Option 1', 'Option 2'] }
   if (type === 'rating') return { ...base, options: ['Option 1', 'Option 2', 'Option 3', 'Option 4'] }
   if (type === 'likert') return { ...base, scale: 5, low_label: '', high_label: '', has_na: false }
   if (type === 'likert_group') return { id: newId(), type: 'likert_group', label: '', description: '', required: false, scale: 5, low_label: '', high_label: '', has_na: false, items: [{ id: newId(), label: '' }], ...agreement }
   if (type === 'checkbox') return { id: newId(), type: 'checkbox', label: '', required: false, has_na: false, ...agreement }
-  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return { ...base, min: 0, max: 100, step: 1, count: 1, low_label: '', high_label: '' }
+  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return { ...base, min: 0, max: 100, step: 1, count: 1, low_label: '', high_label: '', scale_labels: [], control_labels: [], control_low_labels: [], control_high_labels: [] }
   if (type === 'text_block') return { id: newId(), type: 'text_block', content: '', assets: [] }
   if (type === 'timestamp_select') return base
   if (type === 'table') return { ...base, has_na: false, rows: ['Row 1', 'Row 2'], columns: [{ id: newId(), label: 'Column 1', type: 'text', has_na: false }] }

@@ -355,8 +355,8 @@ export default function HomePage() {
           <button className="btn btn-secondary btn-sm" onClick={handleImportProject} title="Import a project from a .json export file">
             <Upload size={14} /> Import File
           </button>
-          <button className="btn btn-secondary btn-sm" onClick={handleTrySample} title="Open a ready-made example project with a guided walkthrough">
-            <GraduationCap size={14} /> Sample Project
+          <button className="btn btn-secondary btn-sm" onClick={handleTrySample} title="Open a ready-made tutorial project with a guided walkthrough">
+            <GraduationCap size={14} /> Tutorial Project
           </button>
           {defaultProjects.length > 0 && (
             <button className="btn btn-secondary btn-sm" onClick={() => setShowTemplates(true)} title="Create a project from a built-in template">
@@ -391,11 +391,11 @@ export default function HomePage() {
               <p className="text-sm" style={{ marginTop: 4 }}>Create a project to get started</p>
             </div>
             <p className="text-sm" style={{ marginTop: -2, color: 'var(--text-muted)' }}>
-              New to SDMo? Open the sample project for a guided walkthrough.
+              New to SDMo? Open the tutorial project for a guided walkthrough.
             </p>
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-secondary" onClick={handleTrySample}>
-                <GraduationCap size={14} /> Try Sample Project
+                <GraduationCap size={14} /> Try Tutorial Project
               </button>
               {defaultProjects.length > 0 && (
                 <button className="btn btn-secondary" onClick={() => setShowTemplates(true)}>

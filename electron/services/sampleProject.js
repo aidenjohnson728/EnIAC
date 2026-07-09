@@ -7,9 +7,10 @@ const { buildWorkspaceSnapshot } = require('./snapshots')
 const { upsertLink } = require('../mediaLinks')
 const { getOrCreateUUID } = require('../settings')
 
-const SAMPLE_NAME = '📘 Sample Tutorial Project'
+const SAMPLE_NAME = '📘 Tutorial Project'
+const LEGACY_SAMPLE_NAMES = ['📘 Sample Tutorial Project']
 const SAMPLE_DESCRIPTION =
-  'A read-along example project. Walk through encounters, media, media types, file linking, and the review page. Safe to delete once you are comfortable.'
+  'A read-along tutorial project. Walk through encounters, media, media types, file linking, and the review page. Safe to delete once you are comfortable.'
 const SAMPLE_REVIEWER_NAME = 'Tutorial Reviewer'
 
 // Resolves the bundled sample video shipped via electron-builder `extraResources`.
@@ -47,7 +48,7 @@ function sampleFormSchema() {
 function sampleSyncInstruction() {
   return `# Sync Basics
 
-This sample project is safe to explore on one computer. In a real study, sync lets multiple coders work from the same project without sharing patient media through SDMo.
+This tutorial project is safe to explore on one computer. In a real study, sync lets multiple coders work from the same project without sharing patient media through SDMo.
 
 ## What sync shares
 
@@ -160,9 +161,12 @@ function ensureSampleReview(db, projectId) {
 }
 
 function seedSampleProject(db) {
-  // Idempotent: if a sample project already exists, just reopen it.
-  const existing = db.prepare('SELECT id FROM projects WHERE name=?').get(SAMPLE_NAME)
+  // Idempotent: if a tutorial project already exists, just reopen it.
+  const existing = db.prepare('SELECT id, name FROM projects WHERE name IN (?,?)').get(SAMPLE_NAME, LEGACY_SAMPLE_NAMES[0])
   if (existing) {
+    if (existing.name !== SAMPLE_NAME) {
+      db.prepare('UPDATE projects SET name=?, updated_at=datetime(\'now\') WHERE id=?').run(SAMPLE_NAME, existing.id)
+    }
     ensureSampleProjectContent(db, existing.id)
     const tutorialReviewId = ensureSampleReview(db, existing.id)
     return { id: existing.id, tutorialReviewId, alreadyExisted: true }

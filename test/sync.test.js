@@ -155,38 +155,67 @@ test('config: timestamp tag categories survive export', () => {
   const p = createProject(db, 'P')
   const mtId = addMediaType(db, p, 'Video')
   db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description, category) VALUES (?,?,?,?,?)')
+    .run(mtId, 'Summary', '#222222', '', 'Wrap-up')
+  db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description, category) VALUES (?,?,?,?,?)')
     .run(mtId, 'Greeting', '#111111', '', 'Communication')
 
   const config = sync.buildConfigExport(db, p)
   const mt = config.media_types.find(m => m.name === 'Video')
 
-  assert.deepStrictEqual(mt.tags, [{ label: 'Greeting', color: '#111111', description: '', category: 'Communication' }])
+  assert.deepStrictEqual(mt.tags, [
+    { label: 'Summary', color: '#222222', description: '', category: 'Wrap-up' },
+    { label: 'Greeting', color: '#111111', description: '', category: 'Communication' },
+  ])
   db.close()
 })
 
-test('defaults: UCAT template creates only active current form and media type', () => {
+test('defaults: UCAT/SDMo template creates forms, PDFs, tags, and agreement settings', () => {
   const db = makeDb()
   const result = defaultProjects.seedDefaultProject(db, 'ucat')
   const project = db.prepare('SELECT name FROM projects WHERE id=?').get(result.id)
   const forms = db.prepare('SELECT id, name, archived_at, schema FROM forms WHERE project_id=?').all(result.id)
+  const instructions = db.prepare('SELECT id, name, content_type, file_path FROM instructions WHERE project_id=?').all(result.id)
   const mediaTypes = db.prepare('SELECT id, name, archived_at FROM media_types WHERE project_id=?').all(result.id)
-  const tabs = db.prepare('SELECT tab_type, label, ref_id FROM workspace_tabs WHERE media_type_id=?').all(mediaTypes[0].id)
   const deletedReviews = db.prepare('SELECT COUNT(*) as n FROM deleted_reviews WHERE project_id=?').get(result.id).n
   const encounters = db.prepare('SELECT COUNT(*) as n FROM encounters WHERE project_id=?').get(result.id).n
-  const schema = JSON.parse(forms[0].schema)
+  const formsByName = Object.fromEntries(forms.map(form => [form.name, form]))
+  const instructionsByName = Object.fromEntries(instructions.map(instruction => [instruction.name, instruction]))
+  const mediaTypesByName = Object.fromEntries(mediaTypes.map(mediaType => [mediaType.name, mediaType]))
+  const ucatSchema = JSON.parse(formsByName.UCAT.schema)
+  const sdmoSchema = JSON.parse(formsByName.SDMo.schema)
+  const sdmoTags = db.prepare('SELECT label, color, category FROM timestamp_tags WHERE media_type_id=? ORDER BY id').all(mediaTypesByName.SDMo.id)
+  const sdmoTabs = db.prepare('SELECT tab_type, label, ref_id FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order').all(mediaTypesByName.SDMo.id)
 
-  assert.strictEqual(project.name, 'UCAT')
-  assert.strictEqual(forms.length, 1)
-  assert.strictEqual(forms[0].name, 'UCAT')
-  assert.strictEqual(forms[0].archived_at, null)
-  assert.strictEqual(mediaTypes.length, 1)
-  assert.strictEqual(mediaTypes[0].name, 'UCAT')
-  assert.strictEqual(mediaTypes[0].archived_at, null)
-  assert.deepStrictEqual(tabs, [{ tab_type: 'form', label: 'UCAT', ref_id: forms[0].id }])
+  assert.strictEqual(project.name, 'UCAT/SDMo')
+  assert.deepStrictEqual(forms.map(form => form.name).sort(), ['SDMo', 'UCAT'])
+  assert.ok(forms.every(form => form.archived_at === null))
+  assert.deepStrictEqual(instructions.map(instruction => instruction.name).sort(), [
+    'SDMo Conversation Distinctions',
+    'SDMo Items of Inquiry',
+    'UCAT Instructions',
+  ])
+  assert.ok(instructions.every(instruction => instruction.content_type === 'pdf'))
+  assert.ok(instructions.every(instruction => instruction.file_path && fs.existsSync(instruction.file_path)))
+  assert.deepStrictEqual(mediaTypes.map(mediaType => mediaType.name).sort(), ['SDMo', 'UCAT'])
+  assert.ok(mediaTypes.every(mediaType => mediaType.archived_at === null))
+  assert.strictEqual(sdmoTags.length, 20)
+  assert.deepStrictEqual(sdmoTags.slice(0, 3).map(tag => tag.label), ['Take Notice', 'Commit', 'Focus'])
+  assert.ok(sdmoTags.every(tag => /^#[0-9a-f]{6}$/i.test(tag.color)))
+  assert.deepStrictEqual(sdmoTabs, [
+    { tab_type: 'form', label: 'SDMo', ref_id: formsByName.SDMo.id },
+    { tab_type: 'instruction', label: 'SDMo Items of Inquiry', ref_id: instructionsByName['SDMo Items of Inquiry'].id },
+    { tab_type: 'instruction', label: 'SDMo Conversation Distinctions', ref_id: instructionsByName['SDMo Conversation Distinctions'].id },
+  ])
   assert.strictEqual(deletedReviews, 0)
   assert.strictEqual(encounters, 0)
-  assert.strictEqual(schema.sections.length, 8)
-  assert.ok(schema.sections.flatMap(section => section.elements || []).every(el => el.required === true))
+  assert.strictEqual(ucatSchema.sections.length, 8)
+  assert.ok(ucatSchema.sections.flatMap(section => section.elements || []).every(el => el.required === true))
+  const sdmoElements = sdmoSchema.sections.flatMap(section => section.elements || [])
+  assert.deepStrictEqual(sdmoElements.filter(el => el.agreement_enabled).map(el => [el.label, el.type, el.agreement_method, el.agreement_weight]), [
+    ['Evidence of Distinction Dials', 'dial', 'numeric', 1],
+    ['Evidence of Inquiry', 'table', 'item_group', 0.6],
+    ['SDM Occurrence', 'rating', 'auto', 1],
+  ])
   db.close()
 })
 

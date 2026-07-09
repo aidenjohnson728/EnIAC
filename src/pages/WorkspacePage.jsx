@@ -329,8 +329,8 @@ export default function WorkspacePage() {
       <div style={isPdfWorkspaceTab
         ? { flex: 1, overflow: 'hidden', padding: 0, width: '100%', minHeight: 0, boxSizing: 'border-box' }
         : isFormWorkspaceTab
-          ? { flex: 1, overflow: 'auto', padding: '0 28px 24px', maxWidth: 820, width: '100%', margin: '0 auto', boxSizing: 'border-box' }
-        : { flex: 1, overflow: 'auto', padding: '24px 28px', maxWidth: 820, width: '100%', margin: '0 auto', boxSizing: 'border-box' }
+          ? { flex: 1, overflow: 'auto', padding: '18px 32px 28px', maxWidth: 1120, width: '100%', margin: '0 auto', boxSizing: 'border-box' }
+        : { flex: 1, overflow: 'auto', padding: '24px 32px', maxWidth: 1120, width: '100%', margin: '0 auto', boxSizing: 'border-box' }
       }>
         {currentTab ? (
           currentTab.tab_type === 'form' ? (

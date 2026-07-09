@@ -39,7 +39,7 @@ function buildWorkspaceSnapshot(db, mediaFileId) {
 
   if (!media.media_type_id) return snapshot
 
-  snapshot.tags = db.prepare('SELECT label, color, description, category FROM timestamp_tags WHERE media_type_id=?').all(media.media_type_id)
+  snapshot.tags = db.prepare('SELECT label, color, description, category FROM timestamp_tags WHERE media_type_id=? ORDER BY id').all(media.media_type_id)
   const tabs = db.prepare('SELECT * FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order').all(media.media_type_id)
   for (const tab of tabs) {
     const outTab = {

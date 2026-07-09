@@ -295,7 +295,7 @@ module.exports = function (ipcMain) {
     const db = getDb()
     const types = db.prepare('SELECT * FROM media_types WHERE project_id=? AND archived_at IS NULL').all(projectId)
     for (const t of types) {
-      t.tags = db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=?').all(t.id)
+      t.tags = db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=? ORDER BY id').all(t.id)
       t.workspace_tabs = db.prepare('SELECT * FROM workspace_tabs WHERE media_type_id=? ORDER BY sort_order').all(t.id)
     }
     return types
