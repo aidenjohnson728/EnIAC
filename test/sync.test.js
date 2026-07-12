@@ -39,6 +39,57 @@ test('config: keybind exports include stable tag labels for sync/import', () => 
   db.close()
 })
 
+test('project-state merge: enriched keybind metadata does not create a false conflict', () => {
+  const db = makeDb()
+  const projectId = createProject(db, 'Shortcut Study')
+  const mediaTypeId = addMediaType(db, projectId, 'Consult Video', {
+    tags: [{ label: 'Question Asked', color: '#2563eb' }],
+  })
+  const tag = db.prepare('SELECT id FROM timestamp_tags WHERE media_type_id=?').get(mediaTypeId)
+  const clock = '2026-01-01 00:00:00'
+  db.prepare('UPDATE projects SET updated_at=?, keybinds=? WHERE id=?')
+    .run(clock, JSON.stringify([{ key: 'q', tagId: tag.id }]), projectId)
+
+  const incoming = sync.buildProjectStateExport(db, projectId)
+  assert.strictEqual(incoming.project.keybinds[0].tagLabel, 'Question Asked')
+  db.prepare('UPDATE projects SET updated_at=?, keybinds=? WHERE id=?')
+    .run(clock, JSON.stringify([{ key: 'q', tagId: tag.id }]), projectId)
+
+  const result = sync.mergeProjectStateImport(db, projectId, incoming, { merge: true })
+  assert.deepStrictEqual(result.conflicts, [])
+  db.close()
+})
+
+test('project-state merge: form response JSON key order does not create a false review conflict', () => {
+  const db = makeDb()
+  const projectId = createProject(db, 'Response Study')
+  const formId = addForm(db, projectId, 'Coding', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'table', label: 'Q' }] }],
+  }, { sync_id: 'form-1' })
+  const mtId = addMediaType(db, projectId, 'Video', { sync_id: 'mt-1' })
+  addWorkspaceTab(db, mtId, { tab_type: 'form', ref_id: formId, label: 'Coding', sort_order: 0 })
+  const enc = addEncounter(db, projectId, 'P1', 'enc-1')
+  const media = addMedia(db, enc.id, 'v.mp4', { media_type_id: mtId, sync_id: 'media-1' })
+  const review = addReview(db, media.id, 'Alice', {
+    review_sync_id: 'review-1',
+    reviewer_uuid: 'uuid-A',
+    created_at: '2026-01-01T00:00:00.000Z',
+  })
+  const snap = snapshots.buildWorkspaceSnapshot(db, media.id)
+  db.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+    .run(JSON.stringify(snap), snap.media_type.sync_id, snap.media_type.version, review.id)
+  db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot, updated_at) VALUES (?,?,?,?,?,?,?)')
+    .run(review.id, formId, JSON.stringify({ first: 'Yes', second: 'No' }), 'form-1', 1, JSON.stringify(snapshots.currentFormSnapshot(db, formId)), '2026-01-01 00:00:00')
+
+  const incoming = sync.buildProjectStateExport(db, projectId)
+  db.prepare('UPDATE form_responses SET responses=? WHERE review_id=?')
+    .run(JSON.stringify({ second: 'No', first: 'Yes' }), review.id)
+
+  const result = sync.mergeProjectStateImport(db, projectId, incoming, { merge: true })
+  assert.deepStrictEqual(result.conflicts, [])
+  db.close()
+})
+
 test('agreement: nested form schema snapshots produce comparable questions', async () => {
   const { computeInterraterAgreementForMediaFile } = await import('../src/lib/interraterAgreement.mjs')
   const result = computeInterraterAgreementForMediaFile({

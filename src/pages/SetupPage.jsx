@@ -276,7 +276,7 @@ export default function SetupPage() {
 
   async function handleSwitchMode(newMode) {
     // Disconnect old mode first
-    if (syncMode === 'cloud' && cloudStatus?.connected) {
+    if (syncMode === 'cloud' || cloudStatus?.provider || cloudStatus?.cloudFolderId) {
       await api.cloudDisconnect(Number(projectId))
       setCloudStatus(null)
     }

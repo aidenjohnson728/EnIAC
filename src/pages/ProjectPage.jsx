@@ -183,6 +183,7 @@ export default function ProjectPage() {
   useEffect(() => {
     const handler = (data) => {
       if (!data?.message) return
+      if (String(data?.projectId) !== String(projectId)) return
       showToast(data.message, true)
       load()
     }

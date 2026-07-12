@@ -83,6 +83,21 @@ function enrichKeybinds(db, keybinds = []) {
   })
 }
 
+function canonicalizeKeybinds(keybinds = []) {
+  if (!Array.isArray(keybinds)) return []
+  return keybinds.map(bind => {
+    if (!bind || typeof bind !== 'object') return bind
+    const key = bind.key === ' ' ? 'space' : String(bind.key || '').trim().toLowerCase()
+    const hasStableTag = !!bind.tagLabel
+    return {
+      key,
+      tagLabel: bind.tagLabel || '',
+      mediaTypeName: bind.mediaTypeName || '',
+      tagId: hasStableTag ? null : bind.tagId ?? null,
+    }
+  })
+}
+
 // ─── Main window reference (set by main.js so we can push events to renderer) ─
 let _mainWindow = null
 function setMainWindow(win) { _mainWindow = win }
@@ -90,12 +105,12 @@ function setMainWindow(win) { _mainWindow = win }
 // Push a concurrent-edit toast to the renderer. A "conflict" is a genuine
 // same-entity edit on two machines at once; LWW already resolved it deterministically,
 // this just lets the user know their version may have been superseded.
-function emitConflicts(conflicts) {
+function emitConflicts(projectId, conflicts) {
   if (!conflicts || !conflicts.length || !_mainWindow || _mainWindow.isDestroyed?.()) return
   const first = conflicts[0]
   const more = conflicts.length > 1 ? ` (+${conflicts.length - 1} more)` : ''
   const message = `Edit conflict on ${first.kind} "${first.name}"${more}: another machine's change was newer, so the most recent version was kept.`
-  try { _mainWindow.webContents.send('sync:conflict', { message, conflicts }) } catch (_) {}
+  try { _mainWindow.webContents.send('sync:conflict', { projectId, message, conflicts }) } catch (_) {}
 }
 
 // Track projects currently in offline (no-internet) mode so we only notify on transitions.
@@ -407,8 +422,21 @@ function buildReviewExport(db, projectId, reviewerUuid, reviewerName) {
 // stale or partial config can never destroy local work. Adding a new synced entity
 // means updating this one function (and structureFingerprint / tombstones).
 
+function stableForHash(value) {
+  if (Array.isArray(value)) return value.map(stableForHash)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableForHash(value[key])]))
+  }
+  return value
+}
+
 function hashOf(obj) {
-  return crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex').slice(0, 16)
+  return crypto.createHash('sha256').update(JSON.stringify(stableForHash(obj))).digest('hex').slice(0, 16)
+}
+
+function canonicalJsonish(value) {
+  if (typeof value !== 'string') return value
+  try { return JSON.parse(value) } catch { return value }
 }
 
 // LWW clock. Falls back to created_at (local rows whose updated_at is still NULL)
@@ -478,8 +506,10 @@ function applyStructure(db, projectId, configData, { merge = false } = {}) {
       const hashToUse = (proj.owner_password_hash || null) || (local?.owner_password_hash || null)
       let write = true
       if (merge && local) {
-        const lHash = hashOf({ name: local.name, description: local.description, owner_password_hash: local.owner_password_hash || null, keybinds: safeJsonParse(local.keybinds, []) })
-        const iHash = hashOf({ name: proj.name || '', description: proj.description || '', owner_password_hash: hashToUse, keybinds: proj.keybinds || [] })
+        const lKeybinds = canonicalizeKeybinds(enrichKeybinds(db, safeJsonParse(local.keybinds, [])))
+        const iKeybinds = canonicalizeKeybinds(proj.keybinds || [])
+        const lHash = hashOf({ name: local.name, description: local.description, owner_password_hash: local.owner_password_hash || null, keybinds: lKeybinds })
+        const iHash = hashOf({ name: proj.name || '', description: proj.description || '', owner_password_hash: hashToUse, keybinds: iKeybinds })
         const d = decideWrite(lHash, iHash, localClock(local), incomingClock(proj, configData))
         write = d.write
         if (d.conflict) conflicts.push({ kind: 'project', name: proj.name || local.name })
@@ -909,7 +939,7 @@ function canonicalizeConfig(cfg) {
   const sortBySync = (arr) => [...(arr || [])].sort((a, b) => ((a.sync_id || a.name || '') > (b.sync_id || b.name || '') ? 1 : -1))
   const stripClock = ({ updated_at, ...rest }) => rest
   return {
-    project: cfg.project ? { name: cfg.project.name || '', description: cfg.project.description || '', owner_password_hash: cfg.project.owner_password_hash || null, keybinds: cfg.project.keybinds || [] } : null,
+    project: cfg.project ? { name: cfg.project.name || '', description: cfg.project.description || '', owner_password_hash: cfg.project.owner_password_hash || null, keybinds: canonicalizeKeybinds(cfg.project.keybinds || []) } : null,
     forms: sortBySync(cfg.forms).map(stripClock),
     instructions: sortBySync(cfg.instructions).map(stripClock),
     media_types: sortBySync(cfg.media_types).map(stripClock),
@@ -1284,7 +1314,7 @@ function canonicalizeProjectState(state) {
       name: state.project.name || '',
       description: state.project.description || '',
       owner_password_hash: state.project.owner_password_hash || null,
-      keybinds: state.project.keybinds || [],
+      keybinds: canonicalizeKeybinds(state.project.keybinds || []),
     } : null,
     forms: sortBy(state.forms, 'sync_id').map(stripClock),
     form_versions: sortBy(state.form_versions, 'form_sync_id').map(v => ({
@@ -1455,7 +1485,7 @@ function buildReviewHash(review) {
       form_sync_id: fr.form_sync_id || null,
       form_version: fr.form_version || null,
       form_snapshot: canonicalFormSnapshot(fr.form_snapshot),
-      responses: fr.responses,
+      responses: canonicalJsonish(fr.responses),
     })).sort((a, b) => (a.form_sync_id || a.form_name || '') > (b.form_sync_id || b.form_name || '') ? 1 : -1),
   })
 }
@@ -2076,7 +2106,7 @@ async function _doLocalSync(db, projectId, syncFolder, uuid, name) {
 
   try {
     const { conflicts } = syncProjectStateLocal(db, projectId, syncFolder)
-    emitConflicts(conflicts)
+    emitConflicts(projectId, conflicts)
   } catch (e) {
     console.error('[sync] project state sync failed:', e.message)
   }
@@ -2112,7 +2142,7 @@ async function _doCloudSync(db, projectId, provider, folderId, uuid, name, optio
 
   try {
     const { conflicts } = await syncProjectStateCloud(db, projectId, adapter, folderId, allFiles, { ...options, provider })
-    emitConflicts(conflicts)
+    emitConflicts(projectId, conflicts)
   } catch (e) {
     console.error('[sync] cloud project state sync failed:', e.message)
     if (e.code === 'GOOGLE_DRIVE_METADATA_MISSING') throw e
