@@ -385,23 +385,46 @@
                 "global_agreement_question": false
               },
               {
-                "id": "el_1783637193530_rirp",
-                "type": "rating",
+                "id": "el_1783640597151_sjeo",
+                "type": "slider",
                 "label": "SDM Occurrence",
-                "description": "Using your annotations, answer the following question: Did Shared Decision Making occur in this conversation? Please choose a number below.\n\n1: Definitely No\n2-3: Probably No\n4-5: Probably Yes\n6: Definitely Yes",
+                "description": "Using your annotations, answer the following question: Did Shared Decision Making occur in this conversation? Please choose a number below.\n",
                 "required": true,
                 "has_na": false,
                 "agreement_enabled": true,
                 "agreement_weight": 1,
                 "agreement_method": "auto",
-                "options": [
-                  "1: Definitely No",
-                  "2: Probably No",
-                  "3: Probably No",
-                  "4: Probably Yes",
-                  "5: Probably Yes",
-                  "6: Definitely Yes"
+                "min": 1,
+                "max": 6,
+                "step": 1,
+                "count": 1,
+                "low_label": "",
+                "high_label": "",
+                "scale_labels": [
+                  {
+                    "from": 1,
+                    "to": 1,
+                    "label": "Definitely not"
+                  },
+                  {
+                    "from": 2,
+                    "to": 3,
+                    "label": "Probably not"
+                  },
+                  {
+                    "from": 4,
+                    "to": 5,
+                    "label": "Probably yes"
+                  },
+                  {
+                    "from": 6,
+                    "to": 6,
+                    "label": "Definitely yes"
+                  }
                 ],
+                "control_labels": [],
+                "control_low_labels": [],
+                "control_high_labels": [],
                 "global_agreement_question": true
               }
             ]
@@ -462,121 +485,121 @@
           "label": "Take Notice",
           "color": "#1f53c1",
           "description": "",
-          "category": null
+          "category": "Noticing"
         },
         {
           "label": "Commit",
           "color": "#334cdb",
           "description": "",
-          "category": null
+          "category": "Noticing"
         },
         {
           "label": "Focus",
           "color": "#c1861f",
           "description": "",
-          "category": null
+          "category": "Formulating"
         },
         {
           "label": "Create Ideas",
           "color": "#dbb933",
           "description": "",
-          "category": null
+          "category": "Formulating"
         },
         {
           "label": "Flesh Out Ideas",
           "color": "#a05718",
           "description": "",
-          "category": null
+          "category": "Formulating"
         },
         {
           "label": "Try Out Ideas",
           "color": "#1fc176",
           "description": "",
-          "category": null
+          "category": "Trying Out"
         },
         {
           "label": "Learn from Trying Out",
           "color": "#33dba9",
           "description": "",
-          "category": null
+          "category": "Trying Out"
         },
         {
           "label": "Iterate",
           "color": "#18a04a",
           "description": "",
-          "category": null
+          "category": "Trying Out"
         },
         {
           "label": "Reflect",
           "color": "#5cdbc2",
           "description": "",
-          "category": null
+          "category": "Trying Out"
         },
         {
           "label": "Form Thoughtful Conclusion",
           "color": "#c11f30",
           "description": "",
-          "category": null
+          "category": "Culminating"
         },
         {
           "label": "Tying Together Intellectually",
           "color": "#db3e33",
           "description": "",
-          "category": null
+          "category": "Culminating"
         },
         {
           "label": "Tying Together Practically",
           "color": "#a0183c",
           "description": "",
-          "category": null
+          "category": "Culminating"
         },
         {
           "label": "Tying Together Emotionally",
           "color": "#db715c",
           "description": "",
-          "category": null
+          "category": "Culminating"
         },
         {
           "label": "Make an Agreement",
           "color": "#bc1a55",
           "description": "",
-          "category": null
+          "category": "Culminating"
         },
         {
           "label": "Find Worthwhile",
           "color": "#7f2425",
           "description": "",
-          "category": null
+          "category": "Culminating"
         },
         {
           "label": "Displaying Curiosity",
           "color": "#5b1fc1",
           "description": "",
-          "category": null
+          "category": "Enabling Actions"
         },
         {
           "label": "Strengthening Partnership",
           "color": "#8d33db",
           "description": "",
-          "category": null
+          "category": "Enabling Actions"
         },
         {
           "label": "Creating Space",
           "color": "#3318a0",
           "description": "",
-          "category": null
+          "category": "Enabling Actions"
         },
         {
           "label": "Tailoring Information",
           "color": "#ad5cdb",
           "description": "",
-          "category": null
+          "category": "Enabling Actions"
         },
         {
           "label": "Drawing on Experience",
           "color": "#2a1abc",
           "description": "",
-          "category": null
+          "category": "Enabling Actions"
         }
       ],
       "workspace_tabs": [

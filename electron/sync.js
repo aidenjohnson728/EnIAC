@@ -62,6 +62,27 @@ function safeJsonParse(str, fallback) {
   try { return JSON.parse(str) } catch { return fallback }
 }
 
+function enrichKeybinds(db, keybinds = []) {
+  if (!Array.isArray(keybinds)) return []
+  const tagRows = db.prepare(`
+    SELECT tt.id, tt.label, mt.name AS media_type_name
+    FROM timestamp_tags tt
+    JOIN media_types mt ON mt.id = tt.media_type_id
+  `).all()
+  const tagsById = new Map(tagRows.map(tag => [String(tag.id), tag]))
+
+  return keybinds.map(bind => {
+    if (!bind || typeof bind !== 'object') return bind
+    const tag = bind.tagId != null ? tagsById.get(String(bind.tagId)) : null
+    if (!tag) return bind
+    return {
+      ...bind,
+      tagLabel: bind.tagLabel || tag.label,
+      mediaTypeName: bind.mediaTypeName || tag.media_type_name || '',
+    }
+  })
+}
+
 // ─── Main window reference (set by main.js so we can push events to renderer) ─
 let _mainWindow = null
 function setMainWindow(win) { _mainWindow = win }
@@ -207,7 +228,7 @@ function stopPeriodicAutoSync() {
 
 function buildConfigExport(db, projectId) {
   const project = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId)
-  const keybinds = safeJsonParse(project.keybinds, [])
+  const keybinds = enrichKeybinds(db, safeJsonParse(project.keybinds, []))
 
   const forms = db.prepare('SELECT * FROM forms WHERE project_id=?').all(projectId).map(f => ({
     sync_id: f.sync_id,
@@ -2897,7 +2918,7 @@ function buildReviewsWorkbook(db, projectId) {
 
 function buildExport(db, projectId) {
   const project = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId)
-  const keybinds = safeJsonParse(project.keybinds, [])
+  const keybinds = enrichKeybinds(db, safeJsonParse(project.keybinds, []))
 
   const forms = db.prepare('SELECT * FROM forms WHERE project_id=?').all(projectId).map(f => ({
     name: f.name,

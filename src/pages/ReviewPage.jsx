@@ -49,6 +49,28 @@ const SYNC_BASICS_TOUR_STEPS = [
   },
 ]
 
+function normalizeKeybindKey(key) {
+  if (!key) return ''
+  if (key === ' ') return 'space'
+  return String(key).trim().toLowerCase()
+}
+
+function isTypingTarget(target) {
+  const tag = target?.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable || target?.getAttribute?.('role') === 'textbox'
+}
+
+function resolveKeybindTag(bind, tags) {
+  if (!bind) return { tag: null, missing: false }
+  const wantsTag = bind.tagId != null || !!bind.tagLabel
+  if (!wantsTag) return { tag: null, missing: false }
+  const byLabel = bind.tagLabel ? tags.find(tag => tag.label === bind.tagLabel) : null
+  if (byLabel) return { tag: byLabel, missing: false }
+  const byId = bind.tagId != null ? tags.find(tag => String(tag.id) === String(bind.tagId)) : null
+  if (byId) return { tag: byId, missing: false }
+  return { tag: null, missing: true }
+}
+
 function parseFormResponses(rev) {
   return Object.fromEntries((rev.form_responses || []).map(fr => [fr.form_id, fr.responses]))
 }
@@ -279,14 +301,14 @@ export default function ReviewPage() {
   useEffect(() => {
     if (submitted || keybinds.length === 0) return
     function onKeyDown(e) {
-      // Ignore when typing in an input/textarea/select
-      const tag = e.target.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      const key = e.key.toLowerCase()
-      const bind = keybinds.find(b => b.key.toLowerCase() === key)
+      if (e.repeat || isTypingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
+      const key = normalizeKeybindKey(e.key)
+      const bind = keybinds.find(b => normalizeKeybindKey(b.key) === key)
       if (!bind) return
+      const { tag, missing } = resolveKeybindTag(bind, tags)
+      if (missing) return
       e.preventDefault()
-      addTimestampWithTag(bind.tagId ?? null)
+      addTimestampWithTag(tag)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -297,13 +319,14 @@ export default function ReviewPage() {
     function onKeyDown(e) {
       if (e.key !== ' ') return
       const tag = e.target.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') return
+      if (isTypingTarget(e.target) || tag === 'BUTTON') return
+      if (!submitted && keybinds.some(bind => normalizeKeybindKey(bind.key) === 'space')) return
       e.preventDefault()
       toggleVideoPlayback()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [keybinds, submitted])
 
   async function load() {
     setLoading(true)
@@ -434,10 +457,12 @@ export default function ReviewPage() {
     return addTimestampWithTag(null)
   }
 
-  async function addTimestampWithTag(tagId) {
+  async function addTimestampWithTag(tagRef) {
     if (submitted) return null
     const t = videoRef.current?.currentTime ?? 0
-    const tag = tagId != null ? tags.find(tg => tg.id == tagId) : null
+    const tag = tagRef && typeof tagRef === 'object'
+      ? tagRef
+      : (tagRef != null ? tags.find(tg => tg.id == tagRef) : null)
     const id = await api.saveTimestamp(reviewId, {
       time_seconds: t,
       notes: '',

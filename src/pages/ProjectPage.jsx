@@ -116,6 +116,7 @@ export default function ProjectPage() {
   const [unlockTarget, setUnlockTarget] = useState(null)
   const [unlockInput, setUnlockInput] = useState('')
   const [unlockError, setUnlockError] = useState('')
+  const [mediaTypeConfirmTarget, setMediaTypeConfirmTarget] = useState(null)
   const [showAutolinkModal, setShowAutolinkModal] = useState(false)
   const [autolinkFolder, setAutolinkFolder] = useState('')
   const [autolinkResult, setAutolinkResult] = useState(null)
@@ -541,7 +542,7 @@ export default function ProjectPage() {
     showToast('Media type updated.')
   }
 
-  async function handleChangeMediaType(mediaFile, mediaTypeId) {
+  async function proceedMediaTypeChange(mediaFile, mediaTypeId) {
     try {
       const unlocked = await api.isProjectUnlocked(projectId)
       if (unlocked) {
@@ -554,6 +555,23 @@ export default function ProjectPage() {
     } catch (e) {
       showToast(e?.message || 'Could not update media type.', true)
     }
+  }
+
+  async function handleChangeMediaType(mediaFile, mediaTypeId) {
+    if (String(mediaFile.media_type_id || '') === String(mediaTypeId || '')) return
+    const reviewCount = (mediaFile.reviews || []).length
+    if (reviewCount > 0) {
+      setMediaTypeConfirmTarget({ mediaFile, mediaTypeId })
+      return
+    }
+    await proceedMediaTypeChange(mediaFile, mediaTypeId)
+  }
+
+  async function confirmMediaTypeChange() {
+    if (!mediaTypeConfirmTarget) return
+    const { mediaFile, mediaTypeId } = mediaTypeConfirmTarget
+    setMediaTypeConfirmTarget(null)
+    await proceedMediaTypeChange(mediaFile, mediaTypeId)
   }
 
   async function handleUnlockAndChangeMediaType() {
@@ -592,6 +610,12 @@ export default function ProjectPage() {
   }
 
   if (loading) return <div className="empty-state" style={{ height: '100vh' }}><div className="spinner" /></div>
+
+  const mediaTypeConfirmReviewCount = mediaTypeConfirmTarget?.mediaFile?.reviews?.length || 0
+  const mediaTypeConfirmSubmittedCount = (mediaTypeConfirmTarget?.mediaFile?.reviews || []).filter(review => review.status === 'submitted' || review.submitted_at).length
+  const mediaTypeConfirmNextType = mediaTypeConfirmTarget
+    ? mediaTypes.find(type => String(type.id) === String(mediaTypeConfirmTarget.mediaTypeId))
+    : null
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
@@ -1087,6 +1111,38 @@ export default function ProjectPage() {
             )}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={!!mediaTypeConfirmTarget}
+        onClose={() => setMediaTypeConfirmTarget(null)}
+        title="Change media type?"
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setMediaTypeConfirmTarget(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={confirmMediaTypeChange}>
+              Change Media Type
+            </button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 10, padding: '10px 12px', border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 8 }}>
+            <AlertTriangle size={18} color="#b45309" style={{ flexShrink: 0, marginTop: 1 }} />
+            <div style={{ fontSize: 13, color: '#92400e', lineHeight: 1.55 }}>
+              <strong>{mediaTypeConfirmTarget?.mediaFile?.name}</strong> already has {mediaTypeConfirmReviewCount} review{mediaTypeConfirmReviewCount === 1 ? '' : 's'}.
+              {mediaTypeConfirmSubmittedCount > 0 && (
+                <> {mediaTypeConfirmSubmittedCount} submitted review{mediaTypeConfirmSubmittedCount === 1 ? '' : 's'} will be reopened and marked in progress.</>
+              )}
+            </div>
+          </div>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0, lineHeight: 1.6 }}>
+            Changing the media type updates the workspace snapshot for existing reviews. Any forms that are no longer part of the selected media type may be removed from those reviews.
+          </p>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            New media type: <strong style={{ color: 'var(--text-secondary)' }}>{mediaTypeConfirmNextType?.name || 'No media type'}</strong>
+          </div>
+        </div>
       </Modal>
 
       <Modal

@@ -10,6 +10,25 @@ import useTour from '../components/ui/useTour'
 
 const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Versions', 'Deleted Reviews', 'About']
 const MANUAL_UPDATE_URL = 'https://n232not.github.io/sdmo-app/'
+const RESERVED_KEYBIND_KEYS = new Set(['shift', 'control', 'alt', 'meta', 'capslock', 'tab', 'enter', 'escape'])
+
+function normalizeKeybindKey(key) {
+  if (!key) return ''
+  if (key === ' ') return 'space'
+  return String(key).trim().toLowerCase()
+}
+
+function keybindDisplayName(key) {
+  const normalized = normalizeKeybindKey(key)
+  if (normalized === 'space') return 'Space'
+  if (normalized.length === 1) return normalized.toUpperCase()
+  return normalized ? normalized[0].toUpperCase() + normalized.slice(1) : ''
+}
+
+function isBindableKey(key) {
+  const normalized = normalizeKeybindKey(key)
+  return !!normalized && !RESERVED_KEYBIND_KEYS.has(normalized) && normalized.length <= 12
+}
 
 const FILES_TOUR_STEPS = [
   {
@@ -1971,7 +1990,7 @@ function MediaFilesSection({
 
 function KeybindsEditor({ keybinds, mediaTypes, onChange }) {
   // Collect all tags across all media types
-  const allTags = mediaTypes.flatMap(mt => (mt.tags || []).map(t => ({ ...t, mediaTypeName: mt.name })))
+  const allTags = mediaTypes.flatMap(mt => (mt.tags || []).map(t => ({ ...t, mediaTypeName: mt.name, mediaTypeId: mt.id })))
 
   function addBind() {
     onChange([...keybinds, { key: '', tagId: null }])
@@ -1982,6 +2001,41 @@ function KeybindsEditor({ keybinds, mediaTypes, onChange }) {
     onChange(next)
   }
 
+  function updateBindTag(i, value) {
+    if (!value) {
+      updateBind(i, { tagId: null, tagLabel: '', mediaTypeName: '' })
+      return
+    }
+    const tag = allTags.find(t => `${t.mediaTypeId}:${t.id}` === value)
+    if (!tag) return
+    updateBind(i, {
+      tagId: tag.id,
+      tagLabel: tag.label,
+      mediaTypeName: tag.mediaTypeName,
+    })
+  }
+
+  function selectedTagValue(bind) {
+    const match = allTags.find(t => {
+      if (bind.tagLabel) return t.label === bind.tagLabel && (!bind.mediaTypeName || t.mediaTypeName === bind.mediaTypeName)
+      return bind.tagId != null && String(t.id) === String(bind.tagId)
+    })
+    return match ? `${match.mediaTypeId}:${match.id}` : ''
+  }
+
+  function captureKey(e, i) {
+    if (e.key === 'Backspace' || e.key === 'Delete') {
+      e.preventDefault()
+      updateBind(i, { key: '' })
+      return
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    const key = normalizeKeybindKey(e.key)
+    if (!isBindableKey(key)) return
+    e.preventDefault()
+    updateBind(i, { key })
+  }
+
   function removeBind(i) {
     onChange(keybinds.filter((_, idx) => idx !== i))
   }
@@ -1989,7 +2043,8 @@ function KeybindsEditor({ keybinds, mediaTypes, onChange }) {
   // Check for duplicate keys
   const keyCounts = {}
   for (const b of keybinds) {
-    if (b.key) keyCounts[b.key.toLowerCase()] = (keyCounts[b.key.toLowerCase()] || 0) + 1
+    const key = normalizeKeybindKey(b.key)
+    if (key) keyCounts[key] = (keyCounts[key] || 0) + 1
   }
 
   return (
@@ -2006,20 +2061,23 @@ function KeybindsEditor({ keybinds, mediaTypes, onChange }) {
           </div>
         )}
         {keybinds.map((bind, i) => {
-          const isDupe = bind.key && keyCounts[bind.key.toLowerCase()] > 1
+          const normalizedKey = normalizeKeybindKey(bind.key)
+          const isDupe = normalizedKey && keyCounts[normalizedKey] > 1
           return (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', border: `1px solid ${isDupe ? 'var(--danger)' : 'var(--border)'}`, borderRadius: 8, background: 'var(--bg)' }}>
               {/* Key input */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <label style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Key</label>
                 <input
-                  value={bind.key}
-                  maxLength={1}
+                  value={keybindDisplayName(bind.key)}
                   placeholder="t"
-                  onChange={e => updateBind(i, { key: e.target.value.slice(-1) })}
+                  onKeyDown={e => captureKey(e, i)}
+                  onChange={() => {}}
+                  onFocus={e => e.target.select()}
+                  title="Press a key. Backspace clears it."
                   style={{
                     width: 48, height: 36, textAlign: 'center', fontFamily: 'monospace',
-                    fontWeight: 700, fontSize: 16, textTransform: 'lowercase',
+                    fontWeight: 700, fontSize: 14,
                     border: `1.5px solid ${isDupe ? 'var(--danger)' : 'var(--border)'}`,
                     borderRadius: 6,
                   }}
@@ -2032,13 +2090,13 @@ function KeybindsEditor({ keybinds, mediaTypes, onChange }) {
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <label style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Tag (optional)</label>
                 <select
-                  value={bind.tagId ?? ''}
-                  onChange={e => updateBind(i, { tagId: e.target.value === '' ? null : Number(e.target.value) })}
+                  value={selectedTagValue(bind)}
+                  onChange={e => updateBindTag(i, e.target.value)}
                   style={{ height: 36, fontSize: 13 }}
                 >
                   <option value="">No tag (plain timestamp)</option>
                   {allTags.map(t => (
-                    <option key={t.id} value={t.id}>{t.label} — {t.mediaTypeName}</option>
+                    <option key={`${t.mediaTypeId}:${t.id}`} value={`${t.mediaTypeId}:${t.id}`}>{t.label} — {t.mediaTypeName}</option>
                   ))}
                 </select>
               </div>

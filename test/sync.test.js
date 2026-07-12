@@ -16,6 +16,29 @@ function tmpDir(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)) 
 
 // ─── Config export/import round-trip ────────────────────────────────────────────
 
+test('config: keybind exports include stable tag labels for sync/import', () => {
+  const db = makeDb()
+  const projectId = createProject(db, 'Shortcut Study')
+  const mediaTypeId = addMediaType(db, projectId, 'Consult Video', {
+    tags: [{ label: 'Question Asked', color: '#2563eb' }],
+  })
+  const tag = db.prepare('SELECT id FROM timestamp_tags WHERE media_type_id=?').get(mediaTypeId)
+  db.prepare('UPDATE projects SET keybinds=? WHERE id=?')
+    .run(JSON.stringify([{ key: 'q', tagId: tag.id }]), projectId)
+
+  const config = sync.buildConfigExport(db, projectId)
+  assert.deepStrictEqual(config.project.keybinds, [{
+    key: 'q',
+    tagId: tag.id,
+    tagLabel: 'Question Asked',
+    mediaTypeName: 'Consult Video',
+  }])
+
+  const legacy = sync.buildExport(db, projectId)
+  assert.deepStrictEqual(legacy.project.keybinds, config.project.keybinds)
+  db.close()
+})
+
 test('agreement: nested form schema snapshots produce comparable questions', async () => {
   const { computeInterraterAgreementForMediaFile } = await import('../src/lib/interraterAgreement.mjs')
   const result = computeInterraterAgreementForMediaFile({
@@ -200,6 +223,21 @@ test('defaults: UCAT/SDMo template creates forms, PDFs, tags, and agreement sett
   assert.ok(mediaTypes.every(mediaType => mediaType.archived_at === null))
   assert.strictEqual(sdmoTags.length, 20)
   assert.deepStrictEqual(sdmoTags.slice(0, 3).map(tag => tag.label), ['Take Notice', 'Commit', 'Focus'])
+  assert.deepStrictEqual([...new Set(sdmoTags.map(tag => tag.category))], [
+    'Noticing',
+    'Formulating',
+    'Trying Out',
+    'Culminating',
+    'Enabling Actions',
+  ])
+  assert.deepStrictEqual(sdmoTags.map(tag => [tag.label, tag.category]).slice(0, 6), [
+    ['Take Notice', 'Noticing'],
+    ['Commit', 'Noticing'],
+    ['Focus', 'Formulating'],
+    ['Create Ideas', 'Formulating'],
+    ['Flesh Out Ideas', 'Formulating'],
+    ['Try Out Ideas', 'Trying Out'],
+  ])
   assert.ok(sdmoTags.every(tag => /^#[0-9a-f]{6}$/i.test(tag.color)))
   assert.deepStrictEqual(sdmoTabs, [
     { tab_type: 'form', label: 'SDMo', ref_id: formsByName.SDMo.id },
@@ -214,7 +252,13 @@ test('defaults: UCAT/SDMo template creates forms, PDFs, tags, and agreement sett
   assert.deepStrictEqual(sdmoElements.filter(el => el.agreement_enabled).map(el => [el.label, el.type, el.agreement_method, el.agreement_weight]), [
     ['Evidence of Distinction Dials', 'dial', 'numeric', 1],
     ['Evidence of Inquiry', 'table', 'item_group', 0.6],
-    ['SDM Occurrence', 'rating', 'auto', 1],
+    ['SDM Occurrence', 'slider', 'auto', 1],
+  ])
+  assert.deepStrictEqual(sdmoElements.find(el => el.label === 'SDM Occurrence').scale_labels, [
+    { from: 1, to: 1, label: 'Definitely not' },
+    { from: 2, to: 3, label: 'Probably not' },
+    { from: 4, to: 5, label: 'Probably yes' },
+    { from: 6, to: 6, label: 'Definitely yes' },
   ])
   db.close()
 })
