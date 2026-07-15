@@ -4,6 +4,9 @@
   "forms": [
     {
       "name": "UCAT",
+      "sync_id": "8b49df15-21ab-4238-a320-e9383d312db5",
+      "schema_version": 2,
+      "archived_at": null,
       "schema": {
         "sections": [
           {
@@ -290,12 +293,73 @@
             ]
           },
           {
-            "id": "el_1783574935874_bprf",
-            "title": "Overall Hurriedness",
+            "id": "el_1784147968974_pr0j",
+            "title": "Global Measures",
             "description": "",
             "elements": [
               {
-                "id": "el_1783574958108_4aef",
+                "id": "el_1784147968974_ccpn",
+                "type": "likert_group",
+                "label": "Global Measures",
+                "description": "",
+                "scale": 5,
+                "low_label": "Strongly Disagree",
+                "high_label": "Strongly Agree",
+                "has_na": true,
+                "items": [
+                  {
+                    "id": "el_1783557930518_fu09",
+                    "label": "1a. Participants spoke without rushing the conversation."
+                  },
+                  {
+                    "id": "el_1783557934250_4hxa",
+                    "label": "1b. Participants asked questions that elicited participation from the other."
+                  },
+                  {
+                    "id": "el_1783557941033_epwf",
+                    "label": "1c. Participants supported the conversation through mutual turn taking."
+                  },
+                  {
+                    "id": "el_1784148124488_9fsz",
+                    "label": "1d. Participants interacted during the conversation without interrupting each other."
+                  },
+                  {
+                    "id": "el_1784148155864_a6by",
+                    "label": "2. Participants were able to pause during the conversation. "
+                  },
+                  {
+                    "id": "el_1784148170762_zm8n",
+                    "label": "3. Participants expressed emotions during the conversation."
+                  },
+                  {
+                    "id": "el_1784148186702_6roq",
+                    "label": "4. External interruptions disrupted the conversation."
+                  },
+                  {
+                    "id": "el_1784148211329_9854",
+                    "label": "5. Participants' body language supported the conversation."
+                  },
+                  {
+                    "id": "el_1784148230392_sdq7",
+                    "label": "6. Participants used off-task topics to support the conversation."
+                  },
+                  {
+                    "id": "el_1784148250107_eueu",
+                    "label": "7. Participants delayed or delegated a topic to give the conversation more time."
+                  }
+                ],
+                "required": true,
+                "global_agreement_question": false
+              }
+            ]
+          },
+          {
+            "id": "el_1784147972149_8vvp",
+            "title": "Overall Hurriedness ",
+            "description": "",
+            "elements": [
+              {
+                "id": "el_1784147972149_22oe",
                 "type": "likert",
                 "label": "Participants engaged in an unhurried conversation",
                 "required": true,
@@ -306,7 +370,7 @@
                 "scale": 5,
                 "low_label": "Strongly Disagree",
                 "high_label": "Strongly Agree",
-                "global_agreement_question": true
+                "global_agreement_question": false
               }
             ]
           }
