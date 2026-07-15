@@ -761,7 +761,7 @@ function ControlTitle({ children }) {
   )
 }
 
-function DialControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel }) {
+function DialControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel, scaleLabels = []}) {
   const safeValue = Number.isFinite(value) ? value : min
   const bounded = Math.min(max, Math.max(min, safeValue))
   const pct = max === min ? 0 : ((bounded - min) / (max - min)) * 100
@@ -1155,6 +1155,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
                 label={label}
                 lowLabel={lowLabel}
                 highLabel={highLabel}
+                scaleLabels={el.scale_labels}
               />
             ) : (
               <VerticalSliderControl

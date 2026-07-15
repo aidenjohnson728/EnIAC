@@ -36,6 +36,7 @@ const TUTORIAL_STEPS = [
 ]
 
 export default function HomePage() {
+  const [showTemplateDropdown, setShowTemplateDropdown] = useState(false)
   const [projects, setProjects] = useState([])
   const [defaultProjects, setDefaultProjects] = useState([])
   const [loading, setLoading] = useState(true)
@@ -359,9 +360,74 @@ export default function HomePage() {
             <GraduationCap size={14} /> Tutorial Project
           </button>
           {defaultProjects.length > 0 && (
-            <button className="btn btn-secondary btn-sm" onClick={() => setShowTemplates(true)} title="Create a project from a built-in template">
-              <ClipboardList size={14} /> Template Project
-            </button>
+            <div
+              style={{ position: 'relative' }}
+              onMouseEnter={() => setShowTemplateDropdown(true)}
+              onMouseLeave={() => setShowTemplateDropdown(false)}
+            >
+              <button
+                className="btn btn-secondary btn-sm"
+                title="Create a project from a built-in template"
+              >
+                <ClipboardList size={14} /> UCAT / SDMo
+              </button>
+
+              {showTemplateDropdown && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '100%',
+                    right: 0,
+                    marginTop: 4,
+                    width: 220,
+                    background: 'var(--bg)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    boxShadow: 'var(--shadow-md)',
+                    padding: 6,
+                    zIndex: 1000,
+                  }}
+                >
+                  {defaultProjects.map(template => (
+                    <button
+                      key={template.id}
+                      onClick={() => handleCreateDefault(template.id)}
+                      style={{
+                        width: '100%',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'flex-start',
+                        gap: 3,
+                        padding: '10px 12px',
+                        border: 'none',
+                        background: 'transparent',
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        fontFamily: 'var(--font)',
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.background = 'var(--bg-secondary)'
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.background = 'transparent'
+                      }}
+                    >
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>
+                        {template.name}
+                      </span>
+
+                      <span style={{ 
+                        fontSize: 12, 
+                        color: 'var(--text-muted)' 
+                      }}>
+                        {template.description || 'Default project template'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
           <button id="tut-new" className="btn btn-primary btn-sm" onClick={() => setShowCreate(true)}>
             <Plus size={14} /> New Project
@@ -399,7 +465,7 @@ export default function HomePage() {
               </button>
               {defaultProjects.length > 0 && (
                 <button className="btn btn-secondary" onClick={() => setShowTemplates(true)}>
-                  <ClipboardList size={14} /> Template Project
+                  <ClipboardList size={14} /> UCAT / SDMo
                 </button>
               )}
               <button className="btn btn-primary" onClick={() => setShowCreate(true)}>

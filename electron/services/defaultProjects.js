@@ -3,6 +3,7 @@ const os = require('os')
 const path = require('path')
 const { saveForm, saveInstruction, saveMediaType } = require('./structure')
 const ucatTemplate = require('./defaultProjectTemplates/ucat.json')
+const sdmoTemplate = require('./defaultProjectTemplates/sdmo.json')
 
 const DEFAULT_PROJECTS = [
   {
@@ -12,7 +13,14 @@ const DEFAULT_PROJECTS = [
     forms: ucatTemplate.forms || [],
     instructions: ucatTemplate.instructions || [],
     mediaTypes: ucatTemplate.mediaTypes || [],
-  },
+  },{
+    id: 'sdmo',
+    name: sdmoTemplate.name || 'SDMo',
+    description: sdmoTemplate.description || '',
+    forms: sdmoTemplate.forms || [],
+    instructions: sdmoTemplate.instructions || [],
+    mediaTypes: sdmoTemplate.mediaTypes || [],
+  }
 ]
 
 function clone(value) {
