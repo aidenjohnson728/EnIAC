@@ -369,7 +369,7 @@ export default function HomePage() {
                 className="btn btn-secondary btn-sm"
                 title="Create a project from a built-in template"
               >
-                <ClipboardList size={14} /> UCAT / SDMo
+                <ClipboardList size={14} /> Template Projects
               </button>
 
               {showTemplateDropdown && (
