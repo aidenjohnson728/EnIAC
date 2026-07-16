@@ -1180,7 +1180,7 @@ function makeElement(type) {
   if (type === 'likert') return { ...base, scale: 5, low_label: '', high_label: '', has_na: false }
   if (type === 'likert_group') return { id: newId(), type: 'likert_group', label: '', description: '', required: false, scale: 5, low_label: '', high_label: '', has_na: false, items: [{ id: newId(), label: '' }], ...agreement }
   if (type === 'checkbox') return { id: newId(), type: 'checkbox', label: '', required: false, has_na: false, ...agreement }
-  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return { ...base, min: 1, max: 100, step: 1, count: 1, low_label: '', high_label: '', scale_labels: [], control_labels: [], control_low_labels: [], control_high_labels: [] }
+  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return { ...base, min: 0, max: 100, step: 1, count: 1, low_label: '', high_label: '', scale_labels: [], control_labels: [], control_low_labels: [], control_high_labels: [] }
   if (type === 'text_block') return { id: newId(), type: 'text_block', content: '', assets: [] }
   if (type === 'timestamp_select') return base
   if (type === 'table') return { ...base, has_na: false, rows: ['Row 1', 'Row 2'], columns: [{ id: newId(), label: 'Column 1', type: 'text', has_na: false }] }

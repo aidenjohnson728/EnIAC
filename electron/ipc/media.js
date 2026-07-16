@@ -18,6 +18,17 @@ function getFileType(ext) {
   return 'other'
 }
 
+// Build a media name from the encounter name, appending " (2)", " (3)", etc.
+// if the encounter already has a media file with that name (e.g. multiple
+// files scanned into the same encounter folder).
+function nextMediaNameForEncounter(db, encounterId, baseName) {
+  const nameTaken = (n) => !!db.prepare('SELECT 1 FROM media_files WHERE encounter_id=? AND name=?').get(encounterId, n)
+  if (!nameTaken(baseName)) return baseName
+  let i = 2
+  while (nameTaken(`${baseName} (${i})`)) i++
+  return `${baseName} (${i})`
+}
+
 function augmentWithLink(db, file, projectId) {
   const { status, resolved_path } = resolveLink(db, file.id, projectId)
   file.link_status = status
@@ -186,7 +197,8 @@ module.exports = function (ipcMain) {
             upsertLink(db, existing.id, filePath, false)
             filesLinked++
           } else {
-            const r = db.prepare("INSERT INTO media_files (encounter_id, name, file_path, file_type, sync_id, updated_at) VALUES (?,?,?,?,?,datetime('now'))").run(enc.id, file.name, filePath, fileType, crypto.randomUUID())
+            const mediaName = nextMediaNameForEncounter(db, enc.id, dir.name)
+            const r = db.prepare("INSERT INTO media_files (encounter_id, name, file_path, file_type, sync_id, updated_at) VALUES (?,?,?,?,?,datetime('now'))").run(enc.id, mediaName, filePath, fileType, crypto.randomUUID())
             upsertLink(db, r.lastInsertRowid, filePath, false)
             filesAdded++
           }
