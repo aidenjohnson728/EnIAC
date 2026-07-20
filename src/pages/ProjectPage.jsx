@@ -4,7 +4,8 @@ import {
   ChevronLeft, Settings, Filter, ChevronDown, ChevronRight,
   Video, FileText, File, Plus, CheckCircle2, Circle,
   Search, X, Play, RefreshCw, Share2, FolderDown, AlertTriangle, Cloud, User,
-  LayoutList, BarChart2, Activity, LineChart, HelpCircle, Pencil
+  LayoutList, BarChart2, Activity, LineChart, HelpCircle, Pencil,
+  Download, Upload, GitCompare
 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import { SETUP_SECTIONS } from '../lib/setupSections'
@@ -597,6 +598,21 @@ export default function ProjectPage() {
     if (p) showToast(`File saved — share it with teammates.`)
   }
 
+  async function handleExportResults() {
+    const p = await api.exportResults(projectId)
+    if (p) showToast('Results exported.')
+  }
+
+  async function handleImportResults() {
+    const result = await api.importResultsFiles(projectId)
+    if (!result) return
+    if (result.imported > 0) {
+      showToast(`Imported ${result.imported} result file${result.imported !== 1 ? 's' : ''}.${result.skipped?.length ? ` ${result.skipped.length} skipped.` : ''}`)
+    } else if (result.skipped?.length) {
+      showToast(`Could not import: ${result.skipped.join(', ')}`, true)
+    }
+  }
+
   async function handleLoadFile() {
     const result = await api.loadProjectFile(projectId)
     if (!result) return
@@ -668,6 +684,12 @@ export default function ProjectPage() {
           </button>
           <button id="tut-proj-export" className="btn btn-ghost btn-sm" onClick={() => api.exportExcel(projectId)} title="Export all reviews and timestamps to Excel">
             <FileText size={13} /> Export Excel
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={handleExportResults} title="Export only your coding results as a portable JSON file">
+            <Download size={13} /> Export Results
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={handleImportResults} title="Import another coder's exported results for comparison">
+            <Upload size={13} /> Import Results
           </button>
           <button className="btn btn-ghost btn-icon btn-sm" onClick={tour.start} title="Show tutorial">
             <HelpCircle size={15} />
@@ -821,6 +843,7 @@ export default function ProjectPage() {
               { id: 'progress',   icon: BarChart2,  label: 'Progress' },
               { id: 'activity',   icon: Activity,   label: 'Activity' },
               { id: 'dataviz',    icon: LineChart,  label: 'Data Visualization' },
+              { id: 'agreement',  icon: GitCompare, label: 'Agreement Between Results' },
             ].map(({ id, icon: Icon, label }) => {
               const active = activePage === id
               return (
@@ -934,6 +957,7 @@ export default function ProjectPage() {
 
           {/* ── DATA VISUALIZATION ── */}
           {activePage === 'dataviz' && <DataVizView projectId={projectId} mediaTypes={mediaTypes} />}
+          {activePage === 'agreement' && <AgreementResultsView projectId={projectId} />}
 
         </div>
       </div>
@@ -2159,6 +2183,190 @@ function DataVizView({ projectId, mediaTypes = [] }) {
             </div>
           ))}
         </div>
+      )}
+    </div>
+  )
+}
+
+// ── Agreement Between Results View ────────────────────────────────────────────
+// Compares the current machine's own submitted-review answers ("mine") against
+// an imported results file ("theirs"), using the same computeInterraterAgreementForMediaFile
+// engine that powers Data Visualization above. Matching across the two sets is by
+// encounter_name + media_name (not sync ids), since imported results come from an
+// unrelated install where local ids/sync ids won't line up. Neither set of coding
+// is ever modified — this view only reads api.getResultsComparisonData().
+function AgreementResultsView({ projectId }) {
+  const [loading, setLoading] = useState(true)
+  const [mineRows, setMineRows] = useState([])
+  const [importedSources, setImportedSources] = useState([])
+  const [selectedSourceId, setSelectedSourceId] = useState('')
+
+  const load = useCallback(async () => {
+    if (!projectId) return
+    setLoading(true)
+    try {
+      const data = await api.getResultsComparisonData(projectId)
+      setMineRows(data?.mine || [])
+      setImportedSources(data?.imported || [])
+    } catch {
+      setMineRows([])
+      setImportedSources([])
+    } finally {
+      setLoading(false)
+    }
+  }, [projectId])
+
+  useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (importedSources.length === 0) {
+      if (selectedSourceId) setSelectedSourceId('')
+      return
+    }
+    if (selectedSourceId && importedSources.some(s => String(s.id) === String(selectedSourceId))) return
+    setSelectedSourceId(String(importedSources[0].id))
+  }, [importedSources, selectedSourceId])
+
+  async function handleDeleteSource(id) {
+    await api.deleteImportedResult(id, projectId)
+    load()
+  }
+
+  const selectedSource = importedSources.find(s => String(s.id) === String(selectedSourceId))
+
+  const agreementRows = useMemo(() => {
+    if (!selectedSource) return []
+    const grouped = new Map()
+    const addRow = (row, bucket) => {
+      const key = `${row.encounter_name}||${row.media_name}`
+      if (!grouped.has(key)) grouped.set(key, { encounterName: row.encounter_name, mediaName: row.media_name, mine: [], theirs: [] })
+      grouped.get(key)[bucket].push(row)
+    }
+    for (const row of mineRows) addRow(row, 'mine')
+    for (const row of (selectedSource.responses_long || [])) addRow(row, 'theirs')
+
+    const rows = []
+    for (const entry of grouped.values()) {
+      // Missing on one side is handled by the "Only In..." tiles below rather than
+      // rendered as a broken/empty comparison card here.
+      if (entry.mine.length === 0 || entry.theirs.length === 0) continue
+      const reviewDetails = [
+        { form_responses: entry.mine.map(r => ({ form_id: r.form_id, responses: r.responses, form_snapshot: r.form_snapshot })) },
+        { form_responses: entry.theirs.map(r => ({ form_id: r.form_id, responses: r.responses, form_snapshot: r.form_snapshot })) },
+      ]
+      rows.push(computeInterraterAgreementForMediaFile({
+        mediaName: entry.mediaName,
+        encounterName: entry.encounterName,
+        reviewDetails,
+      }))
+    }
+    rows.sort((a, b) => (b.overallAgreement ?? -1) - (a.overallAgreement ?? -1))
+    return rows
+  }, [mineRows, selectedSource])
+
+  const missing = useMemo(() => {
+    if (!selectedSource) return { mineOnly: 0, theirsOnly: 0 }
+    const mineKeys = new Set(mineRows.map(r => `${r.encounter_name}||${r.media_name}`))
+    const theirKeys = new Set((selectedSource.responses_long || []).map(r => `${r.encounter_name}||${r.media_name}`))
+    let mineOnly = 0, theirsOnly = 0
+    for (const k of mineKeys) if (!theirKeys.has(k)) mineOnly++
+    for (const k of theirKeys) if (!mineKeys.has(k)) theirsOnly++
+    return { mineOnly, theirsOnly }
+  }, [mineRows, selectedSource])
+
+  const scoredAgreementRows = agreementRows.filter(row => row.overallAgreement != null)
+  const averageAgreement = scoredAgreementRows.length > 0
+    ? scoredAgreementRows.reduce((sum, row) => sum + row.overallAgreement, 0) / scoredAgreementRows.length
+    : null
+
+  if (loading) return <div className="empty-state"><p>Loading…</p></div>
+
+  return (
+    <div style={{ maxWidth: 860 }}>
+      <div style={{ marginBottom: 20 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Agreement Between Results</h1>
+        <p className="text-secondary text-sm" style={{ margin: 0 }}>Compare your coding against an imported results file. Neither set of coding is modified.</p>
+      </div>
+
+      {importedSources.length === 0 ? (
+        <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
+          <GitCompare size={38} style={{ margin: '0 auto 14px', opacity: 0.35 }} />
+          <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>No imported results yet</p>
+          <p style={{ fontSize: 13 }}>Use "Import Results" above to load another coder's exported results file.</p>
+        </div>
+      ) : (
+        <>
+          <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div className="form-field" style={{ margin: 0, flex: 1, minWidth: 220 }}>
+              <label>Compare against</label>
+              <select value={selectedSourceId} onChange={e => setSelectedSourceId(e.target.value)} style={{ height: 34, fontSize: 13, width: '100%' }}>
+                {importedSources.map(s => (
+                  <option key={s.id} value={s.id}>{s.reviewer_name || s.source_name} · imported {formatDate(s.imported_at)}</option>
+                ))}
+              </select>
+            </div>
+            {selectedSource && (
+              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDeleteSource(selectedSource.id)}>
+                Remove this import
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Files Compared</div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{agreementRows.length}</div>
+            </div>
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Overall Agreement</div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{averageAgreement == null ? '—' : `${Math.round(averageAgreement * 100)}%`}</div>
+            </div>
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Only In Mine</div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{missing.mineOnly}</div>
+            </div>
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Only In Imported</div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{missing.theirsOnly}</div>
+            </div>
+          </div>
+
+          {agreementRows.length === 0 ? (
+            <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
+              <p style={{ fontSize: 14, fontWeight: 500 }}>No overlapping media files found between the two result sets.</p>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {agreementRows.map(row => (
+                <div key={`${row.encounterName}-${row.mediaName}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mediaName}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{row.encounterName}</div>
+                    </div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: row.overallAgreement >= 0.8 ? 'var(--success)' : row.overallAgreement >= 0.6 ? 'var(--accent)' : 'var(--danger)' }}>
+                      {row.overallAgreement == null ? '—' : `${Math.round(row.overallAgreement * 100)}%`}
+                    </div>
+                  </div>
+                  {row.questions.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {row.questions.map(question => (
+                        <div key={`${row.mediaName}-${question.label}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '6px 8px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
+                          <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{question.label}</span>
+                          <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                            {AGREEMENT_METHOD_LABELS[question.method] || question.type} · {Math.round((question.agreement || 0) * 100)}%
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No comparable questions found for this file.</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   )

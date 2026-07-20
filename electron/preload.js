@@ -90,6 +90,11 @@ contextBridge.exposeInMainWorld('api', {
   deleteTimestamp: (id) => ipcRenderer.invoke('reviews:deleteTimestamp', id),
   updateTimestamp: (id, data) => ipcRenderer.invoke('reviews:updateTimestamp', id, data),
   saveFormResponse: (reviewId, data) => ipcRenderer.invoke('reviews:saveFormResponse', reviewId, data),
+  exportResults: (projectId) => ipcRenderer.invoke('reviews:exportResults', projectId),
+  importResultsFiles: (projectId) => ipcRenderer.invoke('reviews:importResultsFiles', projectId),
+  listImportedResults: (projectId) => ipcRenderer.invoke('reviews:listImportedResults', projectId),
+  deleteImportedResult: (id) => ipcRenderer.invoke('reviews:deleteImportedResult', id),
+  getResultsComparisonData: (projectId) => ipcRenderer.invoke('reviews:getResultsComparisonData', projectId),
 
   // Setup
   saveMediaType: (projectId, data) => ipcRenderer.invoke('setup:saveMediaType', projectId, data),

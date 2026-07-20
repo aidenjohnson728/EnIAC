@@ -26,6 +26,10 @@ function getDb() {
 // `migrate()` above only adds columns/indexes idempotently. This runner is the home
 // for data transforms: each entry runs once, in a transaction, advancing user_version.
 // New records always get their sync ids at insert time, so these are upgrade-only.
+// IMPORTANT: every entry here MUST be a function `(db) => {...}` — the loop below
+// calls `migrations[v](db)`. Schema creation (CREATE TABLE/INDEX) does NOT belong
+// here; put it in migrate() instead, since that runner is idempotent SQL run every
+// launch and doesn't require wrapping in a function.
 function runDataMigrations(db) {
   const crypto = require('crypto')
 
@@ -155,12 +159,6 @@ function migrate(db) {
     "ALTER TABLE media_files ADD COLUMN sync_id TEXT",
     "ALTER TABLE reviews ADD COLUMN review_sync_id TEXT",
     "ALTER TABLE deleted_reviews ADD COLUMN review_sync_id TEXT",
-    // Per-entity merge: every structural entity needs a stable id + a modification
-    // clock so sync can merge per-entity (last-writer-wins by updated_at) instead of
-    // replacing the whole config blob. encounters/media_files already have sync_id.
-    // updated_at is added by ALTER (no constant default possible), so it is NULL on
-    // existing rows and must be set explicitly on insert/edit; readers fall back to
-    // created_at when it is NULL.
     "ALTER TABLE forms ADD COLUMN sync_id TEXT",
     "ALTER TABLE media_types ADD COLUMN sync_id TEXT",
     "ALTER TABLE instructions ADD COLUMN sync_id TEXT",
@@ -177,8 +175,6 @@ function migrate(db) {
       linked_at TEXT DEFAULT (datetime('now')),
       UNIQUE(media_file_id)
     )`,
-    // Tombstones for explicit encounter/media deletions, keyed by sync_id so the
-    // deletion propagates across machines (parallel to deleted_reviews for reviews).
     `CREATE TABLE IF NOT EXISTS deleted_structure (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id INTEGER NOT NULL,
@@ -187,8 +183,6 @@ function migrate(db) {
       deleted_at TEXT DEFAULT (datetime('now')),
       UNIQUE(project_id, kind, sync_id)
     )`,
-    // Indexes on the foreign keys / sync ids that every list and sync query filters on.
-    // SQLite only auto-indexes PK and UNIQUE columns, so these are full-scans otherwise.
     "CREATE INDEX IF NOT EXISTS idx_encounters_project ON encounters(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_media_files_encounter ON media_files(encounter_id)",
     "CREATE INDEX IF NOT EXISTS idx_media_files_sync ON media_files(sync_id)",
@@ -201,8 +195,6 @@ function migrate(db) {
     "CREATE INDEX IF NOT EXISTS idx_form_responses_review ON form_responses(review_id)",
     "CREATE INDEX IF NOT EXISTS idx_deleted_reviews_project ON deleted_reviews(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_deleted_structure_project ON deleted_structure(project_id)",
-    // Research-instrument versioning / review-time snapshots. These columns let
-    // reviews keep the exact workspace/forms coders saw even if setup changes later.
     "ALTER TABLE forms ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE forms ADD COLUMN archived_at TEXT",
     "ALTER TABLE media_types ADD COLUMN config_version INTEGER NOT NULL DEFAULT 1",
@@ -240,6 +232,19 @@ function migrate(db) {
     )`,
     "CREATE INDEX IF NOT EXISTS idx_form_versions_lookup ON form_versions(project_id, form_sync_id)",
     "CREATE INDEX IF NOT EXISTS idx_media_type_versions_lookup ON media_type_versions(project_id, media_type_sync_id)",
+    // Portable results export/import (Export Results / Import Results / Agreement
+    // Between Results). Local-only, deliberately NOT part of sync — same precedent
+    // as media_file_links — since these are per-installation reference data for
+    // comparison, not canonical project structure that should propagate to teammates.
+    `CREATE TABLE IF NOT EXISTS imported_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      source_name TEXT NOT NULL,
+      reviewer_name TEXT,
+      imported_at TEXT DEFAULT (datetime('now')),
+      data TEXT NOT NULL
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_imported_results_project ON imported_results(project_id)",
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) {}

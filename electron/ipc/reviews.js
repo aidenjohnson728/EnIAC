@@ -2,6 +2,54 @@ const { getDb } = require('../db')
 const { scheduleSyncForReview } = require('../sync')
 const { getOrCreateUUID } = require('../settings')
 const { buildWorkspaceSnapshot, getFormSnapshotFromReview, currentFormSnapshot } = require('../services/snapshots')
+const { dialog } = require('electron')
+const fs = require('fs')
+const path = require('path')
+
+// Builds this machine's own submitted-review answers as portable "responses_long"
+// rows: one row per (review × form), self-describing via form_snapshot so it can
+// be read on another install where local form_id integers don't line up.
+// Shared by reviews:exportResults (writes to disk) and reviews:getResultsComparisonData
+// (in-memory, feeds the Agreement Between Results page). No media/settings included.
+function getMyResponsesLong(db, projectId) {
+  const uuid = getOrCreateUUID()
+  const reviews = db.prepare(`
+    SELECT r.id, r.reviewer_name, r.review_sync_id,
+           mf.name as media_name, mt.name as media_type_name,
+           e.name as encounter_name
+    FROM reviews r
+    JOIN media_files mf ON r.media_file_id = mf.id
+    JOIN encounters e ON mf.encounter_id = e.id
+    LEFT JOIN media_types mt ON mf.media_type_id = mt.id
+    WHERE e.project_id=? AND r.reviewer_uuid=? AND r.status='submitted' AND r.deleted_at IS NULL
+    ORDER BY e.name, mf.name
+  `).all(projectId, uuid)
+
+  const rows = []
+  for (const review of reviews) {
+    const formResponses = db.prepare(`
+      SELECT fr.form_id, fr.responses, fr.form_snapshot, fr.form_sync_id,
+             f.name as form_name, f.schema as current_schema
+      FROM form_responses fr
+      LEFT JOIN forms f ON fr.form_id = f.id
+      WHERE fr.review_id=?
+    `).all(review.id)
+    for (const fr of formResponses) {
+      rows.push({
+        encounter_name: review.encounter_name,
+        media_name: review.media_name,
+        media_type_name: review.media_type_name,
+        reviewer_name: review.reviewer_name,
+        review_sync_id: review.review_sync_id,
+        form_id: fr.form_sync_id || String(fr.form_id),
+        form_name: fr.form_name || null,
+        form_snapshot: fr.form_snapshot ? JSON.parse(fr.form_snapshot) : (fr.current_schema ? JSON.parse(fr.current_schema) : null),
+        responses: fr.responses ? JSON.parse(fr.responses) : {},
+      })
+    }
+  }
+  return rows
+}
 
 module.exports = function (ipcMain) {
   ipcMain.handle('reviews:projectAgreementData', (_, projectId) => {
@@ -242,4 +290,77 @@ module.exports = function (ipcMain) {
     return true
   })
 
+  // ── Results export/import (portable coding-results comparison) ───────────────
+
+  ipcMain.handle('reviews:exportResults', async (_, projectId) => {
+    const db = getDb()
+    const project = db.prepare('SELECT name FROM projects WHERE id=?').get(projectId)
+    const rows = getMyResponsesLong(db, projectId)
+    const payload = {
+      sdmo_results_export: 1,
+      project_name: project?.name || 'Project',
+      reviewer_name: rows[0]?.reviewer_name || null,
+      exported_at: new Date().toISOString(),
+      responses_long: rows,
+    }
+    const stamp = new Date().toISOString().slice(0, 10)
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Export Results',
+      defaultPath: `${(project?.name || 'project').replace(/[^\w.-]+/g, '_')}-results-${stamp}.json`,
+      filters: [{ name: 'SDMo Results', extensions: ['json'] }],
+    })
+    if (canceled || !filePath) return null
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8')
+    return filePath
+  })
+
+  ipcMain.handle('reviews:importResultsFiles', async (_, projectId) => {
+    const db = getDb()
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: 'Import Results',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'SDMo Results', extensions: ['json'] }],
+    })
+    if (canceled || !filePaths?.length) return { imported: 0, skipped: [] }
+
+    let imported = 0
+    const skipped = []
+    for (const filePath of filePaths) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+        if (parsed?.sdmo_results_export !== 1 || !Array.isArray(parsed.responses_long)) {
+          skipped.push(path.basename(filePath))
+          continue
+        }
+        db.prepare('INSERT INTO imported_results (project_id, source_name, reviewer_name, data) VALUES (?,?,?,?)')
+          .run(projectId, path.basename(filePath), parsed.reviewer_name || null, JSON.stringify(parsed.responses_long))
+        imported++
+      } catch {
+        skipped.push(path.basename(filePath))
+      }
+    }
+    return { imported, skipped }
+  })
+
+  ipcMain.handle('reviews:listImportedResults', (_, projectId) => {
+    const db = getDb()
+    return db.prepare('SELECT id, source_name, reviewer_name, imported_at FROM imported_results WHERE project_id=? ORDER BY imported_at DESC').all(projectId)
+  })
+
+  ipcMain.handle('reviews:deleteImportedResult', (_, id) => {
+    getDb().prepare('DELETE FROM imported_results WHERE id=?').run(id)
+    return true
+  })
+
+  ipcMain.handle('reviews:getResultsComparisonData', (_, projectId) => {
+    const db = getDb()
+    const mine = getMyResponsesLong(db, projectId)
+    const sources = db.prepare('SELECT id, source_name, reviewer_name, imported_at, data FROM imported_results WHERE project_id=? ORDER BY imported_at DESC').all(projectId)
+    const imported = sources.map(s => {
+      let responses_long = []
+      try { responses_long = JSON.parse(s.data) } catch {}
+      return { id: s.id, source_name: s.source_name, reviewer_name: s.reviewer_name, imported_at: s.imported_at, responses_long }
+    })
+    return { mine, imported }
+  })
 }
