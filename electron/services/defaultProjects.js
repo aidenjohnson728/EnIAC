@@ -20,6 +20,13 @@ const DEFAULT_PROJECTS = [
     forms: sdmoTemplate.forms || [],
     instructions: sdmoTemplate.instructions || [],
     mediaTypes: sdmoTemplate.mediaTypes || [],
+  },{
+    id: 'ucat_sdmo',
+    name: 'UCAT/SDMo',
+    description: ucatTemplate.description || sdmoTemplate.description || '',
+    forms: [...(ucatTemplate.forms || []), ...(sdmoTemplate.forms || [])],
+    instructions: [...(ucatTemplate.instructions || []), ...(sdmoTemplate.instructions || [])],
+    mediaTypes: [...(ucatTemplate.mediaTypes || []), ...(sdmoTemplate.mediaTypes || [])],
   }
 ]
 
@@ -59,7 +66,9 @@ function materializeInstructionFile(instruction) {
 }
 
 function listDefaultProjects() {
-  return DEFAULT_PROJECTS.map(({ id, name, description }) => ({ id, name, description }))
+  return DEFAULT_PROJECTS
+    .filter(project => project.id !== 'ucat_sdmo')
+    .map(({ id, name, description }) => ({ id, name, description }))
 }
 
 function seedDefaultProject(db, templateId) {
