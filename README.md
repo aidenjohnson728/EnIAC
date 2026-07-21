@@ -10,7 +10,7 @@ SDMo is a desktop application for research studies where coders watch videos (or
 
 ### Step 1 — Go to the Releases page
 
-Click **[Releases](https://github.com/n232not/sdmo-app/releases)** on the right side of this page, or go to:
+Click **[Releases](https://github.com/aidenjohnson728/sdmo-app/releases)** on the right side of this page, or go to:
 **github.com/n232not/sdmo-app/releases**
 
 ### Step 2 — Download the right file for your computer
