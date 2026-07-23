@@ -309,48 +309,59 @@
                 "items": [
                   {
                     "id": "el_1783557930518_fu09",
-                    "label": "1a. Participants spoke without rushing the conversation."
+                    "label": "1a. Participants spoke without rushing the conversation.",
+                    "guide_source_id": "el_1783368976626_apjw"
                   },
                   {
                     "id": "el_1783557934250_4hxa",
-                    "label": "1b. Participants asked questions that elicited participation from the other."
+                    "label": "1b. Participants asked questions that elicited participation from the other.",
+                    "guide_source_id": "el_1783370480860_jbz3"
                   },
                   {
                     "id": "el_1783557941033_epwf",
-                    "label": "1c. Participants supported the conversation through mutual turn taking."
+                    "label": "1c. Participants supported the conversation through mutual turn taking.",
+                    "guide_source_id": "el_1783370609150_cg4o"
                   },
                   {
                     "id": "el_1784148124488_9fsz",
-                    "label": "1d. Participants interacted during the conversation without interrupting each other."
+                    "label": "1d. Participants interacted during the conversation without interrupting each other.",
+                    "guide_source_id": "el_1783371261565_8svy"
                   },
                   {
                     "id": "el_1784148155864_a6by",
-                    "label": "2. Participants were able to pause during the conversation. "
+                    "label": "2. Participants were able to pause during the conversation. ",
+                    "guide_source_id": "el_1783371833481_olsl"
                   },
                   {
                     "id": "el_1784148170762_zm8n",
-                    "label": "3. Participants expressed emotions during the conversation."
+                    "label": "3. Participants expressed emotions during the conversation.",
+                    "guide_source_id": "el_1783371927708_c12n"
                   },
                   {
                     "id": "el_1784148186702_6roq",
-                    "label": "4. External interruptions disrupted the conversation."
+                    "label": "4. External interruptions disrupted the conversation.",
+                    "guide_source_id": "el_1783372032475_ttyl"
                   },
                   {
                     "id": "el_1784148211329_9854",
-                    "label": "5. Participants' body language supported the conversation."
+                    "label": "5. Participants' body language supported the conversation.",
+                    "guide_source_id": "el_1783372161095_01ev"
                   },
                   {
                     "id": "el_1784148230392_sdq7",
-                    "label": "6. Participants used off-task topics to support the conversation."
+                    "label": "6. Participants used off-task topics to support the conversation.",
+                    "guide_source_id": "el_1783372268676_bnxd"
                   },
                   {
                     "id": "el_1784148250107_eueu",
-                    "label": "7. Participants delayed or delegated a topic to give the conversation more time."
+                    "label": "7. Participants delayed or delegated a topic to give the conversation more time.",
+                    "guide_source_id": "el_1783372391677_9iez"
                   }
                 ],
                 "required": true,
                 "global_agreement_question": false,
-                "agreement_method": "icc"
+                "agreement_method": "icc",
+                "agreement_enabled": true
               }
             ]
           },

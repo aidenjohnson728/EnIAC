@@ -13,6 +13,11 @@ function resolveMarkdownAsset(src, assets = []) {
 export default function FormRenderer({ schema, responses, onSave, readOnly, timestamps = [] }) {
   const sections = schema?.sections || []
   const manySections = sections.length > 3
+  // When a form is set to "at least one question" completion mode, individual
+  // `required` questions are no longer strictly mandatory one-by-one — only
+  // QLabel's asterisk styling changes to reflect that; the actual gating logic
+  // lives in ReviewPage.jsx/WorkspacePage.jsx's getRequiredErrors().
+  const relaxedCompletion = schema?.completion_mode === 'at_least_one'
 
   const [values, setValues] = useState(responses || {})
   const [collapsed, setCollapsed] = useState(() => {
@@ -112,6 +117,14 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
       )}
 
       {/* ── Sections ─────────────────────────────────────────────────────────── */}
+      {relaxedCompletion && (
+        <div style={{
+          fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-secondary)',
+          border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px', marginBottom: 4,
+        }}>
+          This form only requires <strong>at least one</strong> marked question below to be answered, not every one.
+        </div>
+      )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: sections.length > 1 ? 0 : 12 }}>
         {sections.map((section, i) => (
           <FormSection
@@ -129,6 +142,7 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
             sectionRef={el => { sectionRefs.current[section.id] = el }}
             readOnly={readOnly}
             timestamps={timestamps}
+            relaxedCompletion={relaxedCompletion}
           />
         ))}
       </div>
@@ -173,7 +187,7 @@ function isElementAnswered(el, value) {
   return isValueAnswered(value)
 }
 
-function FormSection({ section, sectionIndex, values, onChange, collapsed, onToggle, sectionRef, readOnly, timestamps }) {
+function FormSection({ section, sectionIndex, values, onChange, collapsed, onToggle, sectionRef, readOnly, timestamps, relaxedCompletion }) {
   const { answered, total } = countAnswered(section, values)
   const complete = total > 0 && answered === total
 
@@ -256,9 +270,11 @@ function FormSection({ section, sectionIndex, values, onChange, collapsed, onTog
                 el={el}
                 questionNumber={questionNumber}
                 value={values[el.id]}
+                allValues={values}
                 onChange={v => onChange(el.id, v)}
                 readOnly={readOnly}
                 timestamps={timestamps}
+                relaxedCompletion={relaxedCompletion}
               />
             )
           })}
@@ -635,11 +651,18 @@ function SliderScaleLabels({ labels, min, max }) {
   )
 }
 
-function QLabel({ el, questionNumber }) {
+function QLabel({ el, questionNumber, relaxedCompletion }) {
   return (
     <div style={{ marginBottom: 6 }}>
       <span style={{ fontWeight: 600, fontSize: 14, letterSpacing: '-0.01em' }}>{questionLabel(el, questionNumber)}</span>
-      {el.required && <span style={{ color: 'var(--danger)', marginLeft: 3, fontSize: 12 }}>*</span>}
+      {el.required && (
+        <span
+          style={{ color: relaxedCompletion ? 'var(--text-muted)' : 'var(--danger)', marginLeft: 3, fontSize: 12 }}
+          title={relaxedCompletion ? 'Counts toward this form\u2019s "answer at least one question" requirement' : 'Required'}
+        >
+          *
+        </span>
+      )}
       {el.description && (
         <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500, marginTop: 3, lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
           {el.description}
@@ -873,7 +896,7 @@ function VerticalSliderControl({ value, min, max, step, disabled, onChange, labe
   )
 }
 
-function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps = [] }) {
+function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps = [], relaxedCompletion, allValues = {} }) {
   if (el.type === 'text_block') {
     return (
       <div className="prose form-markdown-block">
@@ -895,7 +918,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     const na = isNA(value)
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: readOnly ? 'default' : 'pointer', opacity: na ? 0.55 : 1 }}
           onClick={() => !readOnly && onChange(checked ? false : true)}>
           <div style={{
@@ -922,9 +945,33 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     const COL_W = 38
     const items = el.items || []
     const groupVal = (typeof value === 'object' && value !== null && !Array.isArray(value)) ? value : {}
+
+    // Guide highlight: if an item is configured with `guide_source_id` (the id
+    // of another likert_group element on this form — e.g. UCAT's "Global
+    // Measures" rows pointing at their matching "Category" statement group),
+    // show a faint highlight on the point(s) that the source group's currently
+    // answered sub-items average to. When the average falls exactly halfway
+    // between two whole numbers (e.g. 3.5), both are highlighted rather than
+    // picking one arbitrarily. Purely advisory — never auto-fills or blocks
+    // picking a different value.
+    function guideValuesForItem(item) {
+      if (!item?.guide_source_id) return []
+      const sourceVal = allValues?.[item.guide_source_id]
+      if (!sourceVal || typeof sourceVal !== 'object') return []
+      const answered = Object.values(sourceVal).filter(v => typeof v === 'number' && Number.isFinite(v))
+      if (answered.length === 0) return []
+      const avg = answered.reduce((a, b) => a + b, 0) / answered.length
+      const clamped = Math.min(scale, Math.max(1, avg))
+      const lower = Math.floor(clamped)
+      const upper = Math.ceil(clamped)
+      if (lower === upper) return [lower]
+      const isExactlyHalfway = Math.abs((clamped - lower) - 0.5) < 1e-9
+      return isExactlyHalfway ? [lower, upper] : [Math.round(clamped)]
+    }
+
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ display: 'flex', alignItems: 'center', paddingBottom: 6, borderBottom: '1.5px solid var(--border)' }}>
           <div style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)' }}>{el.low_label ? `1 = ${el.low_label}` : '1'}</div>
           {el.has_na && <div style={{ width: COL_W, textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, flexShrink: 0 }}>N/A</div>}
@@ -932,6 +979,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
         </div>
         {items.map((item, i) => {
           const itemVal = groupVal[item.id]
+          const guideValues = guideValuesForItem(item)
           return (
             <div key={item.id} style={{ display: 'flex', alignItems: 'center', padding: '5px 6px', background: i % 2 === 1 ? 'rgba(0,0,0,0.025)' : 'transparent', borderRadius: 4 }}>
               <div style={{ flex: 1, fontSize: 13, paddingRight: 10, lineHeight: 1.4 }}>{item.label || `Statement ${i + 1}`}</div>
@@ -940,11 +988,23 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
                   <RadioDot selected={itemVal === 'N/A'} onClick={() => onChange({ ...groupVal, [item.id]: itemVal === 'N/A' ? undefined : 'N/A' })} readOnly={readOnly} />
                 </div>
               )}
-              {points.map(p => (
-                <div key={p} style={{ width: COL_W, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
-                  <RadioDot selected={itemVal === p} onClick={() => onChange({ ...groupVal, [item.id]: itemVal === p ? undefined : p })} readOnly={readOnly} />
-                </div>
-              ))}
+              {points.map(p => {
+                const isGuided = guideValues.includes(p)
+                const guideLabel = guideValues.length > 1 ? `${guideValues[0]}.5` : guideValues[0]
+                return (
+                  <div
+                    key={p}
+                    title={isGuided ? `Suggested from linked sub-item scores (avg ≈ ${guideLabel})` : undefined}
+                    style={{
+                      width: COL_W, display: 'flex', justifyContent: 'center', flexShrink: 0, borderRadius: 6,
+                      background: isGuided ? 'rgba(59,130,246,0.14)' : 'transparent',
+                      transition: 'background 0.15s',
+                    }}
+                  >
+                    <RadioDot selected={itemVal === p} onClick={() => onChange({ ...groupVal, [item.id]: itemVal === p ? undefined : p })} readOnly={readOnly} />
+                  </div>
+                )
+              })}
             </div>
           )
         })}
@@ -959,7 +1019,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     const na = isNA(value)
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <FocusInput value={na ? '' : value} onChange={e => onChange(e.target.value)} placeholder={el.placeholder || ''} disabled={readOnly || na} />
           {el.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} />}
@@ -972,7 +1032,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     const na = isNA(value)
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <FocusTextarea value={na ? '' : value} onChange={e => onChange(e.target.value)} placeholder={el.placeholder || ''} disabled={readOnly || na} />
           {el.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} />}
@@ -984,7 +1044,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
   if (el.type === 'multiple_choice') {
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {(el.options || []).map((opt, i) => {
             const optionValue = opt || `Option ${i + 1}`
@@ -1005,7 +1065,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     const na = isNA(value)
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {(el.options || []).map((opt, i) => {
             const optionValue = opt || `Option ${i + 1}`
@@ -1027,7 +1087,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
   if (el.type === 'rating') {
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {(el.options || []).map((opt, i) => {
             const optionValue = opt || `Option ${i + 1}`
@@ -1066,7 +1126,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     const allOptions = el.has_na ? ['N/A', ...points] : points
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ marginBottom: 7 }}>
           <ScaleEndpointLabels low={el.low_label} high={el.high_label} min={1} max={scale} />
         </div>
@@ -1084,7 +1144,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     const bounded = Math.min(max, Math.max(min, Number(val)))
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 7, opacity: na ? 0.55 : 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
@@ -1135,7 +1195,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
 
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-start', opacity: na ? 0.55 : 1 }}>
           {Array.from({ length: count }, (_, idx) => {
             const current = values[idx]
@@ -1181,7 +1241,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
   if (el.type === 'timestamp_select') {
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <TimestampSelectInput timestamps={timestamps} value={value} onChange={onChange} readOnly={readOnly} allowNA={!!el.has_na} />
       </div>
     )
@@ -1193,7 +1253,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     const tableVal = (typeof value === 'object' && value !== null && !Array.isArray(value)) ? value : {}
     return (
       <div>
-        <QLabel el={el} questionNumber={questionNumber} />
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ overflowX: 'auto' }}>
           <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12, fontFamily: 'var(--font)' }}>
             <thead>

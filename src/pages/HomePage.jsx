@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Upload, HelpCircle, Link2, Cloud, ArrowLeft, Folder, GraduationCap, ClipboardList } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
@@ -37,6 +37,18 @@ const TUTORIAL_STEPS = [
 
 export default function HomePage() {
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false)
+  const templateDropdownRef = useRef(null)
+
+  useEffect(() => {
+    if (!showTemplateDropdown) return
+    function handleClickOutside(e) {
+      if (templateDropdownRef.current && !templateDropdownRef.current.contains(e.target)) {
+        setShowTemplateDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showTemplateDropdown])
   const [projects, setProjects] = useState([])
   const [defaultProjects, setDefaultProjects] = useState([])
   const [loading, setLoading] = useState(true)
@@ -84,6 +96,7 @@ export default function HomePage() {
   async function handleCreateDefault(templateId) {
     const result = await api.createDefaultProject(templateId)
     setShowTemplates(false)
+    setShowTemplateDropdown(false)
     if (result?.id) navigate(`/project/${result.id}`)
   }
 
@@ -361,13 +374,13 @@ export default function HomePage() {
           </button>
           {defaultProjects.length > 0 && (
             <div
+              ref={templateDropdownRef}
               style={{ position: 'relative' }}
-              onMouseEnter={() => setShowTemplateDropdown(true)}
-              onMouseLeave={() => setShowTemplateDropdown(false)}
             >
               <button
                 className="btn btn-secondary btn-sm"
                 title="Create a project from a built-in template"
+                onClick={() => setShowTemplateDropdown(s => !s)}
               >
                 <ClipboardList size={14} /> Template Projects
               </button>

@@ -3,7 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const { validateIpcArgs } = require('./ipc/contracts')
 
-app.setName('SDMo')
+app.setName('EnIAC')
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'localfile', privileges: { standard: true, secure: true, stream: true } },
@@ -167,7 +167,7 @@ ipcMain.handle('app:getInfo', () => ({
 ipcMain.handle('app:exportDiagnostics', async () => {
   const diagnostics = require('./diagnostics').buildDiagnostics()
   const { canceled, filePath } = await dialog.showSaveDialog({
-    title: 'Export SDMo diagnostics',
+    title: 'Export EnIAC diagnostics',
     defaultPath: `sdmo-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
     filters: [{ name: 'JSON', extensions: ['json'] }],
   })
@@ -204,7 +204,7 @@ ipcMain.handle('window:openWorkspace', (_, url) => {
     height: 920,
     minWidth: 560,
     minHeight: 500,
-    title: 'SDMo — Workspace',
+    title: 'EnIAC — Workspace',
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
     icon: getWindowIconPath(),

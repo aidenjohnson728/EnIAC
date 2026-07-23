@@ -47,7 +47,7 @@
   },
   "build": {
     "appId": "com.sdmo.app",
-    "productName": "SDMo",
+    "productName": "EnIAC",
     "copyright": "Copyright © 2026",
     "directories": {
       "output": "release"

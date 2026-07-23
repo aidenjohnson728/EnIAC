@@ -191,6 +191,7 @@ export default function ReviewPage() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [workspaceExpanded, setWorkspaceExpanded] = useState(false)
   const [layoutMode, setLayoutMode] = useState('vertical') // 'vertical' | 'horizontal'
+  const [timestampsPosition, setTimestampsPosition] = useState('side') // 'side' | 'bottom' — independent of layoutMode
   const [splitPct, setSplitPct] = useState(44) // video height% (vertical) or width% (horizontal)
   const [workspaceMinimized, setWorkspaceMinimized] = useState(false)
 
@@ -213,6 +214,7 @@ export default function ReviewPage() {
   const syncBasicsTour = useTour(SYNC_BASICS_TOUR_STEPS, null, { ready: !loading && !!videoUrl })
   const [linkModal, setLinkModal] = useState(null) // null | 'not_linked' | 'missing'
   const [linkSaving, setLinkSaving] = useState(false)
+  const [isDraggingFile, setIsDraggingFile] = useState(false)
   const [encProjectId, setEncProjectId] = useState(null)
 
   const splitDragRef = useRef(null)
@@ -409,24 +411,57 @@ export default function ReviewPage() {
     setLoading(false)
   }
 
+  function basenameFromPath(filePath) {
+    const parts = String(filePath).split(/[\\/]/)
+    return parts[parts.length - 1] || filePath
+  }
+
+  async function linkFileByPath(filePath) {
+    if (!mediaFile || !filePath) return
+    setLinkSaving(true)
+    try {
+      await api.setMediaLink(mediaFile.id, encProjectId, filePath)
+      const linkedName = basenameFromPath(filePath)
+      if (linkedName && linkedName !== mediaFile.name) {
+        await api.renameMediaFile(encProjectId, mediaFile.id, linkedName)
+      }
+      setLinkModal(null)
+      load()
+    } finally {
+      setLinkSaving(false)
+    }
+  }
+
   async function handleLinkFile() {
     if (!mediaFile) return
     setLinkSaving(true)
     const filePath = await api.browseMediaFile(mediaFile.id)
     if (filePath) {
-      await api.setMediaLink(mediaFile.id, encProjectId, filePath)
-      setLinkModal(null)
-      load()
+      await linkFileByPath(filePath)
+    } else {
+      setLinkSaving(false)
     }
-    setLinkSaving(false)
   }
 
-  async function handleMarkNA() {
-    if (!mediaFile) return
-    await api.markMediaNotApplicable(mediaFile.id)
-    setMediaFile(current => current ? { ...current, link_status: 'not_applicable', resolved_path: null } : current)
-    setVideoUrl(null)
-    setLinkModal(null)
+  function handleDragOver(e) {
+    e.preventDefault()
+    if (!isDraggingFile) setIsDraggingFile(true)
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault()
+    setIsDraggingFile(false)
+  }
+
+  function handleFileDrop(e) {
+    e.preventDefault()
+    setIsDraggingFile(false)
+    const file = e.dataTransfer?.files?.[0]
+    if (!file) return
+    // Electron 32+ removed File.path from the renderer for security reasons —
+    // webUtils.getPathForFile (exposed via preload) is the current replacement.
+    const filePath = api.getPathForFile(file)
+    if (filePath) linkFileByPath(filePath)
   }
 
   // --- Drag-to-resize split ---
@@ -543,52 +578,6 @@ export default function ReviewPage() {
       const form = formSchemas[tab.ref_id]
       if (!form?.schema?.sections) continue
       const responses = formResponses[tab.ref_id] || {}
-
-      // Relaxed completion mode: the form only needs at least one answerable
-      // question filled in, regardless of each question's individual `required`
-      // flag. Older forms have no `completion_mode` set and keep the original
-      // all-required behavior below.
-      if (form.schema.completion_mode === 'at_least_one') {
-        // Treat each ROW inside a likert_group/table as its own answerable
-        // question, not the whole group — otherwise a required likert_group
-        // (which needs every row filled to count as "complete") defeats the
-        // entire point of relaxed completion mode. Uses isResponseAnswered
-        // directly (a single value's answered-state) rather than
-        // isRequiredElementComplete (which enforces "every row" for groups).
-        let hasAnswerable = false
-        let anyAnswered = false
-        for (const section of form.schema.sections) {
-          for (const el of (section.elements || [])) {
-            if (el.type === 'text_block') continue
-            if (el.type === 'likert_group') {
-              const groupVal = (responses[el.id] && typeof responses[el.id] === 'object') ? responses[el.id] : {}
-              for (const item of (el.items || [])) {
-                hasAnswerable = true
-                if (isResponseAnswered(groupVal[item.id])) anyAnswered = true
-              }
-              continue
-            }
-            if (el.type === 'table') {
-              const tableVal = (responses[el.id] && typeof responses[el.id] === 'object') ? responses[el.id] : {}
-              for (const rowIndex of (el.rows || []).keys()) {
-                const rowVal = (tableVal[String(rowIndex)] && typeof tableVal[String(rowIndex)] === 'object') ? tableVal[String(rowIndex)] : {}
-                for (const col of (el.columns || [])) {
-                  hasAnswerable = true
-                  if (isResponseAnswered(rowVal[col.id])) anyAnswered = true
-                }
-              }
-              continue
-            }
-            hasAnswerable = true
-            if (isResponseAnswered(responses[el.id])) anyAnswered = true
-          }
-        }
-        if (hasAnswerable && !anyAnswered) {
-          errors.push({ tab: tab.label, question: 'At least one question must be answered' })
-        }
-        continue
-      }
-
       for (const section of form.schema.sections) {
         for (const [elementIndex, el] of (section.elements || []).entries()) {
           if (!el.required) continue
@@ -667,16 +656,28 @@ export default function ReviewPage() {
   if (linkModal) {
     const isMissing = linkModal === 'missing'
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', padding: 40 }}>
-        <div style={{ maxWidth: 440, width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 12, padding: 32, display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div
+        style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', padding: 40 }}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleFileDrop}
+      >
+        <div style={{
+          maxWidth: 440, width: '100%', background: 'var(--bg-secondary)', borderRadius: 12, padding: 32,
+          display: 'flex', flexDirection: 'column', gap: 20,
+          border: isDraggingFile ? '2px dashed var(--accent)' : '1px solid var(--border)',
+          transition: 'border-color 0.15s ease',
+        }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>
-              {isMissing ? 'File cannot be found' : 'File not linked on this machine'}
+              {isDraggingFile ? 'Drop the file to link it' : (isMissing ? 'File cannot be found' : 'File not linked on this machine')}
             </div>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-              {isMissing
-                ? <>The file <strong>{mediaFile?.name}</strong> was previously linked but cannot be found on disk. It may have been moved or renamed.</>
-                : <>The file <strong>{mediaFile?.name}</strong> hasn't been linked to a local path on this machine yet.</>}
+              {isDraggingFile
+                ? <>Release to link this file to <strong>{mediaFile?.name}</strong>.</>
+                : isMissing
+                  ? <>The file <strong>{mediaFile?.name}</strong> was previously linked but cannot be found on disk. It may have been moved or renamed.</>
+                  : <>The file <strong>{mediaFile?.name}</strong> hasn't been linked to a local path on this machine yet. Drag and drop the file here, or browse for it below.</>}
             </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -685,9 +686,6 @@ export default function ReviewPage() {
             </button>
             <button className="btn btn-secondary" onClick={() => setLinkModal(null)}>
               Open without video
-            </button>
-            <button className="btn btn-secondary" onClick={handleMarkNA}>
-              I don't have this file (mark N/A)
             </button>
             <button className="btn btn-ghost" onClick={() => navigate(-1)}>
               Go back
@@ -767,7 +765,7 @@ export default function ReviewPage() {
       )}
 
       {/* Main area */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: timestampsPosition === 'bottom' ? 'column' : 'row', overflow: 'hidden' }}>
 
         {/* Center: video + workspace (with resizable split) */}
         {!workspaceExpanded && (
@@ -810,11 +808,20 @@ export default function ReviewPage() {
                   onError={() => setVideoError('This file could not be played. It may use a codec Electron cannot decode, or the file may be damaged.')}
                 />
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 10 }}>
+                <div
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleFileDrop}
+                  style={{
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 10,
+                    border: isDraggingFile ? '2px dashed var(--accent)' : '2px dashed transparent',
+                    borderRadius: 8, transition: 'border-color 0.15s ease',
+                  }}
+                >
                   <span style={{ color: '#fff', opacity: 0.4, fontSize: 13 }}>
-                    {isVideo ? 'Video not available on this machine' : 'Non-video file — see workspace tabs'}
+                    {isDraggingFile ? 'Drop to link this file' : (isVideo ? 'Video not available on this machine' : 'Non-video file — see workspace tabs')}
                   </span>
-                  {isVideo && !videoUrl && (
+                  {isVideo && !videoUrl && !isDraggingFile && (
                     <button
                       className="btn btn-secondary btn-sm"
                       onClick={handleLinkFile}
@@ -990,14 +997,33 @@ export default function ReviewPage() {
           </div>
         )}
 
-        {/* Sidebar: timestamps (collapsible) */}
+        {/* Sidebar/bottom panel: timestamps (collapsible, position independent of video/form layout) */}
         {!(videoExpanded || workspaceExpanded) && (
-        <div style={{ display: 'flex', flexShrink: 0, position: 'relative' }}>
+        <div style={{ display: 'flex', flexShrink: 0, position: 'relative', flexDirection: timestampsPosition === 'bottom' ? 'column' : 'row' }}>
           {/* Toggle tab — lives outside overflow:hidden so it's always visible */}
           <button
             onClick={() => setSidebarOpen(s => !s)}
             title={sidebarOpen ? 'Collapse timestamps' : 'Show timestamps'}
-            style={{
+            style={timestampsPosition === 'bottom' ? {
+              position: 'absolute',
+              top: -14,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: 44,
+              height: 14,
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)',
+              borderBottom: 'none',
+              borderRadius: '4px 4px 0 0',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 20,
+              color: 'var(--text-muted)',
+              padding: 0,
+              fontSize: 9,
+            } : {
               position: 'absolute',
               left: -14,
               top: '50%',
@@ -1018,10 +1044,18 @@ export default function ReviewPage() {
               fontSize: 9,
             }}
           >
-            {sidebarOpen ? '›' : '‹'}
+            {timestampsPosition === 'bottom' ? (sidebarOpen ? '⌄' : '⌃') : (sidebarOpen ? '›' : '‹')}
           </button>
 
-          <div style={{
+          <div style={timestampsPosition === 'bottom' ? {
+            height: sidebarOpen ? 220 : 0,
+            width: '100%',
+            overflow: 'hidden',
+            borderTop: '1px solid var(--border)',
+            display: 'flex',
+            flexDirection: 'column',
+            transition: 'height 0.2s ease',
+          } : {
             width: sidebarOpen ? 280 : 0,
             overflow: 'hidden',
             borderLeft: '1px solid var(--border)',
@@ -1032,7 +1066,16 @@ export default function ReviewPage() {
           }}>
           <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
             <span style={{ fontWeight: 600, fontSize: 13 }}>Timestamps</span>
-            <span className="badge badge-muted">{timestamps.length}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span className="badge badge-muted">{timestamps.length}</span>
+              <button
+                className="btn btn-ghost btn-icon btn-sm"
+                title={timestampsPosition === 'bottom' ? 'Move timestamps to the side' : 'Move timestamps to the bottom'}
+                onClick={() => setTimestampsPosition(p => p === 'bottom' ? 'side' : 'bottom')}
+              >
+                {timestampsPosition === 'bottom' ? <Columns2 size={12} /> : <Rows2 size={12} />}
+              </button>
+            </div>
           </div>
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {timestamps.length === 0 ? (

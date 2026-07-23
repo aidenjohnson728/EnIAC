@@ -111,7 +111,7 @@ export default function ProjectPage() {
   const [sharing, setSharing] = useState(false)
   const [newEncounterName, setNewEncounterName] = useState('')
   const [newMediaTarget, setNewMediaTarget] = useState(null)
-  const [newMediaName, setNewMediaName] = useState('')
+  const [isDraggingNewMedia, setIsDraggingNewMedia] = useState(false)
   const [showScanModal, setShowScanModal] = useState(false)
   const [scanFolder, setScanFolder] = useState('')
   const [scanResult, setScanResult] = useState(null)
@@ -456,13 +456,6 @@ export default function ProjectPage() {
     setLinkSaving(null)
   }
 
-  async function handleMarkNA(mediaFileId) {
-    await api.markMediaNotApplicable(mediaFileId)
-    const [encs, health] = await Promise.all([api.listEncounters(projectId), api.mediaHealthCheck(projectId)])
-    setEncounters(encs)
-    setMediaHealth(health)
-  }
-
   async function handleClearLink(mediaFileId) {
     await api.clearMediaLink(mediaFileId)
     const [encs, health] = await Promise.all([api.listEncounters(projectId), api.mediaHealthCheck(projectId)])
@@ -476,6 +469,11 @@ export default function ProjectPage() {
     setMediaHealth(health)
   }
 
+  function basenameFromPath(filePath) {
+    const parts = String(filePath).split(/[\\/]/)
+    return parts[parts.length - 1] || filePath
+  }
+
   async function handleCreateEncounter() {
     const name = newEncounterName.trim()
     if (!name) return
@@ -483,19 +481,92 @@ export default function ProjectPage() {
     setShowNewEncounterModal(false)
     setNewEncounterName('')
     await refreshEncounterData()
-    if (result?.id) setExpanded(e => ({ ...e, [result.id]: true }))
+    if (result?.id) {
+      setExpanded(e => ({ ...e, [result.id]: true }))
+      // Streamlined flow: go straight into "Add Media" for the encounter that
+      // was just created, instead of requiring someone to find and click a
+      // separate "Add Media" button afterward.
+      setNewMediaTarget({ id: result.id, name })
+    }
     showToast('Encounter added.')
   }
 
+  async function finalizeNewMediaLink(mediaId, filePath, currentName) {
+    if (!filePath) return
+    await api.setMediaLink(mediaId, projectId, filePath)
+    const linkedName = basenameFromPath(filePath)
+    if (linkedName && linkedName !== currentName) {
+      await api.renameMediaFile(projectId, mediaId, linkedName)
+    }
+    await refreshEncounterData()
+    showToast('Video linked.')
+  }
+
   async function handleCreateMediaFile() {
-    const name = newMediaName.trim()
-    if (!name || !newMediaTarget?.id) return
-    await api.createMediaFile(projectId, newMediaTarget.id, name)
-    setExpanded(e => ({ ...e, [newMediaTarget.id]: true }))
+    if (!newMediaTarget?.id) return
+    const encounterId = newMediaTarget.id
+    // Placeholder name only — immediately overwritten by the real filename
+    // once a file is picked below. If the file dialog is canceled, this is
+    // what's left; still renameable manually afterward like any media file.
+    const placeholderName = 'New Media'
+    const created = await api.createMediaFile(projectId, encounterId, placeholderName)
+
+    // Projects with only one media type (e.g. the UCAT/SDMo templates) don't
+    // need someone to manually pick it — reuses the existing, already-safe
+    // handleChangeMediaType (it no-ops correctly for a brand-new file with no
+    // reviews yet, so this never triggers the "reassign type" confirmation).
+    if (created?.id && mediaTypes.length === 1) {
+      await handleChangeMediaType({ id: created.id, media_type_id: null, reviews: [] }, mediaTypes[0].id)
+    }
+
+    setExpanded(e => ({ ...e, [encounterId]: true }))
     setNewMediaTarget(null)
-    setNewMediaName('')
     await refreshEncounterData()
     showToast('Media added.')
+
+    // Streamlined flow, continued: immediately move into picking the actual
+    // video file for this media slot — its filename becomes the media name
+    // automatically (still editable afterward via the existing rename option).
+    if (created?.id) {
+      const filePath = await api.browseMediaFile(created.id)
+      await finalizeNewMediaLink(created.id, filePath, placeholderName)
+    }
+  }
+
+  function handleNewMediaDragOver(e) {
+    e.preventDefault()
+    if (!isDraggingNewMedia) setIsDraggingNewMedia(true)
+  }
+
+  function handleNewMediaDragLeave(e) {
+    e.preventDefault()
+    setIsDraggingNewMedia(false)
+  }
+
+  function handleNewMediaDrop(e) {
+    e.preventDefault()
+    setIsDraggingNewMedia(false)
+    const file = e.dataTransfer?.files?.[0]
+    if (!file) return
+    const filePath = api.getPathForFile(file)
+    if (filePath) handleDropNewMediaFile(filePath)
+  }
+
+  async function handleDropNewMediaFile(filePath) {
+    if (!newMediaTarget?.id || !filePath) return
+    const encounterId = newMediaTarget.id
+    // The dropped file's own name becomes the media name directly — no
+    // placeholder needed here since the real filename is already known.
+    const name = basenameFromPath(filePath)
+    const created = await api.createMediaFile(projectId, encounterId, name)
+    if (created?.id && mediaTypes.length === 1) {
+      await handleChangeMediaType({ id: created.id, media_type_id: null, reviews: [] }, mediaTypes[0].id)
+    }
+    setExpanded(e => ({ ...e, [encounterId]: true }))
+    setNewMediaTarget(null)
+    await refreshEncounterData()
+    showToast('Media added.')
+    if (created?.id) await finalizeNewMediaLink(created.id, filePath, name)
   }
 
   async function handleRenameEncounter() {
@@ -951,7 +1022,7 @@ export default function ProjectPage() {
                 <>
                   <div id="tut-proj-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE).map(enc => (
-                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onRenameEncounter={() => { setRenameEncounterTarget(enc); setRenameInput(enc.name || '') }} onRenameMedia={(mf) => { setRenameMediaTarget(mf); setRenameInput(mf.name || '') }} onAddMedia={() => { setNewMediaTarget(enc); setNewMediaName(enc.name || '') }} onChangeMediaType={handleChangeMediaType} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onManualLink={handleManualLink} onMarkNA={handleMarkNA} onClearLink={handleClearLink} linkSaving={linkSaving} />
+                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onRenameEncounter={() => { setRenameEncounterTarget(enc); setRenameInput(enc.name || '') }} onRenameMedia={(mf) => { setRenameMediaTarget(mf); setRenameInput(mf.name || '') }} onAddMedia={() => setNewMediaTarget(enc)} onChangeMediaType={handleChangeMediaType} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onManualLink={handleManualLink} onClearLink={handleClearLink} linkSaving={linkSaving} />
                     ))}
                   </div>
                   <Pagination currentPage={currentPage} totalPages={Math.ceil(filtered.length / PAGE_SIZE)} total={filtered.length} pageSize={PAGE_SIZE} onPageChange={setCurrentPage} />
@@ -1051,25 +1122,31 @@ export default function ProjectPage() {
         footer={
           <>
             <button className="btn btn-secondary" onClick={() => setNewMediaTarget(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleCreateMediaFile} disabled={!newMediaName.trim()}>
-              Add Media
+            <button className="btn btn-primary" onClick={handleCreateMediaFile}>
+              Choose Video File…
             </button>
           </>
         }
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
-            Add a media slot under <strong>{newMediaTarget?.name}</strong>. You can link the local file afterward.
+            Add a media slot under <strong>{newMediaTarget?.name}</strong> — drag a video file in
+            below, or click "Choose Video File…" to browse for one. Its filename becomes the media
+            name automatically; you can rename it afterward if you'd like.
           </p>
-          <div className="form-field">
-            <label>Media File Name</label>
-            <input
-              autoFocus
-              value={newMediaName}
-              onChange={e => setNewMediaName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleCreateMediaFile()}
-              placeholder="e.g. consult_video.mp4"
-            />
+          <div
+            onDragOver={handleNewMediaDragOver}
+            onDragLeave={handleNewMediaDragLeave}
+            onDrop={handleNewMediaDrop}
+            style={{
+              border: isDraggingNewMedia ? '2px dashed var(--accent)' : '2px dashed var(--border)',
+              borderRadius: 8, padding: '28px 12px', textAlign: 'center',
+              background: isDraggingNewMedia ? 'rgba(59,130,246,0.06)' : 'var(--bg-secondary)',
+              transition: 'border-color 0.15s ease, background 0.15s ease',
+              fontSize: 13, color: 'var(--text-muted)',
+            }}
+          >
+            {isDraggingNewMedia ? 'Drop the video file to add it' : 'Drag and drop a video file here'}
           </div>
         </div>
       </Modal>
@@ -1409,7 +1486,7 @@ function Pagination({ currentPage, totalPages, total, pageSize, onPageChange }) 
   )
 }
 
-function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncounter, onRenameMedia, onAddMedia, onChangeMediaType, onAddReview, onOpenReview, onDeleteReview, onManualLink, onMarkNA, onClearLink, linkSaving }) {
+function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncounter, onRenameMedia, onAddMedia, onChangeMediaType, onAddReview, onOpenReview, onDeleteReview, onManualLink, onClearLink, linkSaving }) {
   const completedMedia = encounter.media?.filter(m => {
     if (!m.reviews_required) return m.reviews?.some(r => r.status === 'submitted')
     return m.reviews_completed >= m.reviews_required
@@ -1473,7 +1550,6 @@ function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncou
               onOpenReview={onOpenReview}
               onDeleteReview={onDeleteReview}
               onManualLink={onManualLink}
-              onMarkNA={onMarkNA}
               onClearLink={onClearLink}
               onChangeMediaType={onChangeMediaType}
               onRename={() => onRenameMedia(mf)}
@@ -1503,7 +1579,7 @@ function reopenedReasonLabel(reason) {
   return 'Reopened'
 }
 
-function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onManualLink, onMarkNA, onClearLink, onChangeMediaType, onRename, linkSaving, isFirst }) {
+function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onManualLink, onClearLink, onChangeMediaType, onRename, linkSaving, isFirst }) {
   const Icon = MEDIA_ICONS[mediaFile.file_type] || File
   const required = mediaFile.reviews_required
   const completed = mediaFile.reviews_completed || 0
@@ -1540,12 +1616,6 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
             <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
               onClick={() => onManualLink(mediaFile.id)} disabled={busy}>
               {busy ? '…' : 'Relink'}
-            </button>
-          )}
-          {status !== 'not_applicable' && (
-            <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, color: 'var(--text-muted)', flexShrink: 0 }}
-              onClick={() => onMarkNA(mediaFile.id)} title="Mark as not applicable">
-              N/A
             </button>
           )}
           {status === 'not_applicable' && (

@@ -1,10 +1,16 @@
-import React, { useState } from 'react'
+import React, { useState, createContext, useContext, useMemo } from 'react'
 import { ChevronLeft, Plus, Trash2, ChevronDown, ChevronRight, Copy, ImagePlus } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '../../lib/api'
 import { AGREEMENT_METHOD_LABELS, defaultAgreementEnabledForType, defaultAgreementMethodForType } from '../../lib/interraterAgreement.mjs'
 import Modal from '../ui/Modal'
+
+// Carries {id, label} for every likert_group element currently on this form,
+// so LikertGroupItemsEditor can offer them as "guide highlight" sources for a
+// given row without needing every intermediate component between here and
+// there to know about it.
+const LikertGroupGuideContext = createContext([])
 
 const ELEMENT_TYPES = [
   { type: 'short_answer', label: 'Short text' },
@@ -112,6 +118,13 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
   const [migrationPreview, setMigrationPreview] = useState(null)
   const [saveError, setSaveError] = useState('')
 
+  const likertGroupOptions = useMemo(
+    () => sections.flatMap(s => (s.elements || [])
+      .filter(e => e.type === 'likert_group')
+      .map(e => ({ id: e.id, label: e.label || 'Untitled group' }))),
+    [sections]
+  )
+
   async function ensureUnlocked() {
     const unlocked = await api.isProjectUnlocked(projectId)
     if (unlocked) return true
@@ -208,6 +221,7 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
   }
 
   return (
+    <LikertGroupGuideContext.Provider value={likertGroupOptions}>
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
       <div style={{
         height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -321,6 +335,7 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
         )}
       </Modal>
     </div>
+    </LikertGroupGuideContext.Provider>
   )
 }
 
@@ -655,7 +670,7 @@ function ElementEditor({ el, questionNumber, onChange, onRemove }) {
                   </div>
                 </div>
               </div>
-              <LikertGroupItemsEditor items={el.items || []} onChange={items => onChange({ items })} />
+              <LikertGroupItemsEditor items={el.items || []} onChange={items => onChange({ items })} currentElementId={el.id} />
             </div>
           )}
 
@@ -1170,20 +1185,38 @@ function TableEditor({ rows, columns, onRowsChange, onColumnsChange }) {
   )
 }
 
-function LikertGroupItemsEditor({ items, onChange }) {
+function LikertGroupItemsEditor({ items, onChange, currentElementId }) {
+  const guideOptions = useContext(LikertGroupGuideContext).filter(o => o.id !== currentElementId)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
       <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Statements</span>
       {items.map((item, i) => (
-        <div key={item.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 18, textAlign: 'right' }}>{i + 1}.</span>
-          <input
-            value={item.label || ''}
-            onChange={e => { const arr = items.map((it, j) => j === i ? { ...it, label: e.target.value } : it); onChange(arr) }}
-            placeholder="Statement text"
-            style={{ flex: 1, fontSize: 13 }}
-          />
-          <button className="btn btn-ghost btn-icon btn-sm" onClick={() => onChange(items.filter((_, j) => j !== i))}><Trash2 size={12} /></button>
+        <div key={item.id} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 18, textAlign: 'right' }}>{i + 1}.</span>
+            <input
+              value={item.label || ''}
+              onChange={e => { const arr = items.map((it, j) => j === i ? { ...it, label: e.target.value } : it); onChange(arr) }}
+              placeholder="Statement text"
+              style={{ flex: 1, fontSize: 13 }}
+            />
+            <button className="btn btn-ghost btn-icon btn-sm" onClick={() => onChange(items.filter((_, j) => j !== i))}><Trash2 size={12} /></button>
+          </div>
+          {guideOptions.length > 0 && (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 24 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }} title="Faintly highlights the point that this source group's answered sub-items currently average to — a guide, not an auto-fill.">
+                Guide from
+              </span>
+              <select
+                value={item.guide_source_id || ''}
+                onChange={e => { const arr = items.map((it, j) => j === i ? { ...it, guide_source_id: e.target.value || undefined } : it); onChange(arr) }}
+                style={{ height: 26, fontSize: 12, flex: 1, maxWidth: 260 }}
+              >
+                <option value="">None</option>
+                {guideOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            </div>
+          )}
         </div>
       ))}
       <button className="btn btn-ghost btn-sm" onClick={() => onChange([...items, { id: newId(), label: '' }])} style={{ alignSelf: 'flex-start', fontSize: 12 }}>

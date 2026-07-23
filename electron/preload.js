@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 // Supports multiple independent subscribers per event channel.
 // on(cb) returns a numeric id; pass that id to off(id) to remove the specific listener.
@@ -195,6 +195,12 @@ contextBridge.exposeInMainWorld('api', {
   markMediaNotApplicable: (mediaFileId) => ipcRenderer.invoke('media:markNotApplicable', mediaFileId),
   clearMediaLink: (mediaFileId) => ipcRenderer.invoke('media:clearLink', mediaFileId),
   browseMediaFile: (mediaFileId) => ipcRenderer.invoke('media:browseFile', mediaFileId),
+  getPathForFile: (file) => webUtils.getPathForFile(file),
+  exportResults: (projectId) => ipcRenderer.invoke('reviews:exportResults', projectId),
+  importResultsFiles: (projectId) => ipcRenderer.invoke('reviews:importResultsFiles', projectId),
+  listImportedResults: (projectId) => ipcRenderer.invoke('reviews:listImportedResults', projectId),
+  deleteImportedResult: (id) => ipcRenderer.invoke('reviews:deleteImportedResult', id),
+  getResultsComparisonData: (projectId) => ipcRenderer.invoke('reviews:getResultsComparisonData', projectId),
 
   // Window
   setFullscreen: (flag) => ipcRenderer.invoke('window:setFullscreen', flag),
