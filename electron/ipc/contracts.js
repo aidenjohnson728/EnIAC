@@ -136,7 +136,7 @@ const contracts = {
 
   'sync:now': [isIntLike],
   'sync:getStatus': [isIntLike],
-  'sync:saveFile': [isIntLike],
+  'sync:saveFile': [isIntLike, isOptionalObject],
   'sync:loadFile': [isIntLike],
   'sync:acceptConfigUpdate': [isIntLike, isObject],
   'sync:joinFromLocalFolder': [isString],

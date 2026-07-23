@@ -17,6 +17,7 @@ export const DEFAULT_AGREEMENT_WEIGHTS = {
 export const AGREEMENT_METHOD_LABELS = {
   auto: 'Auto',
   percent: 'Percent agreement',
+  icc: 'Intraclass correlation (ICC)',
   cohen_kappa: "Cohen's kappa",
   weighted_kappa: 'Weighted kappa',
   ordinal: 'Ordinal distance',

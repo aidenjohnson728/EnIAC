@@ -41,7 +41,7 @@ function getMyResponsesLong(db, projectId) {
         media_type_name: review.media_type_name,
         reviewer_name: review.reviewer_name,
         review_sync_id: review.review_sync_id,
-        form_id: fr.form_sync_id || String(fr.form_id),
+        form_id: fr.form_name || fr.form_sync_id || String(fr.form_id),
         form_name: fr.form_name || null,
         form_snapshot: fr.form_snapshot ? JSON.parse(fr.form_snapshot) : (fr.current_schema ? JSON.parse(fr.current_schema) : null),
         responses: fr.responses ? JSON.parse(fr.responses) : {},

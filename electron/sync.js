@@ -2946,7 +2946,7 @@ function buildReviewsWorkbook(db, projectId) {
 
 // ─── Legacy monolithic export/import (kept for Export/Import file flow) ───────
 
-function buildExport(db, projectId) {
+function buildExport(db, projectId, { clearReviews = false } = {}) {
   const project = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId)
   const keybinds = enrichKeybinds(db, safeJsonParse(project.keybinds, []))
 
@@ -2992,7 +2992,10 @@ function buildExport(db, projectId) {
       sync_id: enc.sync_id,
       name: enc.name,
       media: mediaFiles.map(m => {
-        const reviews = db.prepare('SELECT * FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(m.id).map(rev => {
+        // clearReviews: intentionally never runs the reviews query at all,
+        // rather than fetching then filtering — the shared copy should have
+        // zero trace of prior reviewer answers, blank slate for the recipient.
+        const reviews = clearReviews ? [] : db.prepare('SELECT * FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(m.id).map(rev => {
           const timestamps = db.prepare('SELECT * FROM timestamps WHERE review_id=? ORDER BY time_seconds').all(rev.id)
             .map(ts => ({ time_seconds: ts.time_seconds, tag_label: ts.tag_label || null, tag_color: ts.tag_color || null, notes: ts.notes, created_at: ts.created_at }))
           const formResponses = db.prepare('SELECT fr.*, f.name as form_name, f.sync_id as current_form_sync_id FROM form_responses fr JOIN forms f ON fr.form_id = f.id WHERE fr.review_id=?').all(rev.id)
@@ -3026,7 +3029,9 @@ function buildExport(db, projectId) {
     }
   })
 
-  const deletedReviews = db.prepare('SELECT encounter_name, media_name, reviewer_name FROM deleted_reviews WHERE project_id=?').all(projectId)
+  const deletedReviews = clearReviews
+    ? []
+    : db.prepare('SELECT encounter_name, media_name, reviewer_name FROM deleted_reviews WHERE project_id=?').all(projectId)
 
   const syncMode = project.cloud_provider ? 'cloud' : project.sync_folder ? 'local' : 'none'
   const syncHint = { mode: syncMode, provider: project.cloud_provider || null }

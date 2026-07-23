@@ -5,11 +5,16 @@ import {
   Video, FileText, File, Plus, CheckCircle2, Circle,
   Search, X, Play, RefreshCw, Share2, FolderDown, AlertTriangle, Cloud, User,
   LayoutList, BarChart2, Activity, LineChart, HelpCircle, Pencil,
-  Download, Upload, GitCompare
+  Download, Upload, GitCompare, Gauge
 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import { SETUP_SECTIONS } from '../lib/setupSections'
 import { AGREEMENT_METHOD_LABELS, computeInterraterAgreementForMediaFile } from '../lib/interraterAgreement.mjs'
+import {
+  computeQuestionReliability,
+  iccInterpretation,
+  kappaInterpretation,
+} from '../lib/reliabilityStats.mjs'
 import Modal from '../components/ui/Modal'
 import NewReviewModal from '../components/encounters/NewReviewModal'
 import FilterPanel from '../components/encounters/FilterPanel'
@@ -60,12 +65,6 @@ const PROJECT_TOUR_STEPS = [
     title: 'Sync',
     body: "Sync Now pushes your latest reviews and setup changes, then pulls your teammates' latest work. Use Settings → Sync to choose OneDrive, Google Drive, or a shared local folder. Media files are still linked separately on each machine.",
   },
-  {
-    targetId: 'tut-proj-export',
-    placement: 'bottom',
-    title: 'Exporting Data',
-    body: 'Export all reviews and timestamps to Excel at any time — organized by media type, one row per review. Snapshots preserve the exact form version each review was coded against.',
-  },
 ]
 const MEDIA_ICONS = { video: Video, document: FileText, other: File }
 
@@ -107,6 +106,9 @@ export default function ProjectPage() {
   const [autolinking, setAutolinking] = useState(false)
   const [linkSaving, setLinkSaving] = useState(null)
   const [showNewEncounterModal, setShowNewEncounterModal] = useState(false)
+  const [showShareModal, setShowShareModal] = useState(false)
+  const [shareClearReviews, setShareClearReviews] = useState(false)
+  const [sharing, setSharing] = useState(false)
   const [newEncounterName, setNewEncounterName] = useState('')
   const [newMediaTarget, setNewMediaTarget] = useState(null)
   const [newMediaName, setNewMediaName] = useState('')
@@ -594,8 +596,19 @@ export default function ProjectPage() {
   }
 
   async function handleSaveFile() {
-    const p = await api.saveProjectFile(projectId)
-    if (p) showToast(`File saved — share it with teammates.`)
+    setSharing(true)
+    try {
+      const p = await api.saveProjectFile(projectId, { clearReviews: shareClearReviews })
+      if (p) {
+        showToast(shareClearReviews
+          ? 'File saved — reviews cleared from this copy, your own stay intact.'
+          : 'File saved — share it with teammates.')
+        setShowShareModal(false)
+        setShareClearReviews(false)
+      }
+    } finally {
+      setSharing(false)
+    }
   }
 
   async function handleExportResults() {
@@ -646,7 +659,7 @@ export default function ProjectPage() {
           <button className="btn btn-ghost btn-icon btn-sm" onClick={() => navigate('/')}>
             <ChevronLeft size={16} />
           </button>
-          <span className="text-secondary text-sm">SDMo</span>
+          <span className="text-secondary text-sm">EnIAC</span>
           <ChevronRight size={12} color="var(--text-muted)" />
           <button
             className="btn btn-ghost btn-sm"
@@ -677,19 +690,16 @@ export default function ProjectPage() {
             </button>
           )}
           <button className="btn btn-ghost btn-sm" onClick={handleLoadFile} title="Import project file (from email or shared folder)">
-            <FolderDown size={13} /> Import File
+            <FolderDown size={13} /> Import Project
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={handleSaveFile} title="Save project file to share with teammates">
-            <Share2 size={13} /> Share File
-          </button>
-          <button id="tut-proj-export" className="btn btn-ghost btn-sm" onClick={() => api.exportExcel(projectId)} title="Export all reviews and timestamps to Excel">
-            <FileText size={13} /> Export Excel
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowShareModal(true)} title="Save project file to share with teammates">
+            <Share2 size={13} /> Share Project
           </button>
           <button className="btn btn-ghost btn-sm" onClick={handleExportResults} title="Export only your coding results as a portable JSON file">
-            <Download size={13} /> Export Results
+            <Upload size={13} /> Export Results
           </button>
           <button className="btn btn-ghost btn-sm" onClick={handleImportResults} title="Import another coder's exported results for comparison">
-            <Upload size={13} /> Import Results
+            <Download size={13} /> Import Results
           </button>
           <button className="btn btn-ghost btn-icon btn-sm" onClick={tour.start} title="Show tutorial">
             <HelpCircle size={15} />
@@ -741,7 +751,7 @@ export default function ProjectPage() {
       {googleDriveAccessIds.length > 0 && (
         <div style={{ background: '#eff6ff', borderBottom: '1px solid #bfdbfe', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#1d4ed8' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
-          <span>New Google Drive review files need access before SDMo can import them.</span>
+          <span>New Google Drive review files need access before EnIAC can import them.</span>
           <button
             className="btn btn-primary btn-sm"
             style={{ marginLeft: 8 }}
@@ -844,6 +854,7 @@ export default function ProjectPage() {
               { id: 'activity',   icon: Activity,   label: 'Activity' },
               { id: 'dataviz',    icon: LineChart,  label: 'Data Visualization' },
               { id: 'agreement',  icon: GitCompare, label: 'Agreement Between Results' },
+              { id: 'reliability', icon: Gauge,     label: 'Question Reliability' },
             ].map(({ id, icon: Icon, label }) => {
               const active = activePage === id
               return (
@@ -958,6 +969,7 @@ export default function ProjectPage() {
           {/* ── DATA VISUALIZATION ── */}
           {activePage === 'dataviz' && <DataVizView projectId={projectId} mediaTypes={mediaTypes} />}
           {activePage === 'agreement' && <AgreementResultsView projectId={projectId} />}
+          {activePage === 'reliability' && <QuestionReliabilityView projectId={projectId} />}
 
         </div>
       </div>
@@ -974,6 +986,37 @@ export default function ProjectPage() {
         }
       >
         <p>Delete the review by <strong>{deleteReviewTarget?.reviewer_name}</strong>? All timestamps and form responses in this review will be permanently removed.</p>
+      </Modal>
+
+      <Modal
+        open={showShareModal}
+        onClose={() => { setShowShareModal(false); setShareClearReviews(false) }}
+        title="Share Project"
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => { setShowShareModal(false); setShareClearReviews(false) }}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleSaveFile} disabled={sharing}>
+              {sharing ? 'Saving…' : 'Save File'}
+            </button>
+          </>
+        }
+      >
+        <p style={{ marginTop: 0 }}>This saves a copy of the project's encounters, media files, forms, and media types to a file you can send to someone else.</p>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', marginBottom: 0 }}>
+          <input
+            type="checkbox"
+            checked={shareClearReviews}
+            onChange={e => setShareClearReviews(e.target.checked)}
+            style={{ marginTop: 3 }}
+          />
+          <span>
+            <strong>Clear all reviews from this copy</strong>
+            <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: 13, marginTop: 2 }}>
+              Recommended when sending to someone who shouldn't see prior answers before reviewing themselves.
+              Only affects this exported file — your own reviews stay exactly as they are.
+            </span>
+          </span>
+        </label>
       </Modal>
 
       <Modal
@@ -2367,6 +2410,180 @@ function AgreementResultsView({ projectId }) {
             </div>
           )}
         </>
+      )}
+    </div>
+  )
+}
+// ── Question Reliability View ─────────────────────────────────────────────────
+// Pools every submitted review's answer to each opted-in question ACROSS THE
+// WHOLE PROJECT (not per media file) and computes one real ICC / Fleiss' kappa /
+// weighted kappa per question — separate from the per-file percent agreement
+// in DataVizView/AgreementResultsView above, which is untouched by this.
+const RELIABILITY_METHODS = new Set(['icc', 'cohen_kappa', 'weighted_kappa'])
+// `table` questions nest a value per (row, column) — out of scope here.
+// `likert_group` questions nest one scalar value per row (per item.id), which
+// IS supported: each row is unpacked into its own pooled question below,
+// since that's exactly how UCAT's per-dimension ICCs (Table 2 in the paper)
+// are structured — one row per dimension inside a single likert_group.
+const ROW_UNPACK_TYPES = new Set(['likert_group'])
+const UNSUPPORTED_COMPOSITE_TYPES = new Set(['table'])
+
+const QUESTION_RELIABILITY_METHOD_LABELS = {
+  icc: 'Intraclass correlation (ICC)',
+  cohen_kappa: "Cohen's kappa",
+  weighted_kappa: 'Weighted kappa',
+}
+
+// form_snapshot has taken a couple of different shapes across this codebase
+// (bare {sections}, or {schema:{sections}}) — same defensive lookup used
+// elsewhere for this reason.
+function questionReliabilitySchemaSections(formSnapshot) {
+  if (!formSnapshot) return []
+  if (Array.isArray(formSnapshot?.sections)) return formSnapshot.sections
+  if (Array.isArray(formSnapshot?.schema?.sections)) return formSnapshot.schema.sections
+  return []
+}
+
+function QuestionReliabilityView({ projectId }) {
+  const [loading, setLoading] = useState(true)
+  const [rawReviews, setRawReviews] = useState([])
+
+  const load = useCallback(async () => {
+    if (!projectId) return
+    setLoading(true)
+    try {
+      const data = await api.getProjectInterraterAgreementData(projectId)
+      setRawReviews(Array.isArray(data) ? data : [])
+    } catch {
+      setRawReviews([])
+    } finally {
+      setLoading(false)
+    }
+  }, [projectId])
+
+  useEffect(() => { load() }, [load])
+
+  const questions = useMemo(() => {
+    // Only submitted reviews count toward reliability statistics — a
+    // still-in-progress review isn't a completed rating yet.
+    const submitted = rawReviews.filter(r => r.status === 'submitted')
+
+    const questionMap = new Map()
+
+    // Registers one value for one pooled question (creating it on first sight).
+    // `meta` carries whatever a reliabilityStats function needs (min/max/options).
+    function record(key, label, method, meta, mediaFileId, value) {
+      if (value == null || value === '') return
+      if (!questionMap.has(key)) {
+        questionMap.set(key, { key, label, method, meta, subjects: new Map() })
+      }
+      const entry = questionMap.get(key)
+      const bucket = entry.subjects.get(mediaFileId) || []
+      bucket.push(value)
+      entry.subjects.set(mediaFileId, bucket)
+    }
+
+    for (const review of submitted) {
+      for (const formResponse of (review.form_responses || [])) {
+        const sections = questionReliabilitySchemaSections(formResponse.form_snapshot)
+        const elements = sections.flatMap(section => section?.elements || [])
+        for (const element of elements) {
+          const method = element?.agreement_method
+          if (!RELIABILITY_METHODS.has(method)) continue
+          if (UNSUPPORTED_COMPOSITE_TYPES.has(element?.type)) continue
+
+          if (ROW_UNPACK_TYPES.has(element?.type)) {
+            // One pooled question PER ROW (e.g. UCAT's "Global Measures" group
+            // has 10 rows == 10 dimension-level ICCs), not one for the whole group.
+            const groupResponses = formResponse.responses?.[element.id] || {}
+            const rowMeta = { min: 1, max: Number(element.scale) || 5 }
+            for (const item of (element.items || [])) {
+              const key = `${formResponse.form_id}:${element.id}:${item.id}`
+              const value = groupResponses?.[item.id]
+              const label = element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)
+              record(key, label, method, rowMeta, review.media_file_id, value)
+            }
+            continue
+          }
+
+          const key = `${formResponse.form_id}:${element.id}`
+          const value = formResponse.responses?.[element.id]
+          record(key, element.label || element.id, method, element, review.media_file_id, value)
+        }
+      }
+    }
+
+    const results = []
+    for (const entry of questionMap.values()) {
+      const subjectGroups = Array.from(entry.subjects.values())
+      const stat = computeQuestionReliability(entry.method, subjectGroups, entry.meta)
+      results.push({
+        key: entry.key,
+        label: entry.label,
+        method: entry.method,
+        stat,
+        subjectsSeen: subjectGroups.length,
+        subjectsUsable: subjectGroups.filter(g => g.length >= 2).length,
+      })
+    }
+    results.sort((a, b) => a.label.localeCompare(b.label))
+    return results
+  }, [rawReviews])
+
+  if (loading) return <div className="empty-state"><p>Loading…</p></div>
+
+  return (
+    <div style={{ maxWidth: 860 }}>
+      <div style={{ marginBottom: 20 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Question Reliability</h1>
+        <p className="text-secondary text-sm" style={{ margin: 0 }}>
+          For questions set to ICC, Cohen's kappa, or weighted kappa, this pools every rating for that
+          question across all rated encounters and computes one reliability statistic — not a
+          per-file score. Per-file percentage agreement is still shown on Data Visualization.
+        </p>
+      </div>
+
+      {questions.length === 0 ? (
+        <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
+          <Gauge size={38} style={{ margin: '0 auto 14px', opacity: 0.35 }} />
+          <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>No questions use these methods yet</p>
+          <p style={{ fontSize: 13 }}>
+            In the form builder, set a question's agreement method to ICC, Cohen's kappa, or weighted
+            kappa to see it appear here once encounters have been rated by two or more reviewers.
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {questions.map(q => {
+            const value = q.stat?.value ?? null
+            const interpretation = q.method === 'icc' ? iccInterpretation(value) : kappaInterpretation(value)
+            return (
+              <div key={q.key} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{q.label}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{QUESTION_RELIABILITY_METHOD_LABELS[q.method] || q.method}</div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 20, fontWeight: 700 }}>
+                      {value == null ? '—' : value.toFixed(2)}
+                    </div>
+                    {interpretation && (
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        {interpretation.label} <span style={{ opacity: 0.7 }}>({interpretation.source})</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+                  {q.subjectsUsable} of {q.subjectsSeen} rated encounter{q.subjectsSeen === 1 ? '' : 's'} had 2+
+                  reviewers and count toward this statistic.
+                  {q.subjectsUsable < 2 && ' Not enough data yet for a reliable estimate.'}
+                </div>
+              </div>
+            )
+          })}
+        </div>
       )}
     </div>
   )

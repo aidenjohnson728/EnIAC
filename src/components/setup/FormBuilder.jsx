@@ -38,10 +38,10 @@ const DEFAULT_QUESTION_WEIGHT_BY_TYPE = {
 
 function agreementMethodOptionsForType(type) {
   if (type === 'multiple_choice' || type === 'checkbox') return ['auto', 'percent', 'cohen_kappa']
-  if (type === 'likert' || type === 'rating') return ['auto', 'ordinal', 'weighted_kappa', 'percent']
-  if (type === 'likert_group') return ['auto', 'item_group', 'weighted_kappa']
+  if (type === 'likert' || type === 'rating') return ['auto', 'ordinal', 'icc', 'weighted_kappa', 'percent']
+  if (type === 'likert_group') return ['auto', 'item_group', 'icc', 'weighted_kappa']
   if (type === 'multiselect') return ['auto', 'set_overlap', 'percent']
-  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return ['auto', 'numeric']
+  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return ['auto', 'numeric', 'icc']
   if (type === 'timestamp_select') return ['auto', 'timestamp']
   if (type === 'short_answer' || type === 'paragraph') return ['auto', 'exact_text']
   if (type === 'table') return ['auto', 'item_group']
@@ -54,11 +54,14 @@ function agreementWarningForElement(el, enabled, method) {
   if ((el.type === 'short_answer' || el.type === 'paragraph') && resolved === 'exact_text') {
     return 'Text agreement uses exact normalized matches only. Most teams leave text questions excluded.'
   }
-  if ((resolved === 'cohen_kappa' || resolved === 'weighted_kappa') && el.type !== 'likert_group') {
-    return 'Kappa-style methods are most interpretable with exactly two reviewers.'
-  }
   if (el.type === 'likert_group' && resolved === 'weighted_kappa') {
-    return 'Weighted kappa is calculated per statement, then averaged across the group.'
+    return 'Weighted kappa is calculated per statement, then averaged across the group, per media file.'
+  }
+  if (el.type === 'likert_group' && resolved === 'icc') {
+    return 'Each row in this group gets its own pooled ICC across all rated encounters, shown on the Question Reliability page.'
+  }
+  if ((resolved === 'icc' || resolved === 'cohen_kappa' || resolved === 'weighted_kappa') && el.type !== 'likert_group' && el.type !== 'table') {
+    return 'This pools every rating for this question across all rated encounters and shows one statistic on the Question Reliability page, not a per-file score.'
   }
   return ''
 }
@@ -103,6 +106,7 @@ function shortenMarkdownImageDataUrls(markdown, assets = []) {
 export default function FormBuilder({ projectId, form, onSave, onCancel, onLocked }) {
   const [name, setName] = useState(form.name || '')
   const [sections, setSections] = useState(form.schema?.sections || [])
+  const [completionMode, setCompletionMode] = useState(form.schema?.completion_mode || 'all_required')
   const [collapsed, setCollapsed] = useState({})
   const [saving, setSaving] = useState(false)
   const [migrationPreview, setMigrationPreview] = useState(null)
@@ -170,7 +174,7 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
     setSaveError('')
     try {
       if (!(await ensureUnlocked())) return
-      const savedId = await api.saveForm(projectId, { id: form.id || undefined, name: name.trim(), schema: { sections } })
+      const savedId = await api.saveForm(projectId, { id: form.id || undefined, name: name.trim(), schema: { sections, completion_mode: completionMode } })
       onSave()
     } catch (e) {
       console.error('[FormBuilder] save failed:', e)
@@ -229,6 +233,27 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
 
       <div style={{ flex: 1, overflow: 'auto', padding: '28px 0' }}>
         <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{
+            border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap',
+          }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>Completion requirement</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                {completionMode === 'at_least_one'
+                  ? 'A review can be submitted once at least one question on this form is answered.'
+                  : 'A review can be submitted once every question marked "Required" below is answered.'}
+              </div>
+            </div>
+            <select
+              value={completionMode}
+              onChange={e => setCompletionMode(e.target.value)}
+              style={{ height: 32, fontSize: 13, flexShrink: 0 }}
+            >
+              <option value="all_required">Require all required questions</option>
+              <option value="at_least_one">Require at least one question</option>
+            </select>
+          </div>
           {saveError && !migrationPreview && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px', color: '#991b1b', fontSize: 13 }}>
               {saveError}

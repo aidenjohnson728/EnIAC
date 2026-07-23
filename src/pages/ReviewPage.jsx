@@ -36,7 +36,7 @@ const REVIEW_TOUR_STEPS = [
     targetId: 'tut-rev-submit',
     placement: 'bottom',
     title: 'Submitting Your Review',
-    body: "Click Submit Review when you're done coding. If sync is configured, SDMo will share the submitted review automatically in the background; you can still use Sync Now on the project page to pull teammates' latest work.",
+    body: "Click Submit Review when you're done coding. If sync is configured, EnIAC will share the submitted review automatically in the background; you can still use Sync Now on the project page to pull teammates' latest work.",
   },
 ]
 
@@ -45,7 +45,7 @@ const SYNC_BASICS_TOUR_STEPS = [
     targetId: 'tut-rev-sync-basics',
     placement: 'top',
     title: 'Sync Basics',
-    body: 'This page explains what SDMo sync shares with teammates, what stays local on each computer, and the habits that prevent duplicate or missing review data.',
+    body: 'This page explains what EnIAC sync shares with teammates, what stays local on each computer, and the habits that prevent duplicate or missing review data.',
   },
 ]
 
@@ -543,6 +543,52 @@ export default function ReviewPage() {
       const form = formSchemas[tab.ref_id]
       if (!form?.schema?.sections) continue
       const responses = formResponses[tab.ref_id] || {}
+
+      // Relaxed completion mode: the form only needs at least one answerable
+      // question filled in, regardless of each question's individual `required`
+      // flag. Older forms have no `completion_mode` set and keep the original
+      // all-required behavior below.
+      if (form.schema.completion_mode === 'at_least_one') {
+        // Treat each ROW inside a likert_group/table as its own answerable
+        // question, not the whole group — otherwise a required likert_group
+        // (which needs every row filled to count as "complete") defeats the
+        // entire point of relaxed completion mode. Uses isResponseAnswered
+        // directly (a single value's answered-state) rather than
+        // isRequiredElementComplete (which enforces "every row" for groups).
+        let hasAnswerable = false
+        let anyAnswered = false
+        for (const section of form.schema.sections) {
+          for (const el of (section.elements || [])) {
+            if (el.type === 'text_block') continue
+            if (el.type === 'likert_group') {
+              const groupVal = (responses[el.id] && typeof responses[el.id] === 'object') ? responses[el.id] : {}
+              for (const item of (el.items || [])) {
+                hasAnswerable = true
+                if (isResponseAnswered(groupVal[item.id])) anyAnswered = true
+              }
+              continue
+            }
+            if (el.type === 'table') {
+              const tableVal = (responses[el.id] && typeof responses[el.id] === 'object') ? responses[el.id] : {}
+              for (const rowIndex of (el.rows || []).keys()) {
+                const rowVal = (tableVal[String(rowIndex)] && typeof tableVal[String(rowIndex)] === 'object') ? tableVal[String(rowIndex)] : {}
+                for (const col of (el.columns || [])) {
+                  hasAnswerable = true
+                  if (isResponseAnswered(rowVal[col.id])) anyAnswered = true
+                }
+              }
+              continue
+            }
+            hasAnswerable = true
+            if (isResponseAnswered(responses[el.id])) anyAnswered = true
+          }
+        }
+        if (hasAnswerable && !anyAnswered) {
+          errors.push({ tab: tab.label, question: 'At least one question must be answered' })
+        }
+        continue
+      }
+
       for (const section of form.schema.sections) {
         for (const [elementIndex, el] of (section.elements || []).entries()) {
           if (!el.required) continue

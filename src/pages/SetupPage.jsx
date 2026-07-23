@@ -35,13 +35,13 @@ const FILES_TOUR_STEPS = [
     targetId: 'tut-files-base',
     placement: 'bottom',
     title: 'Why Linking Is Needed',
-    body: "SDMo syncs the project structure, settings, and reviews, but not media files. File paths are device-specific, so every teammate links their own local copy here. Set your base folder to get started.",
+    body: "EnIAC syncs the project structure, settings, and reviews, but not media files. File paths are device-specific, so every teammate links their own local copy here. Set your base folder to get started.",
   },
   {
     targetId: 'tut-files-autolink',
     placement: 'bottom',
     title: 'Auto-link: Fastest Setup',
-    body: "Point Auto-link at the folder where your local copy of the media lives. Its file structure should mirror the project's encounters and file names. SDMo scans it (and any subfolders) and links every matching file automatically — no manual locating needed.",
+    body: "Point Auto-link at the folder where your local copy of the media lives. Its file structure should mirror the project's encounters and file names. EnIAC scans it (and any subfolders) and links every matching file automatically — no manual locating needed.",
   },
   {
     targetId: 'tut-files-status',
@@ -1337,7 +1337,7 @@ function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheck
       : updateStatus?.state === 'downloading'
         ? 'Downloading update'
         : updateStatus?.state === 'not-available'
-          ? 'SDMo is up to date'
+          ? 'EnIAC is up to date'
           : updateStatus?.state === 'checking'
             ? 'Checking for updates'
             : updateStatus?.state === 'unavailable'
@@ -1350,7 +1350,7 @@ function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheck
 
   return (
     <div style={{ maxWidth: 680 }}>
-      <h2 style={{ marginBottom: 6 }}>About SDMo</h2>
+      <h2 style={{ marginBottom: 6 }}>About EnIAC</h2>
       <p className="text-secondary" style={{ marginBottom: 24, fontSize: 13 }}>
         App version, update status, and diagnostics for support.
       </p>
@@ -1363,7 +1363,7 @@ function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheck
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '8px 14px', fontSize: 13 }}>
             <span className="text-secondary">App</span>
-            <span>{appInfo?.name || 'SDMo'}</span>
+            <span>{appInfo?.name || 'EnIAC'}</span>
             <span className="text-secondary">Version</span>
             <span>{appInfo?.version || updateStatus?.currentVersion || 'Unknown'}</span>
             <span className="text-secondary">Build</span>
@@ -1389,7 +1389,7 @@ function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheck
           )}
           {updateStatus?.state === 'downloaded' && (
             <p className="text-secondary" style={{ fontSize: 13, marginBottom: 12 }}>
-              SDMo creates a database backup before restarting to install the update.
+              EnIAC creates a database backup before restarting to install the update.
             </p>
           )}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1652,7 +1652,7 @@ function MediaFilesSection({
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Import or Scan Folder</h3>
             <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
-              Point SDMo at your encounter folder once, then rescan it anytime new encounters or files appear. Each subfolder becomes an encounter; files inside become media files.
+              Point EnIAC at your encounter folder once, then rescan it anytime new encounters or files appear. Each subfolder becomes an encounter; files inside become media files.
             </p>
           </div>
           <div className="form-field" style={{ marginBottom: 0 }}>
@@ -2149,7 +2149,7 @@ function OverviewSection() {
       <div style={{ display: 'flex', gap: 12, padding: '14px 16px', border: '1px solid var(--accent)', background: 'var(--accent-light)', borderRadius: 8, marginBottom: 28 }}>
         <span style={{ fontSize: 20, lineHeight: 1, flexShrink: 0, marginTop: 1 }}>🎓</span>
         <div>
-          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, color: 'var(--accent)' }}>New to SDMo? Start with the tutorial project</div>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, color: 'var(--accent)' }}>New to EnIAC? Start with the tutorial project</div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
             From the home screen, click <strong>Tutorial Project</strong> to open a ready-made example with encounters, media, and a coding form already set up. Guided pop-up tips walk you through each page. Look for the <strong>?</strong> button in the top-right of any page to replay a tour.
           </div>
@@ -2327,7 +2327,7 @@ function SyncSection({
                 Sign in to connect your cloud storage directly — no local sync needed.
               </p>
               <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 12px', fontSize: 12, color: '#92400e', lineHeight: 1.5 }}>
-                OneDrive is recommended for direct cloud sync. Google Drive uses limited file access, so SDMo may ask you to approve access to project files again during sync.
+                OneDrive is recommended for direct cloud sync. Google Drive uses limited file access, so EnIAC may ask you to approve access to project files again during sync.
               </div>
               <button
                 className="btn btn-secondary"
@@ -2355,7 +2355,7 @@ function SyncSection({
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {cloudStatus.provider === 'googledrive' && (
                 <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 12px', fontSize: 12, color: '#92400e', lineHeight: 1.5 }}>
-                  OneDrive is recommended for direct cloud sync. Google Drive uses limited file access, so SDMo may ask you to approve access to project files again during sync.
+                  OneDrive is recommended for direct cloud sync. Google Drive uses limited file access, so EnIAC may ask you to approve access to project files again during sync.
                 </div>
               )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
@@ -2863,7 +2863,7 @@ function ScanResultSummary({ scanResult }) {
       <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '12px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 10 }}>
         <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
         <div>
-          <strong>Wrong folder level detected.</strong> This folder contains media files directly. SDMo expects each encounter to be its own subfolder.
+          <strong>Wrong folder level detected.</strong> This folder contains media files directly. EnIAC expects each encounter to be its own subfolder.
           <pre style={{ margin: '6px 0 0', fontSize: 11, fontFamily: 'monospace', lineHeight: 1.6, background: 'rgba(0,0,0,0.05)', padding: '6px 8px', borderRadius: 4 }}>{`SelectedFolder/\n  Patient001/\n    consult.mp4\n  Patient002/\n    consult.mp4`}</pre>
         </div>
       </div>

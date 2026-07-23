@@ -19,7 +19,7 @@ const TUTORIAL_STEPS = [
     targetId: 'tut-import',
     placement: 'bottom',
     title: 'Joining an Existing Project',
-    body: "A colleague already set up the project? Click Import to join from the shared sync folder or a project .json file. You'll then link your own local media files; videos stay on your machine and are never uploaded by SDMo.",
+    body: "A colleague already set up the project? Click Import to join from the shared sync folder or a project .json file. You'll then link your own local media files; videos stay on your machine and are never uploaded by EnIAC.",
   },
   {
     targetId: 'tut-new',
@@ -132,13 +132,13 @@ export default function HomePage() {
     setJoinCloudMessage('')
     if (provider === 'googledrive') {
       setJoinGoogleStateFolder(null)
-      setJoinCloudMessage('Google Drive step 1 of 2: choose the shared SDMo sync folder for this project.')
+      setJoinCloudMessage('Google Drive step 1 of 2: choose the shared EnIAC sync folder for this project.')
       const picked = await api.cloudPickGoogleDriveFolder()
       if (picked?.error) { setJoinError(picked.error); setJoinCloudLoading(false); return }
       const folder = picked?.folder
       if (!folder?.id) { setJoinError('No Google Drive folder was selected'); setJoinCloudLoading(false); return }
 
-      setJoinCloudMessage(`Selected "${folder.name || 'Google Drive folder'}". Checking for SDMo project files...`)
+      setJoinCloudMessage(`Selected "${folder.name || 'Google Drive folder'}". Checking for EnIAC project files...`)
       let result = await api.joinFromCloudFolder('googledrive', folder.id, folder.name || 'Google Drive Folder')
       if (result?.error && result.error.includes('project-state.json')) {
         setJoinGoogleStateFolder({ id: folder.id, name: folder.name || 'Google Drive Folder' })
@@ -337,7 +337,7 @@ export default function HomePage() {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <img src={appIcon} alt="" style={{ width: 44, height: 44, objectFit: 'contain' }} />
-          <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: '-0.2px' }}>SDMo</span>
+          <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: '-0.2px' }}>EnIAC</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, WebkitAppRegion: 'no-drag' }}>
           <button
@@ -457,7 +457,7 @@ export default function HomePage() {
               <p className="text-sm" style={{ marginTop: 4 }}>Create a project to get started</p>
             </div>
             <p className="text-sm" style={{ marginTop: -2, color: 'var(--text-muted)' }}>
-              New to SDMo? Open the tutorial project for a guided walkthrough.
+              New to EnIAC? Open the tutorial project for a guided walkthrough.
             </p>
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-secondary" onClick={handleTrySample}>
@@ -465,7 +465,7 @@ export default function HomePage() {
               </button>
               {defaultProjects.length > 0 && (
                 <button className="btn btn-secondary" onClick={() => setShowTemplates(true)}>
-                  <ClipboardList size={14} /> UCAT / SDMo
+                  <ClipboardList size={14} /> UCAT / EnIAC
                 </button>
               )}
               <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
@@ -744,7 +744,7 @@ export default function HomePage() {
                   <span style={{ fontWeight: 600, fontSize: 13 }}>Pick Folder with Google Drive</span>
                 </button>
                 <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 12px', fontSize: 12, color: '#92400e', lineHeight: 1.5 }}>
-                  OneDrive is recommended for direct cloud sync. Google Drive uses limited file access, so SDMo may ask you to approve access to project files again during sync.
+                  OneDrive is recommended for direct cloud sync. Google Drive uses limited file access, so EnIAC may ask you to approve access to project files again during sync.
                 </div>
                 {joinGoogleStateFolder && (
                   <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: '#1d4ed8', lineHeight: 1.5, display: 'flex', flexDirection: 'column', gap: 8 }}>

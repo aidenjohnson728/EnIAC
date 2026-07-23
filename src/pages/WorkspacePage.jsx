@@ -215,6 +215,55 @@ export default function WorkspacePage() {
       const form = formSchemas[tab.ref_id]
       if (!form?.schema?.sections) continue
       const responses = formResponses[tab.ref_id] || {}
+
+      // Relaxed completion mode: the form only needs at least one answerable
+      // question filled in, regardless of each question's individual `required`
+      // flag. Older forms have no `completion_mode` set and keep the original
+      // all-required behavior below. Kept identical to ReviewPage.jsx's copy
+      // of this logic so the main window and pop-out workspace window always
+      // agree on whether a review is submittable.
+      if (form.schema.completion_mode === 'at_least_one') {
+        // Treat each ROW inside a likert_group/table as its own answerable
+        // question, not the whole group — otherwise a required likert_group
+        // (which needs every row filled to count as "complete") defeats the
+        // entire point of relaxed completion mode. Uses isRequiredResponseAnswered
+        // directly (a single value's answered-state) rather than
+        // isRequiredElementComplete (which enforces "every row" for groups).
+        // Kept identical to ReviewPage.jsx's copy of this fix.
+        let hasAnswerable = false
+        let anyAnswered = false
+        for (const section of form.schema.sections) {
+          for (const el of (section.elements || [])) {
+            if (el.type === 'text_block') continue
+            if (el.type === 'likert_group') {
+              const groupVal = (responses[el.id] && typeof responses[el.id] === 'object') ? responses[el.id] : {}
+              for (const item of (el.items || [])) {
+                hasAnswerable = true
+                if (isRequiredResponseAnswered(groupVal[item.id])) anyAnswered = true
+              }
+              continue
+            }
+            if (el.type === 'table') {
+              const tableVal = (responses[el.id] && typeof responses[el.id] === 'object') ? responses[el.id] : {}
+              for (const rowIndex of (el.rows || []).keys()) {
+                const rowVal = (tableVal[String(rowIndex)] && typeof tableVal[String(rowIndex)] === 'object') ? tableVal[String(rowIndex)] : {}
+                for (const col of (el.columns || [])) {
+                  hasAnswerable = true
+                  if (isRequiredResponseAnswered(rowVal[col.id])) anyAnswered = true
+                }
+              }
+              continue
+            }
+            hasAnswerable = true
+            if (isRequiredResponseAnswered(responses[el.id])) anyAnswered = true
+          }
+        }
+        if (hasAnswerable && !anyAnswered) {
+          errors.push({ tab: tab.label, question: 'At least one question must be answered' })
+        }
+        continue
+      }
+
       for (const section of form.schema.sections) {
         for (const [elementIndex, el] of (section.elements || []).entries()) {
           if (!el.required) continue

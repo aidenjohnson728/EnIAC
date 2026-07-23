@@ -349,7 +349,8 @@
                   }
                 ],
                 "required": true,
-                "global_agreement_question": false
+                "global_agreement_question": false,
+                "agreement_method": "icc"
               }
             ]
           },
@@ -366,7 +367,7 @@
                 "has_na": false,
                 "agreement_enabled": true,
                 "agreement_weight": 1,
-                "agreement_method": "auto",
+                "agreement_method": "icc",
                 "scale": 5,
                 "low_label": "Strongly Disagree",
                 "high_label": "Strongly Agree",
