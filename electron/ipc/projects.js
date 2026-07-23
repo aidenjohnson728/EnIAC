@@ -203,7 +203,7 @@ module.exports = function (ipcMain) {
   })
 
   // Save project file (export for email/sharing)
-  ipcMain.handle('sync:saveFile', async (_, projectId) => {
+  ipcMain.handle('sync:saveFile', async (_, projectId, options = {}) => {
     const db = getDb()
     const project = db.prepare('SELECT name FROM projects WHERE id=?').get(projectId)
     const safeName = (project?.name || 'project').replace(/[^a-zA-Z0-9_-]/g, '_')
@@ -212,7 +212,7 @@ module.exports = function (ipcMain) {
       filters: [{ name: 'SDMo Project', extensions: ['json'] }],
     })
     if (!filePath) return null
-    const data = buildExport(db, projectId)
+    const data = buildExport(db, projectId, { clearReviews: !!options?.clearReviews })
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2))
     return filePath
   })
