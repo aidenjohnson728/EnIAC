@@ -1,6 +1,6 @@
 {
   "name": "sdmo-app",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "description": "Patient encounter coding application",
   "main": "electron/main.js",
   "scripts": {
