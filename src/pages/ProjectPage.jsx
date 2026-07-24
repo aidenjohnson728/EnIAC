@@ -2364,8 +2364,8 @@ function AgreementResultsView({ projectId }) {
       // rendered as a broken/empty comparison card here.
       if (entry.mine.length === 0 || entry.theirs.length === 0) continue
       const reviewDetails = [
-        { form_responses: entry.mine.map(r => ({ form_id: r.form_id, responses: r.responses, form_snapshot: r.form_snapshot })) },
-        { form_responses: entry.theirs.map(r => ({ form_id: r.form_id, responses: r.responses, form_snapshot: r.form_snapshot })) },
+        { form_responses: entry.mine.map(r => ({ form_id: r.form_id, responses: r.responses, form_snapshot: r.form_snapshot, instance_role: r.instance_role, instance_order: r.instance_order })) },
+        { form_responses: entry.theirs.map(r => ({ form_id: r.form_id, responses: r.responses, form_snapshot: r.form_snapshot, instance_role: r.instance_role, instance_order: r.instance_order })) },
       ]
       rows.push(computeInterraterAgreementForMediaFile({
         mediaName: entry.mediaName,
@@ -2517,15 +2517,21 @@ function questionReliabilitySchemaSections(formSnapshot) {
 function QuestionReliabilityView({ projectId }) {
   const [loading, setLoading] = useState(true)
   const [rawReviews, setRawReviews] = useState([])
+  const [currentForms, setCurrentForms] = useState([])
 
   const load = useCallback(async () => {
     if (!projectId) return
     setLoading(true)
     try {
-      const data = await api.getProjectInterraterAgreementData(projectId)
+      const [data, forms] = await Promise.all([
+        api.getProjectInterraterAgreementData(projectId),
+        api.listForms(projectId),
+      ])
       setRawReviews(Array.isArray(data) ? data : [])
+      setCurrentForms(Array.isArray(forms) ? forms : [])
     } catch {
       setRawReviews([])
+      setCurrentForms([])
     } finally {
       setLoading(false)
     }
@@ -2537,6 +2543,7 @@ function QuestionReliabilityView({ projectId }) {
     // Only submitted reviews count toward reliability statistics — a
     // still-in-progress review isn't a completed rating yet.
     const submitted = rawReviews.filter(r => r.status === 'submitted')
+    const currentFormsById = new Map(currentForms.map(f => [String(f.id), f]))
 
     const questionMap = new Map()
 
@@ -2555,8 +2562,24 @@ function QuestionReliabilityView({ projectId }) {
 
     for (const review of submitted) {
       for (const formResponse of (review.form_responses || [])) {
-        const sections = questionReliabilitySchemaSections(formResponse.form_snapshot)
+        // Use the CURRENT live form's schema, not this review's frozen
+        // form_snapshot — reliability config (agreement_method,
+        // multi_instance_roles) is a study-wide analysis decision, and should
+        // apply to every submitted review, not just ones created after the
+        // config was turned on. Falls back to the snapshot only if the form
+        // was deleted since. Response VALUES still come from this review's
+        // own data either way, keyed by element id, which stays stable.
+        const liveForm = currentFormsById.get(String(formResponse.form_id))
+        const schemaSource = liveForm?.schema || formResponse.form_snapshot
+        const sections = questionReliabilitySchemaSections(schemaSource)
         const elements = sections.flatMap(section => section?.elements || [])
+        // Repeatable form instances (e.g. "Trainee 1", "Consultant 1") must
+        // never be pooled together — matched across reviewers by role +
+        // creation order, same as the per-file agreement engine.
+        const instanceRole = formResponse.instance_role || null
+        const instanceOrder = formResponse.instance_order || 0
+        const instanceKeySuffix = instanceRole ? `:${instanceRole}:${instanceOrder}` : ''
+        const instanceLabelSuffix = instanceRole ? ` (${instanceRole} ${instanceOrder})` : ''
         for (const element of elements) {
           const method = element?.agreement_method
           if (!RELIABILITY_METHODS.has(method)) continue
@@ -2568,17 +2591,17 @@ function QuestionReliabilityView({ projectId }) {
             const groupResponses = formResponse.responses?.[element.id] || {}
             const rowMeta = { min: 1, max: Number(element.scale) || 5 }
             for (const item of (element.items || [])) {
-              const key = `${formResponse.form_id}:${element.id}:${item.id}`
+              const key = `${formResponse.form_id}:${element.id}:${item.id}${instanceKeySuffix}`
               const value = groupResponses?.[item.id]
-              const label = element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)
+              const label = (element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)) + instanceLabelSuffix
               record(key, label, method, rowMeta, review.media_file_id, value)
             }
             continue
           }
 
-          const key = `${formResponse.form_id}:${element.id}`
+          const key = `${formResponse.form_id}:${element.id}${instanceKeySuffix}`
           const value = formResponse.responses?.[element.id]
-          record(key, element.label || element.id, method, element, review.media_file_id, value)
+          record(key, (element.label || element.id) + instanceLabelSuffix, method, element, review.media_file_id, value)
         }
       }
     }

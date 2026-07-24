@@ -392,13 +392,23 @@ export function computeInterraterAgreementForMediaFile({
       for (const element of elements) {
         if (globalOnly && element?.global_agreement_question !== true) continue
         if (selectedQuestionIds && !selectedQuestionIds.has(String(element?.id))) continue
-        const questionKey = `${formResponse?.form_id || 'form'}:${element?.id}`
+        // Repeatable form instances (e.g. "Trainee 1", "Consultant 1") must
+        // never be pooled together — they rate different people, not the
+        // same subject twice. Matched across reviewers by role + creation
+        // order (not instance_key, which is unique per review and would
+        // never match across two different reviewers' own instances).
+        const instanceRole = formResponse?.instance_role || null
+        const instanceOrder = formResponse?.instance_order || 0
+        const instanceSuffix = instanceRole ? `:${instanceRole}:${instanceOrder}` : ''
+        const questionKey = `${formResponse?.form_id || 'form'}:${element?.id}${instanceSuffix}`
         if (!formResponsesByQuestion.has(questionKey)) {
           formResponsesByQuestion.set(questionKey, {
-            label: getElementLabel(element, element?.id),
+            label: instanceRole ? `${getElementLabel(element, element?.id)} (${instanceRole} ${instanceOrder})` : getElementLabel(element, element?.id),
             type: getQuestionType(element),
             formId: formResponse?.form_id || null,
             questionId: element?.id,
+            instanceRole,
+            instanceOrder,
             meta: element || {},
             values: [],
           })

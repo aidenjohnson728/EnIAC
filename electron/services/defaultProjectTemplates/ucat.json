@@ -386,6 +386,10 @@
               }
             ]
           }
+        ],
+        "multi_instance_roles": [
+          "Trainee",
+          "Consultant"
         ]
       }
     }

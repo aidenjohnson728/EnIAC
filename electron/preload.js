@@ -90,6 +90,8 @@ contextBridge.exposeInMainWorld('api', {
   deleteTimestamp: (id) => ipcRenderer.invoke('reviews:deleteTimestamp', id),
   updateTimestamp: (id, data) => ipcRenderer.invoke('reviews:updateTimestamp', id, data),
   saveFormResponse: (reviewId, data) => ipcRenderer.invoke('reviews:saveFormResponse', reviewId, data),
+  addFormInstance: (reviewId, formId, role) => ipcRenderer.invoke('reviews:addFormInstance', reviewId, formId, role),
+  removeFormInstance: (reviewId, formId, instanceKey) => ipcRenderer.invoke('reviews:removeFormInstance', reviewId, formId, instanceKey),
 
   // Setup
   saveMediaType: (projectId, data) => ipcRenderer.invoke('setup:saveMediaType', projectId, data),

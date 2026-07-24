@@ -245,6 +245,15 @@ function migrate(db) {
       data TEXT NOT NULL
     )`,
     "CREATE INDEX IF NOT EXISTS idx_imported_results_project ON imported_results(project_id)",
+    // Repeatable form instances (e.g. multiple people coded with the same
+    // form within one review — "Trainee 1", "Trainee 2", "Consultant 1").
+    // instance_key defaults to '' for every existing row, meaning "the one
+    // and only instance" — fully backward compatible with data saved before
+    // this feature existed.
+    "ALTER TABLE form_responses ADD COLUMN instance_key TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE form_responses ADD COLUMN instance_role TEXT",
+    "ALTER TABLE form_responses ADD COLUMN instance_order INTEGER NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS idx_form_responses_instance ON form_responses(review_id, form_id, instance_key)",
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) {}

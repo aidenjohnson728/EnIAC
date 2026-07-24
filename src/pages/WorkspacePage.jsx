@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
-import { CheckCircle2, Edit2, AlertCircle } from 'lucide-react'
+import { CheckCircle2, Edit2, AlertCircle, Plus, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '../lib/api'
@@ -20,6 +20,35 @@ function hydrateWorkspaceSnapshot(snapshot) {
     formSchemas,
     instructions,
   }
+}
+
+// Groups a review's form_responses by form_id into an ARRAY of instances
+// (sorted by role, then creation order) rather than one flat object per form
+// — kept identical to ReviewPage.jsx's copy of this logic so the main window
+// and pop-out workspace window always agree on the data shape.
+function parseFormInstances(rev) {
+  const byForm = {}
+  for (const fr of (rev.form_responses || [])) {
+    if (!byForm[fr.form_id]) byForm[fr.form_id] = []
+    byForm[fr.form_id].push({
+      instance_key: fr.instance_key || '',
+      instance_role: fr.instance_role || null,
+      instance_order: fr.instance_order || 0,
+      responses: fr.responses || {},
+    })
+  }
+  for (const formId of Object.keys(byForm)) {
+    byForm[formId].sort((a, b) => (a.instance_role || '').localeCompare(b.instance_role || '') || a.instance_order - b.instance_order)
+  }
+  return byForm
+}
+
+function defaultActiveInstances(byForm) {
+  const active = {}
+  for (const [formId, instances] of Object.entries(byForm)) {
+    if (instances.length > 0) active[formId] = instances[0].instance_key
+  }
+  return active
 }
 
 function patchSnapshotPdfPaths(instructions, liveInstructions = []) {
@@ -74,7 +103,8 @@ export default function WorkspacePage() {
   const [workspaceTabs, setWorkspaceTabs] = useState([])
   const [formSchemas, setFormSchemas] = useState({})
   const [instructions, setInstructions] = useState({})
-  const [formResponses, setFormResponses] = useState({})
+  const [formInstances, setFormInstances] = useState({}) // { [formId]: [{instance_key, instance_role, instance_order, responses}] }
+  const [activeInstanceKey, setActiveInstanceKey] = useState({}) // { [formId]: instance_key }
   const [timestamps, setTimestamps] = useState([])
 
   const [activeTab, setActiveTab] = useState(0)
@@ -91,9 +121,9 @@ export default function WorkspacePage() {
     api.getReview(id).then(rev => {
       if (!rev) return
       setSubmitted(rev.status === 'submitted')
-      const respMap = {}
-      for (const fr of (rev.form_responses || [])) respMap[fr.form_id] = fr.responses
-      setFormResponses(respMap)
+      const byForm = parseFormInstances(rev)
+      setFormInstances(byForm)
+      setActiveInstanceKey(prev => ({ ...defaultActiveInstances(byForm), ...prev }))
       setTimestamps(rev.timestamps || [])
     })
   }
@@ -115,9 +145,9 @@ export default function WorkspacePage() {
     setSubmitted(rev.status === 'submitted')
     setTimestamps(rev.timestamps || [])
 
-    const respMap = {}
-    for (const fr of (rev.form_responses || [])) respMap[fr.form_id] = fr.responses
-    setFormResponses(respMap)
+    const respByForm = parseFormInstances(rev)
+    setFormInstances(respByForm)
+    setActiveInstanceKey(defaultActiveInstances(respByForm))
 
     const mf = await api.getMediaFile(rev.media_file_id)
     setMediaFile(mf)
@@ -161,17 +191,54 @@ export default function WorkspacePage() {
     setLoading(false)
   }
 
-  const saveFormResponse = useCallback(async (formId, responses) => {
+  const saveFormResponse = useCallback(async (formId, instanceKey, responses) => {
     try {
-      await api.saveFormResponse(reviewId, { form_id: formId, responses })
-      setFormResponses(r => ({ ...r, [formId]: responses }))
+      const instances = formInstances[formId] || []
+      const instance = instances.find(i => i.instance_key === instanceKey)
+      await api.saveFormResponse(reviewId, {
+        form_id: formId,
+        instance_key: instanceKey,
+        instance_role: instance?.instance_role || null,
+        instance_order: instance?.instance_order || 0,
+        responses,
+      })
+      setFormInstances(prev => ({
+        ...prev,
+        [formId]: (prev[formId] || []).map(i => i.instance_key === instanceKey ? { ...i, responses } : i),
+      }))
       setSaveError(null)
       api.notifyReviewUpdate(reviewId).catch(() => {})
     } catch (e) {
       console.error('[WorkspacePage] saveFormResponse failed:', e)
       setSaveError('Save failed — check console for details.')
     }
-  }, [reviewId])
+  }, [reviewId, formInstances])
+
+  async function addFormInstance(formId, role) {
+    if (submitted || !role) return
+    const created = await api.addFormInstance(reviewId, formId, role)
+    if (!created?.instance_key) return
+    setFormInstances(prev => {
+      const next = [...(prev[formId] || []), { ...created, responses: {} }]
+      next.sort((a, b) => (a.instance_role || '').localeCompare(b.instance_role || '') || a.instance_order - b.instance_order)
+      return { ...prev, [formId]: next }
+    })
+    setActiveInstanceKey(prev => ({ ...prev, [formId]: created.instance_key }))
+    api.notifyReviewUpdate(reviewId).catch(() => {})
+  }
+
+  async function removeFormInstance(formId, instanceKey) {
+    if (submitted) return
+    const instances = formInstances[formId] || []
+    if (instances.length <= 1) return // always keep at least one instance for a form tab
+    await api.removeFormInstance(reviewId, formId, instanceKey)
+    const remaining = instances.filter(i => i.instance_key !== instanceKey)
+    setFormInstances(prev => ({ ...prev, [formId]: remaining }))
+    setActiveInstanceKey(prev => (
+      prev[formId] === instanceKey ? { ...prev, [formId]: remaining[0]?.instance_key } : prev
+    ))
+    api.notifyReviewUpdate(reviewId).catch(() => {})
+  }
 
   function isRequiredResponseAnswered(value) {
     if (value === 'N/A' || (value && typeof value === 'object' && !Array.isArray(value) && value.__na === true)) return true
@@ -214,7 +281,18 @@ export default function WorkspacePage() {
       if (tab.tab_type !== 'form') continue
       const form = formSchemas[tab.ref_id]
       if (!form?.schema?.sections) continue
-      const responses = formResponses[tab.ref_id] || {}
+      const instances = formInstances[tab.ref_id] || []
+      const roles = form.schema?.multi_instance_roles
+      const isMultiInstance = Array.isArray(roles) && roles.length > 0
+      if (instances.length === 0) {
+        if (isMultiInstance) errors.push({ tab: tab.label, question: 'Choose a role and fill out this form before submitting.' })
+        continue
+      }
+
+      for (const instance of instances) {
+      const responses = instance.responses || {}
+      const instanceLabel = instance.instance_role ? `${instance.instance_role} ${instance.instance_order}` : null
+      const tabLabel = instanceLabel ? `${tab.label} — ${instanceLabel}` : tab.label
 
       // Relaxed completion mode: the form only needs at least one answerable
       // question filled in, regardless of each question's individual `required`
@@ -259,7 +337,7 @@ export default function WorkspacePage() {
           }
         }
         if (hasAnswerable && !anyAnswered) {
-          errors.push({ tab: tab.label, question: 'At least one question must be answered' })
+          errors.push({ tab: tabLabel, question: 'At least one question must be answered' })
         }
         continue
       }
@@ -272,9 +350,10 @@ export default function WorkspacePage() {
             .slice(0, elementIndex + 1)
             .filter(item => item.type !== 'text_block').length
           if (!isRequiredElementComplete(el, val)) {
-            errors.push({ tab: tab.label, question: requiredElementLabel(el, questionNumber) })
+            errors.push({ tab: tabLabel, question: requiredElementLabel(el, questionNumber) })
           }
         }
+      }
       }
     }
     return errors
@@ -384,13 +463,40 @@ export default function WorkspacePage() {
         {currentTab ? (
           currentTab.tab_type === 'form' ? (
             formSchemas[currentTab.ref_id]
-              ? <FormRenderer
-                  schema={formSchemas[currentTab.ref_id].schema}
-                  responses={formResponses[currentTab.ref_id] || {}}
-                  onSave={resp => saveFormResponse(currentTab.ref_id, resp)}
-                  readOnly={submitted}
-                  timestamps={timestamps}
-                />
+              ? (() => {
+                  const instances = formInstances[currentTab.ref_id] || []
+                  const activeKey = activeInstanceKey[currentTab.ref_id]
+                  const activeInstance = instances.find(i => i.instance_key === activeKey) || instances[0]
+                  const roles = formSchemas[currentTab.ref_id].schema?.multi_instance_roles
+                  const multiInstanceEnabled = Array.isArray(roles) && roles.length > 0
+                  if (multiInstanceEnabled && instances.length === 0) {
+                    return <FormInstancePrompt roles={roles} onAdd={(role) => addFormInstance(currentTab.ref_id, role)} readOnly={submitted} />
+                  }
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                      {multiInstanceEnabled && (
+                        <FormInstanceSwitcher
+                          instances={instances}
+                          activeInstanceKey={activeInstance?.instance_key}
+                          roles={roles}
+                          onSwitch={(key) => setActiveInstanceKey(prev => ({ ...prev, [currentTab.ref_id]: key }))}
+                          onAdd={(role) => addFormInstance(currentTab.ref_id, role)}
+                          onRemove={(key) => removeFormInstance(currentTab.ref_id, key)}
+                          readOnly={submitted}
+                        />
+                      )}
+                      <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                        <FormRenderer
+                          schema={formSchemas[currentTab.ref_id].schema}
+                          responses={activeInstance?.responses || {}}
+                          onSave={resp => saveFormResponse(currentTab.ref_id, activeInstance?.instance_key ?? '', resp)}
+                          readOnly={submitted}
+                          timestamps={timestamps}
+                        />
+                      </div>
+                    </div>
+                  )
+                })()
               : <div className="empty-state"><p className="text-sm">Form not found.</p></div>
           ) : currentTab.tab_type === 'instruction' ? (
             (() => {
@@ -448,9 +554,112 @@ export default function WorkspacePage() {
       >
         <p>Submit your review for <strong>{mediaFile?.name}</strong>? You can still edit it afterwards.</p>
         <p style={{ marginTop: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
-          Forms filled: {Object.keys(formResponses).length}
+          Forms filled: {Object.keys(formInstances).length}
         </p>
       </Modal>
+    </div>
+  )
+}
+
+// Lets someone switch between, add, or remove repeatable instances of the
+// same form within one review (e.g. "Trainee 1", "Consultant 1") — only
+// rendered when the form's schema opts in via multi_instance_roles. Kept
+// identical to ReviewPage.jsx's copy of this component.
+// Shown instead of the form itself when a multi-instance form has zero
+// instances yet — forces choosing a role before any question is reachable,
+// so an answer can never end up saved with no role attached. Kept identical
+// to ReviewPage.jsx's copy of this component.
+function FormInstancePrompt({ roles, onAdd, readOnly }) {
+  if (readOnly) {
+    return (
+      <div className="empty-state" style={{ height: '100%' }}>
+        <p className="text-sm">No responses were recorded for this form.</p>
+      </div>
+    )
+  }
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      height: '100%', gap: 14, padding: 24, textAlign: 'center',
+    }}>
+      <div style={{ fontWeight: 600, fontSize: 15 }}>Who is this for?</div>
+      <div style={{ fontSize: 13, color: 'var(--text-secondary)', maxWidth: 320 }}>
+        Choose a role before filling out this form.
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {roles.map(role => (
+          <button key={role} className="btn btn-primary btn-sm" onClick={() => onAdd(role)}>
+            {role}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function FormInstanceSwitcher({ instances, activeInstanceKey, roles, onSwitch, onAdd, onRemove, readOnly }) {
+  const [pickingRole, setPickingRole] = useState(false)
+
+  function instanceLabel(instance) {
+    return instance.instance_role ? `${instance.instance_role} ${instance.instance_order}` : 'Untitled'
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px',
+      borderBottom: '1px solid var(--border)', flexWrap: 'wrap', flexShrink: 0,
+    }}>
+      {instances.map(instance => (
+        <div
+          key={instance.instance_key}
+          role="button"
+          tabIndex={0}
+          onClick={() => onSwitch(instance.instance_key)}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSwitch(instance.instance_key) }}
+          className={instance.instance_key === activeInstanceKey ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'}
+          style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer' }}
+        >
+          <span>{instanceLabel(instance)}</span>
+          {instance.instance_key === activeInstanceKey && !readOnly && instances.length > 1 && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRemove(instance.instance_key) }}
+              title={`Remove ${instanceLabel(instance)}`}
+              style={{
+                display: 'flex', alignItems: 'center', marginLeft: 2, opacity: 0.75,
+                background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit',
+              }}
+            >
+              <X size={11} />
+            </button>
+          )}
+        </div>
+      ))}
+      {!readOnly && (
+        <div style={{ position: 'relative' }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => setPickingRole(p => !p)} title="Add another person">
+            <Plus size={13} />
+          </button>
+          {pickingRole && (
+            <div style={{
+              position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 30,
+              background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.12)', padding: 4, display: 'flex', flexDirection: 'column', minWidth: 140,
+            }}>
+              {roles.map(role => (
+                <button
+                  key={role}
+                  className="btn btn-ghost btn-sm"
+                  style={{ justifyContent: 'flex-start', fontSize: 12 }}
+                  onClick={() => { onAdd(role); setPickingRole(false) }}
+                >
+                  Add {role}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

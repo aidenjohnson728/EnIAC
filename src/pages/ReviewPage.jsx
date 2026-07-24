@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   ChevronLeft, Plus, Maximize2, Minimize2,
   Clock, Trash2, ChevronDown, ChevronUp, CheckCircle2, Maximize, Edit2, AlertCircle,
-  Columns2, Rows2, ExternalLink, HelpCircle, Play, Pause, Volume2, VolumeX,
+  Columns2, Rows2, ExternalLink, HelpCircle, Play, Pause, Volume2, VolumeX, X,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -71,8 +72,34 @@ function resolveKeybindTag(bind, tags) {
   return { tag: null, missing: true }
 }
 
-function parseFormResponses(rev) {
-  return Object.fromEntries((rev.form_responses || []).map(fr => [fr.form_id, fr.responses]))
+// Groups a review's form_responses by form_id into an ARRAY of instances
+// (sorted by role, then creation order) rather than one flat object per
+// form — a form can now have more than one response set within the same
+// review (e.g. "Trainee 1", "Consultant 1"), each identified by instance_key.
+// instance_key === '' is the implicit single/default instance.
+function parseFormInstances(rev) {
+  const byForm = {}
+  for (const fr of (rev.form_responses || [])) {
+    if (!byForm[fr.form_id]) byForm[fr.form_id] = []
+    byForm[fr.form_id].push({
+      instance_key: fr.instance_key || '',
+      instance_role: fr.instance_role || null,
+      instance_order: fr.instance_order || 0,
+      responses: fr.responses || {},
+    })
+  }
+  for (const formId of Object.keys(byForm)) {
+    byForm[formId].sort((a, b) => (a.instance_role || '').localeCompare(b.instance_role || '') || a.instance_order - b.instance_order)
+  }
+  return byForm
+}
+
+function defaultActiveInstances(byForm) {
+  const active = {}
+  for (const [formId, instances] of Object.entries(byForm)) {
+    if (instances.length > 0) active[formId] = instances[0].instance_key
+  }
+  return active
 }
 
 function hydrateWorkspaceSnapshot(snapshot) {
@@ -87,6 +114,7 @@ function hydrateWorkspaceSnapshot(snapshot) {
     workspaceTabs: snapshot?.workspace_tabs || [],
     formSchemas,
     instructions,
+    mediaTypeName: snapshot?.media_type?.name || null,
   }
 }
 
@@ -177,12 +205,14 @@ export default function ReviewPage() {
 
   const [review, setReview] = useState(null)
   const [mediaFile, setMediaFile] = useState(null)
+  const [mediaTypeName, setMediaTypeName] = useState(null)
   const [timestamps, setTimestamps] = useState([])
   const [tags, setTags] = useState([])
   const [workspaceTabs, setWorkspaceTabs] = useState([])
   const [formSchemas, setFormSchemas] = useState({})
   const [instructions, setInstructions] = useState({})
-  const [formResponses, setFormResponses] = useState({})
+  const [formInstances, setFormInstances] = useState({}) // { [formId]: [{instance_key, instance_role, instance_order, responses}] }
+  const [activeInstanceKey, setActiveInstanceKey] = useState({}) // { [formId]: instance_key }
 
   const [activeTab, setActiveTab] = useState(0)
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -191,6 +221,8 @@ export default function ReviewPage() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [workspaceExpanded, setWorkspaceExpanded] = useState(false)
   const [layoutMode, setLayoutMode] = useState('vertical') // 'vertical' | 'horizontal'
+  const [tagsPaletteOpen, setTagsPaletteOpen] = useState(false)
+  const [sdmoPanelView, setSdmoPanelView] = useState('tags') // 'tags' | 'notes' — SDMo's merged side panel
   const [timestampsPosition, setTimestampsPosition] = useState('side') // 'side' | 'bottom' — independent of layoutMode
   const [splitPct, setSplitPct] = useState(44) // video height% (vertical) or width% (horizontal)
   const [workspaceMinimized, setWorkspaceMinimized] = useState(false)
@@ -223,6 +255,13 @@ export default function ReviewPage() {
 
   useEffect(() => { load() }, [reviewId])
 
+  // SDMo media defaults to the tag palette open — matches its intended
+  // click-to-tag workflow. Only sets the default once per loaded review;
+  // doesn't fight a manual close afterward.
+  useEffect(() => {
+    if (mediaTypeName === 'SDMo') setTagsPaletteOpen(true)
+  }, [mediaTypeName, reviewId])
+
   useEffect(() => {
     if (!isSampleTour || sampleTourStarted || loading || !videoUrl) return
     const key = sampleReviewTourKey(reviewId)
@@ -253,7 +292,9 @@ export default function ReviewPage() {
     api.getReview(id).then(rev => {
       if (!rev) return
       setSubmitted(rev.status === 'submitted')
-      setFormResponses(parseFormResponses(rev))
+      const byForm = parseFormInstances(rev)
+      setFormInstances(byForm)
+      setActiveInstanceKey(prev => ({ ...defaultActiveInstances(byForm), ...prev }))
     })
   }
 
@@ -337,7 +378,9 @@ export default function ReviewPage() {
     setReview(rev)
     setSubmitted(rev.status === 'submitted')
     setTimestamps(rev.timestamps || [])
-    setFormResponses(parseFormResponses(rev))
+    const byForm = parseFormInstances(rev)
+    setFormInstances(byForm)
+    setActiveInstanceKey(defaultActiveInstances(byForm))
 
     const mf = await api.getMediaFile(rev.media_file_id)
     setMediaFile(mf)
@@ -379,6 +422,7 @@ export default function ReviewPage() {
       setTags(frozen.tags)
       setWorkspaceTabs(frozen.workspaceTabs)
       setFormSchemas(frozen.formSchemas)
+      setMediaTypeName(frozen.mediaTypeName)
       setInstructions(patchSnapshotPdfPaths(frozen.instructions, liveInstructions))
       setLinkModal(hasLinkedPlayback || playback?.status === 'not_applicable' ? null : playback?.status === 'missing' ? 'missing' : 'not_linked')
       setLoading(false)
@@ -388,6 +432,7 @@ export default function ReviewPage() {
     const mt = allTypes.find(t => t.id === mf.media_type_id)
     if (!mt) { setLoading(false); return }
     setTags(mt.tags || [])
+    setMediaTypeName(mt.name || null)
     setWorkspaceTabs(mt.workspace_tabs || [])
 
     // Parallel: fetch all workspace tab content at once
@@ -511,6 +556,28 @@ export default function ReviewPage() {
     setSidebarOpen(true)
   }
 
+  // Tag palette (SDMo layout): left-click tags the current moment and stops
+  // there — no follow-up prompt of any kind. Right-click does the same but
+  // also opens the timestamps sidebar, since each bubble's note field is
+  // already expanded by default — nothing further needs to happen to reach it.
+  async function handlePaletteTagClick(tag, { withNote = false } = {}) {
+    if (submitted) return
+    const t = videoRef.current?.currentTime ?? 0
+    const id = await api.saveTimestamp(reviewId, {
+      time_seconds: t,
+      notes: '',
+      tag_id: tag?.id || null,
+      tag_label: tag?.label || null,
+      tag_color: tag?.color || null,
+    })
+    const newTs = { id, time_seconds: t, notes: '', tag_id: tag?.id || null, tag_label: tag?.label || null, tag_color: tag?.color || null }
+    setTimestamps(ts => [...ts, newTs].sort((a, b) => a.time_seconds - b.time_seconds))
+    if (withNote) {
+      setSidebarOpen(true)
+      setSdmoPanelView('notes')
+    }
+  }
+
   async function updateTimestamp(id, changes) {
     if (submitted) return
     if ('tag_id' in changes) {
@@ -529,10 +596,45 @@ export default function ReviewPage() {
     setTimestamps(ts => ts.filter(t => t.id !== id))
   }
 
-  async function saveFormResponse(formId, responses) {
+  async function saveFormResponse(formId, instanceKey, responses) {
     if (submitted) return
-    await api.saveFormResponse(reviewId, { form_id: formId, responses })
-    setFormResponses(r => ({ ...r, [formId]: responses }))
+    const instances = formInstances[formId] || []
+    const instance = instances.find(i => i.instance_key === instanceKey)
+    await api.saveFormResponse(reviewId, {
+      form_id: formId,
+      instance_key: instanceKey,
+      instance_role: instance?.instance_role || null,
+      instance_order: instance?.instance_order || 0,
+      responses,
+    })
+    setFormInstances(prev => ({
+      ...prev,
+      [formId]: (prev[formId] || []).map(i => i.instance_key === instanceKey ? { ...i, responses } : i),
+    }))
+  }
+
+  async function addFormInstance(formId, role) {
+    if (submitted || !role) return
+    const created = await api.addFormInstance(reviewId, formId, role)
+    if (!created?.instance_key) return
+    setFormInstances(prev => {
+      const next = [...(prev[formId] || []), { ...created, responses: {} }]
+      next.sort((a, b) => (a.instance_role || '').localeCompare(b.instance_role || '') || a.instance_order - b.instance_order)
+      return { ...prev, [formId]: next }
+    })
+    setActiveInstanceKey(prev => ({ ...prev, [formId]: created.instance_key }))
+  }
+
+  async function removeFormInstance(formId, instanceKey) {
+    if (submitted) return
+    const instances = formInstances[formId] || []
+    if (instances.length <= 1) return // always keep at least one instance for a form tab
+    await api.removeFormInstance(reviewId, formId, instanceKey)
+    const remaining = instances.filter(i => i.instance_key !== instanceKey)
+    setFormInstances(prev => ({ ...prev, [formId]: remaining }))
+    setActiveInstanceKey(prev => (
+      prev[formId] === instanceKey ? { ...prev, [formId]: remaining[0]?.instance_key } : prev
+    ))
   }
 
   function isResponseAnswered(value) {
@@ -577,15 +679,68 @@ export default function ReviewPage() {
       if (tab.tab_type !== 'form') continue
       const form = formSchemas[tab.ref_id]
       if (!form?.schema?.sections) continue
-      const responses = formResponses[tab.ref_id] || {}
-      for (const section of form.schema.sections) {
-        for (const [elementIndex, el] of (section.elements || []).entries()) {
-          if (!el.required) continue
-          const val = responses[el.id]
-          const questionNumber = (section.elements || [])
-            .slice(0, elementIndex + 1)
-            .filter(item => item.type !== 'text_block').length
-          if (!isRequiredElementComplete(el, val)) errors.push({ tab: tab.label, question: requiredElementLabel(el, questionNumber) })
+      const instances = formInstances[tab.ref_id] || []
+      const roles = form.schema?.multi_instance_roles
+      const isMultiInstance = Array.isArray(roles) && roles.length > 0
+      if (instances.length === 0) {
+        if (isMultiInstance) errors.push({ tab: tab.label, question: 'Choose a role and fill out this form before submitting.' })
+        continue
+      }
+
+      for (const instance of instances) {
+        const responses = instance.responses || {}
+        const instanceLabel = instance.instance_role ? `${instance.instance_role} ${instance.instance_order}` : null
+        const tabLabel = instanceLabel ? `${tab.label} — ${instanceLabel}` : tab.label
+
+        // Relaxed completion mode: the form only needs at least one answerable
+        // question filled in, regardless of each question's individual
+        // `required` flag. Older forms have no `completion_mode` set and keep
+        // the standard all-required behavior below. likert_group/table rows
+        // are unpacked individually so filling in just one row counts.
+        if (form.schema.completion_mode === 'at_least_one') {
+          let hasAnswerable = false
+          let anyAnswered = false
+          for (const section of form.schema.sections) {
+            for (const el of (section.elements || [])) {
+              if (el.type === 'text_block') continue
+              if (el.type === 'likert_group') {
+                const groupVal = (responses[el.id] && typeof responses[el.id] === 'object') ? responses[el.id] : {}
+                for (const item of (el.items || [])) {
+                  hasAnswerable = true
+                  if (isResponseAnswered(groupVal[item.id])) anyAnswered = true
+                }
+                continue
+              }
+              if (el.type === 'table') {
+                const tableVal = (responses[el.id] && typeof responses[el.id] === 'object') ? responses[el.id] : {}
+                for (const rowIndex of (el.rows || []).keys()) {
+                  const rowVal = (tableVal[String(rowIndex)] && typeof tableVal[String(rowIndex)] === 'object') ? tableVal[String(rowIndex)] : {}
+                  for (const col of (el.columns || [])) {
+                    hasAnswerable = true
+                    if (isResponseAnswered(rowVal[col.id])) anyAnswered = true
+                  }
+                }
+                continue
+              }
+              hasAnswerable = true
+              if (isResponseAnswered(responses[el.id])) anyAnswered = true
+            }
+          }
+          if (hasAnswerable && !anyAnswered) {
+            errors.push({ tab: tabLabel, question: 'At least one question must be answered' })
+          }
+          continue
+        }
+
+        for (const section of form.schema.sections) {
+          for (const [elementIndex, el] of (section.elements || []).entries()) {
+            if (!el.required) continue
+            const val = responses[el.id]
+            const questionNumber = (section.elements || [])
+              .slice(0, elementIndex + 1)
+              .filter(item => item.type !== 'text_block').length
+            if (!isRequiredElementComplete(el, val)) errors.push({ tab: tabLabel, question: requiredElementLabel(el, questionNumber) })
+          }
         }
       }
     }
@@ -700,14 +855,22 @@ export default function ReviewPage() {
   const isSyncBasicsTab = currentTab?.tab_type === 'instruction' && currentTab?.label === 'Sync Basics'
   const isFormWorkspaceTab = currentTab?.tab_type === 'form'
   const isPdfWorkspaceTab = currentTab?.tab_type === 'instruction' && instructions[currentTab?.ref_id]?.content_type === 'pdf'
+  const currentFormInstances = currentTab?.tab_type === 'form' ? (formInstances[currentTab?.ref_id] || []) : []
+  const currentActiveInstanceKey = currentTab?.tab_type === 'form' ? activeInstanceKey[currentTab?.ref_id] : null
+  const currentActiveInstance = currentFormInstances.find(i => i.instance_key === currentActiveInstanceKey) || currentFormInstances[0]
   const workspaceContent = (
     <div id={isSyncBasicsTab ? 'tut-rev-sync-basics' : undefined} style={isPdfWorkspaceTab ? { height: '100%', minHeight: 0 } : undefined}>
       <WorkspaceTabContent
         tab={currentTab}
         formSchema={currentTab?.tab_type === 'form' ? formSchemas[currentTab?.ref_id] : null}
         instruction={currentTab?.tab_type === 'instruction' ? instructions[currentTab?.ref_id] : null}
-        responses={currentTab?.tab_type === 'form' ? formResponses[currentTab?.ref_id] : null}
-        onSave={(resp) => saveFormResponse(currentTab.ref_id, resp)}
+        instances={currentFormInstances}
+        activeInstanceKey={currentActiveInstance?.instance_key}
+        responses={currentActiveInstance?.responses || null}
+        onSave={(resp) => saveFormResponse(currentTab.ref_id, currentActiveInstance?.instance_key ?? '', resp)}
+        onSwitchInstance={(key) => setActiveInstanceKey(prev => ({ ...prev, [currentTab.ref_id]: key }))}
+        onAddInstance={(role) => addFormInstance(currentTab.ref_id, role)}
+        onRemoveInstance={(key) => removeFormInstance(currentTab.ref_id, key)}
         readOnly={submitted}
         timestamps={timestamps}
       />
@@ -715,6 +878,7 @@ export default function ReviewPage() {
   )
 
   const isHoriz = layoutMode === 'horizontal'
+  const isSdmoMedia = mediaTypeName === 'SDMo'
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)', overflow: 'hidden' }}>
@@ -744,13 +908,15 @@ export default function ReviewPage() {
               <HelpCircle size={15} />
             </button>
             {/* Layout toggle */}
-            <button
-              className="btn btn-ghost btn-icon btn-sm"
-              title={isHoriz ? 'Stack video above workspace' : 'Place workspace beside video'}
-              onClick={() => setLayoutMode(m => m === 'vertical' ? 'horizontal' : 'vertical')}
-            >
-              {isHoriz ? <Rows2 size={15} /> : <Columns2 size={15} />}
-            </button>
+            {!isSdmoMedia && (
+              <button
+                className="btn btn-ghost btn-icon btn-sm"
+                title={isHoriz ? 'Stack video above workspace' : 'Place workspace beside video'}
+                onClick={() => setLayoutMode(m => m === 'vertical' ? 'horizontal' : 'vertical')}
+              >
+                {isHoriz ? <Rows2 size={15} /> : <Columns2 size={15} />}
+              </button>
+            )}
             {submitted ? (
               <button className="btn btn-secondary btn-sm" onClick={handleUnsubmit}>
                 <Edit2 size={13} /> Edit Review
@@ -997,8 +1163,95 @@ export default function ReviewPage() {
           </div>
         )}
 
-        {/* Sidebar/bottom panel: timestamps (collapsible, position independent of video/form layout) */}
-        {!(videoExpanded || workspaceExpanded) && (
+        {isSdmoMedia && !workspaceExpanded && (
+          <div style={{ display: 'flex', flexShrink: 0, position: 'relative' }}>
+            <button
+              onClick={() => setTagsPaletteOpen(o => !o)}
+              title={tagsPaletteOpen ? 'Collapse panel' : 'Show tags/notes'}
+              style={{
+                position: 'absolute', left: -14, top: '50%', transform: 'translateY(-50%)',
+                width: 14, height: 44, background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                borderRight: 'none', borderRadius: '4px 0 0 4px', cursor: 'pointer', display: 'flex',
+                alignItems: 'center', justifyContent: 'center', zIndex: 20, color: 'var(--text-muted)',
+                padding: 0, fontSize: 9,
+              }}
+            >
+              {tagsPaletteOpen ? '›' : '‹'}
+            </button>
+            <div style={{
+              width: tagsPaletteOpen ? 240 : 0, overflow: 'hidden', borderLeft: '1px solid var(--border)',
+              display: 'flex', flexDirection: 'column', transition: 'width 0.2s ease', height: '100%',
+            }}>
+              <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button
+                    className={sdmoPanelView === 'tags' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'}
+                    style={{ fontSize: 12, flex: 1 }}
+                    onClick={() => setSdmoPanelView('tags')}
+                  >
+                    Tags
+                  </button>
+                  <button
+                    className={sdmoPanelView === 'notes' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'}
+                    style={{ fontSize: 12, flex: 1 }}
+                    onClick={() => setSdmoPanelView('notes')}
+                  >
+                    Notes {timestamps.length > 0 && `(${timestamps.length})`}
+                  </button>
+                </div>
+                {sdmoPanelView === 'tags' && (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                    Click to tag now · Right-click to also add a note
+                  </div>
+                )}
+              </div>
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {sdmoPanelView === 'tags' ? (
+                  <TagPaletteList
+                    tags={tags}
+                    readOnly={submitted}
+                    onLeftClick={(tag) => handlePaletteTagClick(tag, { withNote: false })}
+                    onRightClick={(tag) => handlePaletteTagClick(tag, { withNote: true })}
+                  />
+                ) : timestamps.length === 0 ? (
+                  <div className="empty-state" style={{ padding: '40px 10px' }}>
+                    <Clock size={24} />
+                    <p className="text-sm">No timestamps yet.<br />Right-click a tag to add one with a note.</p>
+                  </div>
+                ) : tagSelectionTargetId != null ? (
+                  <TagSelectionPanel
+                    key={tagSelectionTargetId}
+                    timestamp={timestamps.find(ts => ts.id === tagSelectionTargetId) || null}
+                    tags={tags}
+                    onSelect={(changes) => {
+                      if (tagSelectionTargetId != null) {
+                        updateTimestamp(tagSelectionTargetId, changes)
+                        setTagSelectionTargetId(null)
+                      }
+                    }}
+                    onBack={() => setTagSelectionTargetId(null)}
+                  />
+                ) : (
+                  timestamps.map(ts => (
+                    <TimestampBubble
+                      key={ts.id}
+                      ts={ts}
+                      tags={tags}
+                      onSeek={() => seekTo(ts.time_seconds)}
+                      onChange={(changes) => updateTimestamp(ts.id, changes)}
+                      onDelete={() => deleteTimestamp(ts.id)}
+                      onTagClick={() => setTagSelectionTargetId(ts.id)}
+                      readOnly={submitted}
+                    />
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Sidebar/bottom panel: timestamps (collapsible, position independent of video/form layout) — non-SDMo only; SDMo's is merged into the tags/notes panel above */}
+        {!isSdmoMedia && !(videoExpanded || workspaceExpanded) && (
         <div style={{ display: 'flex', flexShrink: 0, position: 'relative', flexDirection: timestampsPosition === 'bottom' ? 'column' : 'row' }}>
           {/* Toggle tab — lives outside overflow:hidden so it's always visible */}
           <button
@@ -1160,7 +1413,7 @@ export default function ReviewPage() {
       >
         <p>Submit your review for <strong>{mediaFile?.name}</strong>? You can still edit it afterwards by clicking "Edit Review".</p>
         <p style={{ marginTop: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
-          Timestamps: {timestamps.length} · Forms filled: {Object.keys(formResponses).length}
+          Timestamps: {timestamps.length} · Forms filled: {Object.keys(formInstances).length}
         </p>
       </Modal>
 
@@ -1220,6 +1473,19 @@ function VideoControls({
         zIndex: 12,
       }}
     >
+      {/* Current time, shown above the timeline only while paused */}
+      {paused && (
+        <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 4 }}>
+          <span style={{
+            fontVariantNumeric: 'tabular-nums', fontSize: 22, fontWeight: 700, color: '#fff',
+            background: 'rgba(0,0,0,0.55)', padding: '4px 14px', borderRadius: 7,
+            textShadow: '0 1px 2px rgba(0,0,0,0.5)',
+          }}>
+            {formatTime(currentTime)}
+          </span>
+        </div>
+      )}
+
       {/* Seek track */}
       <div
         ref={trackRef}
@@ -1360,21 +1626,23 @@ function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, onTagClick, rea
         </button>
 
         {tags.length > 0 && (
-          <button
-            disabled={readOnly}
-            onClick={() => onTagClick?.()}
-            style={{
-              fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 99,
-              background: tagColor ? tagColor + '1a' : 'var(--bg-active)',
-              color: tagColor || 'var(--text-secondary)',
-              border: `1px solid ${tagColor ? tagColor + '44' : 'var(--border)'}`,
-              cursor: readOnly ? 'default' : 'pointer',
-              fontFamily: 'var(--font)', lineHeight: 1.6, whiteSpace: 'nowrap',
-              transition: 'background 0.1s',
-            }}
-          >
-            {tag?.label || 'No tag'}
-          </button>
+          <HoverTooltip inline text={tag?.description || (tag ? 'No description yet' : '')}>
+            <button
+              disabled={readOnly}
+              onClick={() => onTagClick?.()}
+              style={{
+                fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 99,
+                background: tagColor ? tagColor + '1a' : 'var(--bg-active)',
+                color: tagColor || 'var(--text-secondary)',
+                border: `1px solid ${tagColor ? tagColor + '44' : 'var(--border)'}`,
+                cursor: readOnly ? 'default' : 'pointer',
+                fontFamily: 'var(--font)', lineHeight: 1.6, whiteSpace: 'nowrap',
+                transition: 'background 0.1s',
+              }}
+            >
+              {tag?.label || 'No tag'}
+            </button>
+          </HoverTooltip>
         )}
 
         <div style={{ flex: 1 }} />
@@ -1409,6 +1677,94 @@ function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, onTagClick, rea
         </div>
       )}
     </div>
+  )
+}
+
+// Tag list content for SDMo's merged tags/notes panel — left-click tags the
+// current moment and stops there; right-click does the same but also opens
+// the notes view, since the (already-expanded-by-default) note field for the
+// new timestamp needs to be reachable.
+// Custom hover tooltip — replaces the native `title` attribute, which can't
+// be resized or sped up (it's rendered by the OS, not the page). Shows after
+// a short delay instead of the browser's default ~1s.
+function HoverTooltip({ text, children, inline = false }) {
+  const [show, setShow] = useState(false)
+  const [rect, setRect] = useState(null)
+  const timeoutRef = useRef(null)
+  const wrapperRef = useRef(null)
+
+  function handleEnter() {
+    timeoutRef.current = setTimeout(() => {
+      setRect(wrapperRef.current?.getBoundingClientRect() || null)
+      setShow(true)
+    }, 200)
+  }
+  function handleLeave() {
+    clearTimeout(timeoutRef.current)
+    setShow(false)
+  }
+
+  return (
+    <div ref={wrapperRef} onMouseEnter={handleEnter} onMouseLeave={handleLeave} style={{ position: 'relative', width: inline ? 'auto' : '100%', display: inline ? 'inline-block' : 'block' }}>
+      {children}
+      {show && text && rect && createPortal(
+        <div style={{
+          position: 'fixed',
+          top: Math.max(4, rect.top - 6),
+          right: Math.max(4, window.innerWidth - rect.right),
+          transform: 'translateY(-100%)',
+          zIndex: 99999,
+          background: '#111', color: '#fff', fontSize: 13, fontWeight: 500, padding: '7px 11px',
+          borderRadius: 7, maxWidth: 260, width: 'max-content', whiteSpace: 'normal', lineHeight: 1.45,
+          boxShadow: '0 4px 14px rgba(0,0,0,0.3)', pointerEvents: 'none',
+        }}>
+          {text}
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}
+
+function TagPaletteList({ tags, onLeftClick, onRightClick, readOnly }) {
+  const groupedTags = useMemo(() => {
+    const buckets = new Map()
+    for (const tagItem of tags) {
+      const category = (tagItem.category || '').trim() || 'General'
+      if (!buckets.has(category)) buckets.set(category, [])
+      buckets.get(category).push(tagItem)
+    }
+    return Array.from(buckets.entries())
+  }, [tags])
+
+  if (groupedTags.length === 0) {
+    return <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '10px 2px' }}>No tags are available for this media type yet.</div>
+  }
+
+  return (
+    <>
+      {groupedTags.map(([category, categoryTags]) => (
+        <div key={category}>
+          <div style={{ padding: '8px 2px 4px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)' }}>
+            {category}
+          </div>
+          {categoryTags.map(t => (
+            <HoverTooltip key={tagOptionValue(t)} text={t.description || 'No description yet'}>
+              <button
+                disabled={readOnly}
+                className="dropdown-item"
+                onClick={() => onLeftClick(t)}
+                onContextMenu={e => { e.preventDefault(); onRightClick(t) }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left' }}
+              >
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color || '#9ca3af', flexShrink: 0 }} />
+                {t.label}
+              </button>
+            </HoverTooltip>
+          ))}
+        </div>
+      ))}
+    </>
   )
 }
 
@@ -1451,14 +1807,16 @@ function TagSelectionPanel({ timestamp, tags, onSelect, onBack }) {
               {category}
             </div>
             {categoryTags.map(t => (
-              <button
-                key={tagOptionValue(t)}
-                className="dropdown-item"
-                onClick={() => onSelect({ tag_id: t.id, tag_label: t.label, tag_color: t.color || null })}
-              >
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color || '#9ca3af', flexShrink: 0 }} />
-                {t.label}
-              </button>
+              <HoverTooltip key={tagOptionValue(t)} text={t.description || 'No description yet'}>
+                <button
+                  className="dropdown-item"
+                  onClick={() => onSelect({ tag_id: t.id, tag_label: t.label, tag_color: t.color || null })}
+                  style={{ width: '100%' }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color || '#9ca3af', flexShrink: 0 }} />
+                  {t.label}
+                </button>
+              </HoverTooltip>
             ))}
           </div>
         ))
@@ -1467,11 +1825,36 @@ function TagSelectionPanel({ timestamp, tags, onSelect, onBack }) {
   )
 }
 
-function WorkspaceTabContent({ tab, formSchema, instruction, responses, onSave, readOnly, timestamps = [] }) {
+function WorkspaceTabContent({ tab, formSchema, instruction, instances = [], activeInstanceKey, responses, onSave, onSwitchInstance, onAddInstance, onRemoveInstance, readOnly, timestamps = [] }) {
   if (!tab) return null
   if (tab.tab_type === 'form') {
     if (!formSchema) return <div className="empty-state"><p className="text-sm">Form not found.</p></div>
-    return <FormRenderer schema={formSchema.schema} responses={responses || {}} onSave={onSave} readOnly={readOnly} timestamps={timestamps} />
+    const roles = formSchema.schema?.multi_instance_roles
+    const multiInstanceEnabled = Array.isArray(roles) && roles.length > 0
+    // Strictly require choosing a role before any question can be answered —
+    // otherwise it's possible to type answers with no role attached at all,
+    // which then can't be matched to Trainee/Consultant in agreement/reliability.
+    if (multiInstanceEnabled && instances.length === 0) {
+      return <FormInstancePrompt roles={roles} onAdd={onAddInstance} readOnly={readOnly} />
+    }
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+        {multiInstanceEnabled && (
+          <FormInstanceSwitcher
+            instances={instances}
+            activeInstanceKey={activeInstanceKey}
+            roles={roles}
+            onSwitch={onSwitchInstance}
+            onAdd={onAddInstance}
+            onRemove={onRemoveInstance}
+            readOnly={readOnly}
+          />
+        )}
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+          <FormRenderer schema={formSchema.schema} responses={responses || {}} onSave={onSave} readOnly={readOnly} timestamps={timestamps} />
+        </div>
+      </div>
+    )
   }
   if (tab.tab_type === 'instruction') {
     if (instruction?.content_type === 'pdf') {
@@ -1485,4 +1868,105 @@ function WorkspaceTabContent({ tab, formSchema, instruction, responses, onSave, 
     )
   }
   return null
+}
+
+// Lets someone switch between, add, or remove repeatable instances of the
+// same form within one review (e.g. "Trainee 1", "Consultant 1") — only
+// rendered when the form's schema opts in via multi_instance_roles.
+// Shown instead of the form itself when a multi-instance form has zero
+// instances yet — forces choosing a role before any question is reachable,
+// so an answer can never end up saved with no role attached.
+function FormInstancePrompt({ roles, onAdd, readOnly }) {
+  if (readOnly) {
+    return (
+      <div className="empty-state" style={{ height: '100%' }}>
+        <p className="text-sm">No responses were recorded for this form.</p>
+      </div>
+    )
+  }
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      height: '100%', gap: 14, padding: 24, textAlign: 'center',
+    }}>
+      <div style={{ fontWeight: 600, fontSize: 15 }}>Who is this for?</div>
+      <div style={{ fontSize: 13, color: 'var(--text-secondary)', maxWidth: 320 }}>
+        Choose a role before filling out this form.
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {roles.map(role => (
+          <button key={role} className="btn btn-primary btn-sm" onClick={() => onAdd(role)}>
+            {role}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function FormInstanceSwitcher({ instances, activeInstanceKey, roles, onSwitch, onAdd, onRemove, readOnly }) {
+  const [pickingRole, setPickingRole] = useState(false)
+
+  function instanceLabel(instance) {
+    return instance.instance_role ? `${instance.instance_role} ${instance.instance_order}` : 'Untitled'
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px',
+      borderBottom: '1px solid var(--border)', flexWrap: 'wrap', flexShrink: 0,
+    }}>
+      {instances.map(instance => (
+        <div
+          key={instance.instance_key}
+          role="button"
+          tabIndex={0}
+          onClick={() => onSwitch(instance.instance_key)}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSwitch(instance.instance_key) }}
+          className={instance.instance_key === activeInstanceKey ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'}
+          style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer' }}
+        >
+          <span>{instanceLabel(instance)}</span>
+          {instance.instance_key === activeInstanceKey && !readOnly && instances.length > 1 && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRemove(instance.instance_key) }}
+              title={`Remove ${instanceLabel(instance)}`}
+              style={{
+                display: 'flex', alignItems: 'center', marginLeft: 2, opacity: 0.75,
+                background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit',
+              }}
+            >
+              <X size={11} />
+            </button>
+          )}
+        </div>
+      ))}
+      {!readOnly && (
+        <div style={{ position: 'relative' }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => setPickingRole(p => !p)} title="Add another person">
+            <Plus size={13} />
+          </button>
+          {pickingRole && (
+            <div style={{
+              position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 30,
+              background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.12)', padding: 4, display: 'flex', flexDirection: 'column', minWidth: 140,
+            }}>
+              {roles.map(role => (
+                <button
+                  key={role}
+                  className="btn btn-ghost btn-sm"
+                  style={{ justifyContent: 'flex-start', fontSize: 12 }}
+                  onClick={() => { onAdd(role); setPickingRole(false) }}
+                >
+                  Add {role}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }

@@ -113,6 +113,8 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
   const [name, setName] = useState(form.name || '')
   const [sections, setSections] = useState(form.schema?.sections || [])
   const [completionMode, setCompletionMode] = useState(form.schema?.completion_mode || 'all_required')
+  const [multiInstanceEnabled, setMultiInstanceEnabled] = useState(Array.isArray(form.schema?.multi_instance_roles) && form.schema.multi_instance_roles.length > 0)
+  const [multiInstanceRolesText, setMultiInstanceRolesText] = useState((form.schema?.multi_instance_roles || ['Trainee', 'Consultant']).join(', '))
   const [collapsed, setCollapsed] = useState({})
   const [saving, setSaving] = useState(false)
   const [migrationPreview, setMigrationPreview] = useState(null)
@@ -187,7 +189,10 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
     setSaveError('')
     try {
       if (!(await ensureUnlocked())) return
-      const savedId = await api.saveForm(projectId, { id: form.id || undefined, name: name.trim(), schema: { sections, completion_mode: completionMode } })
+      const roles = multiInstanceEnabled
+        ? multiInstanceRolesText.split(',').map(s => s.trim()).filter(Boolean)
+        : undefined
+      const savedId = await api.saveForm(projectId, { id: form.id || undefined, name: name.trim(), schema: { sections, completion_mode: completionMode, multi_instance_roles: roles } })
       onSave()
     } catch (e) {
       console.error('[FormBuilder] save failed:', e)
@@ -267,6 +272,39 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
               <option value="all_required">Require all required questions</option>
               <option value="at_least_one">Require at least one question</option>
             </select>
+          </div>
+          <div style={{
+            border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px',
+            display: 'flex', flexDirection: 'column', gap: 10,
+          }}>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={multiInstanceEnabled}
+                onChange={e => setMultiInstanceEnabled(e.target.checked)}
+                style={{ marginTop: 3 }}
+              />
+              <span>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>Allow multiple people per review</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                  Lets someone add repeated copies of this form within one review — e.g. rating a
+                  Trainee and a Consultant separately from the same video, via a "+" button.
+                </div>
+              </span>
+            </label>
+            {multiInstanceEnabled && (
+              <div style={{ marginLeft: 24 }}>
+                <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                  Role options (comma-separated)
+                </label>
+                <input
+                  value={multiInstanceRolesText}
+                  onChange={e => setMultiInstanceRolesText(e.target.value)}
+                  placeholder="Trainee, Consultant"
+                  style={{ fontSize: 13, width: '100%', maxWidth: 320 }}
+                />
+              </div>
+            )}
           </div>
           {saveError && !migrationPreview && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px', color: '#991b1b', fontSize: 13 }}>

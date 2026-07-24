@@ -7,8 +7,8 @@ const fs = require('fs')
 const path = require('path')
 
 // Builds this machine's own submitted-review answers as portable "responses_long"
-// rows: one row per (review × form), self-describing via form_snapshot so it can
-// be read on another install where local form_id integers don't line up.
+// rows: one row per (review × form × instance), self-describing via form_snapshot
+// so it can be read on another install where local form_id integers don't line up.
 // Shared by reviews:exportResults (writes to disk) and reviews:getResultsComparisonData
 // (in-memory, feeds the Agreement Between Results page). No media/settings included.
 function getMyResponsesLong(db, projectId) {
@@ -29,6 +29,7 @@ function getMyResponsesLong(db, projectId) {
   for (const review of reviews) {
     const formResponses = db.prepare(`
       SELECT fr.form_id, fr.responses, fr.form_snapshot, fr.form_sync_id,
+             fr.instance_key, fr.instance_role, fr.instance_order,
              f.name as form_name, f.schema as current_schema
       FROM form_responses fr
       LEFT JOIN forms f ON fr.form_id = f.id
@@ -41,8 +42,11 @@ function getMyResponsesLong(db, projectId) {
         media_type_name: review.media_type_name,
         reviewer_name: review.reviewer_name,
         review_sync_id: review.review_sync_id,
-        form_id: fr.form_name || fr.form_sync_id || String(fr.form_id),
+        form_id: fr.form_sync_id || String(fr.form_id),
         form_name: fr.form_name || null,
+        instance_key: fr.instance_key || '',
+        instance_role: fr.instance_role || null,
+        instance_order: fr.instance_order || 0,
         form_snapshot: fr.form_snapshot ? JSON.parse(fr.form_snapshot) : (fr.current_schema ? JSON.parse(fr.current_schema) : null),
         responses: fr.responses ? JSON.parse(fr.responses) : {},
       })
@@ -80,7 +84,8 @@ module.exports = function (ipcMain) {
       const effectiveMediaTypeId = review.media_type_id ?? snapshotMediaType?.id ?? review.media_type_sync_id ?? snapshotMediaType?.sync_id ?? null
       const effectiveMediaTypeName = review.media_type_name || snapshotMediaType?.name || (effectiveMediaTypeId == null ? 'Untyped' : 'Media type')
       const formResponses = db.prepare(`
-        SELECT fr.form_id, fr.responses, fr.form_snapshot, f.schema as current_schema
+        SELECT fr.form_id, fr.responses, fr.form_snapshot, f.schema as current_schema,
+               fr.instance_key, fr.instance_role, fr.instance_order
         FROM form_responses fr
         LEFT JOIN forms f ON fr.form_id = f.id
         WHERE fr.review_id=?
@@ -92,6 +97,9 @@ module.exports = function (ipcMain) {
         workspace_snapshot: workspaceSnapshot,
         form_responses: formResponses.map(fr => ({
           form_id: fr.form_id,
+          instance_key: fr.instance_key || '',
+          instance_role: fr.instance_role || null,
+          instance_order: fr.instance_order || 0,
           responses: fr.responses ? JSON.parse(fr.responses) : {},
           form_snapshot: fr.form_snapshot ? JSON.parse(fr.form_snapshot) : (fr.current_schema ? JSON.parse(fr.current_schema) : null),
         })),
@@ -273,19 +281,44 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('reviews:saveFormResponse', (_, reviewId, data) => {
     const db = getDb()
+    const instanceKey = data.instance_key || ''
     const responses = typeof data.responses === 'string' ? data.responses : JSON.stringify(data.responses)
     const formSnapshot = getFormSnapshotFromReview(db, reviewId, data.form_id) || currentFormSnapshot(db, data.form_id)
     const formSyncId = formSnapshot?.sync_id || null
     const formVersion = formSnapshot?.version || null
     const formSnapshotJson = formSnapshot ? JSON.stringify(formSnapshot) : null
-    const existing = db.prepare('SELECT id FROM form_responses WHERE review_id=? AND form_id=?').get(reviewId, data.form_id)
+    const existing = db.prepare('SELECT id FROM form_responses WHERE review_id=? AND form_id=? AND instance_key=?').get(reviewId, data.form_id, instanceKey)
     if (existing) {
       db.prepare("UPDATE form_responses SET responses=?, form_sync_id=COALESCE(form_sync_id,?), form_version=COALESCE(form_version,?), form_snapshot=COALESCE(form_snapshot,?), updated_at=datetime('now') WHERE id=?")
         .run(responses, formSyncId, formVersion, formSnapshotJson, existing.id)
     } else {
-      db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot) VALUES (?,?,?,?,?,?)')
-        .run(reviewId, data.form_id, responses, formSyncId, formVersion, formSnapshotJson)
+      db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot, instance_key, instance_role, instance_order) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run(reviewId, data.form_id, responses, formSyncId, formVersion, formSnapshotJson, instanceKey, data.instance_role || null, data.instance_order || 0)
     }
+    scheduleSyncForReview(reviewId)
+    return true
+  })
+
+  // Repeatable form instances (e.g. "Trainee 1", "Trainee 2", "Consultant 1")
+  // — creates a fresh, blank response set for the same form within the same
+  // review. Numbered per-role, in creation order within that role, matching
+  // what's shown in the instance switcher (role + count of that role so far).
+  ipcMain.handle('reviews:addFormInstance', (_, reviewId, formId, role) => {
+    const db = getDb()
+    const crypto = require('crypto')
+    const sameRoleCount = db.prepare('SELECT COUNT(*) as n FROM form_responses WHERE review_id=? AND form_id=? AND instance_role=?').get(reviewId, formId, role).n
+    const order = sameRoleCount + 1
+    const instanceKey = crypto.randomUUID()
+    const formSnapshot = getFormSnapshotFromReview(db, reviewId, formId) || currentFormSnapshot(db, formId)
+    db.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot, instance_key, instance_role, instance_order) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(reviewId, formId, '{}', formSnapshot?.sync_id || null, formSnapshot?.version || null, formSnapshot ? JSON.stringify(formSnapshot) : null, instanceKey, role, order)
+    scheduleSyncForReview(reviewId)
+    return { instance_key: instanceKey, instance_role: role, instance_order: order }
+  })
+
+  ipcMain.handle('reviews:removeFormInstance', (_, reviewId, formId, instanceKey) => {
+    const db = getDb()
+    db.prepare('DELETE FROM form_responses WHERE review_id=? AND form_id=? AND instance_key=?').run(reviewId, formId, instanceKey || '')
     scheduleSyncForReview(reviewId)
     return true
   })

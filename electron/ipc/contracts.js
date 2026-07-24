@@ -97,6 +97,8 @@ const contracts = {
   'reviews:deleteTimestamp': [isIntLike],
   'reviews:updateTimestamp': [isIntLike, isObject],
   'reviews:saveFormResponse': [isIntLike, isObject],
+  'reviews:addFormInstance': [isIntLike, isIntLike, isString],
+  'reviews:removeFormInstance': [isIntLike, isIntLike, isOptionalString],
 
   'setup:saveMediaType': [isIntLike, isObject],
   'setup:listMediaTypes': [isIntLike],
