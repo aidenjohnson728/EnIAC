@@ -203,10 +203,137 @@ export function computeWeightedKappa(subjectGroups, meta = {}) {
   }
 }
 
+/**
+ * Plain (uncorrected) percent agreement, pooled across every rated encounter
+ * for a single question — this is the same per-subject "Pbar" mechanism
+ * Fleiss' kappa itself uses, just reported directly rather than
+ * chance-corrected. Used for SDMo's binary yes/no questions ("Did SDM
+ * likely occur?" and each category's "present/not present"), where a plain
+ * percentage is what's wanted rather than a kappa-style statistic.
+ * Categories are matched by exact value (case-insensitive for strings).
+ */
+export function computePooledPercentAgreement(subjectGroups) {
+  const groups = usableGroups(subjectGroups, toCategoryKey)
+  const n = groups.length
+  if (n < 2) return null
+
+  let sumK = 0
+  let subjectAgreementSum = 0
+  for (const group of groups) {
+    const counts = new Map()
+    for (const value of group) counts.set(value, (counts.get(value) || 0) + 1)
+    const k = group.length
+    sumK += k
+    let agreeingPairs = 0
+    for (const count of counts.values()) agreeingPairs += count * (count - 1)
+    subjectAgreementSum += agreeingPairs / (k * (k - 1))
+  }
+
+  const pbar = subjectAgreementSum / n
+  return {
+    method: 'percent',
+    value: pbar,
+    subjectCount: n,
+    ratingCount: sumK,
+  }
+}
+
+// Collapses SDMo's raw 1–6 "SDM Occurrence" rating into the 4 ordinal bands
+// the scale is actually built around: 1 = Definitely not, 2–3 = Probably
+// not, 4–5 = Probably yes, 6 = Definitely yes.
+function mapSixPointToFourBand(value) {
+  if (value === 1) return 1
+  if (value === 2 || value === 3) return 2
+  if (value === 4 || value === 5) return 3
+  if (value === 6) return 4
+  return null
+}
+
+// Standard quadratic similarity weights over k=4 ordinal categories:
+// w(i,j) = 1 - (i-j)^2 / (k-1)^2. Verified numerically against the reference
+// weighted-Fleiss-kappa calculator's own weight matrix (0.889/0.556/0 for
+// distances of 1/2/3 categories).
+const FOUR_BAND_QUADRATIC_WEIGHTS = (() => {
+  const k = 4
+  const w = []
+  for (let i = 1; i <= k; i++) {
+    const row = []
+    for (let j = 1; j <= k; j++) row.push(1 - ((i - j) ** 2) / ((k - 1) ** 2))
+    w.push(row)
+  }
+  return w
+})()
+
+/**
+ * Weighted Fleiss' kappa for SDMo's final 6-point "SDM Occurrence" scale,
+ * matched term-for-term against the reference weighted-Fleiss-kappa
+ * calculator: raw ratings are collapsed into the 4 bands above, quadratic
+ * weights are applied across those 4 bands (not the raw 1–6 values), the
+ * per-encounter observed weighted agreement uses category counts (not
+ * pairwise enumeration), and expected agreement is computed from the pooled
+ * marginal proportions across every encounter — the same design as
+ * computeFleissKappa above, generalized with a weight matrix instead of
+ * exact-match-only agreement.
+ */
+export function computeWeightedFleissKappaSixPointBanded(subjectGroups, meta = {}) {
+  const bandedGroups = subjectGroups
+    .map(group => group.map(v => mapSixPointToFourBand(toNumericValue(v, meta))).filter(v => v !== null))
+    .filter(group => group.length >= 2)
+  const n = bandedGroups.length
+  if (n < 2) return null
+
+  const w = FOUR_BAND_QUADRATIC_WEIGHTS
+  const categoryTotals = new Map([[1, 0], [2, 0], [3, 0], [4, 0]])
+  let sumK = 0
+  let subjectAgreementSum = 0
+
+  for (const group of bandedGroups) {
+    const counts = new Map([[1, 0], [2, 0], [3, 0], [4, 0]])
+    for (const value of group) counts.set(value, (counts.get(value) || 0) + 1)
+    const k = group.length
+    sumK += k
+    for (const [cat, count] of counts) categoryTotals.set(cat, categoryTotals.get(cat) + count)
+
+    // Per-encounter weighted observed agreement — for each category ki, the
+    // weighted sum of all counts against ki's weight row, times n(ki),
+    // summed over all ki, minus n (self-pairs), divided by n*(n-1). This is
+    // the exact formula the reference calculator uses (verified against its
+    // extracted spreadsheet formulas, not adapted from a different design).
+    let weightedSum = 0
+    for (let ki = 1; ki <= 4; ki++) {
+      let rowSum = 0
+      for (let kj = 1; kj <= 4; kj++) rowSum += counts.get(kj) * w[ki - 1][kj - 1]
+      weightedSum += rowSum * counts.get(ki)
+    }
+    subjectAgreementSum += (weightedSum - k) / (k * (k - 1))
+  }
+
+  const pbar = subjectAgreementSum / n
+  const proportions = [1, 2, 3, 4].map(cat => (categoryTotals.get(cat) || 0) / sumK)
+
+  let pe = 0
+  for (let ki = 0; ki < 4; ki++) {
+    for (let kj = 0; kj < 4; kj++) {
+      pe += proportions[ki] * proportions[kj] * w[ki][kj]
+    }
+  }
+  if (pe >= 1) return null
+
+  const kappa = (pbar - pe) / (1 - pe)
+  return {
+    method: 'weighted_fleiss_kappa',
+    value: kappa,
+    subjectCount: n,
+    ratingCount: sumK,
+  }
+}
+
 export function computeQuestionReliability(method, subjectGroups, meta = {}) {
   if (method === 'icc') return computeICC(subjectGroups, meta)
   if (method === 'cohen_kappa') return computeFleissKappa(subjectGroups)
   if (method === 'weighted_kappa') return computeWeightedKappa(subjectGroups, meta)
+  if (method === 'percent') return computePooledPercentAgreement(subjectGroups)
+  if (method === 'weighted_fleiss_kappa') return computeWeightedFleissKappaSixPointBanded(subjectGroups, meta)
   return null
 }
 

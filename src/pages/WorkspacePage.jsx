@@ -19,6 +19,7 @@ function hydrateWorkspaceSnapshot(snapshot) {
     workspaceTabs: snapshot?.workspace_tabs || [],
     formSchemas,
     instructions,
+    tags: snapshot?.tags || [],
   }
 }
 
@@ -101,6 +102,7 @@ export default function WorkspacePage() {
   const [review, setReview] = useState(null)
   const [mediaFile, setMediaFile] = useState(null)
   const [workspaceTabs, setWorkspaceTabs] = useState([])
+  const [tags, setTags] = useState([])
   const [formSchemas, setFormSchemas] = useState({})
   const [instructions, setInstructions] = useState({})
   const [formInstances, setFormInstances] = useState({}) // { [formId]: [{instance_key, instance_role, instance_order, responses}] }
@@ -163,6 +165,7 @@ export default function WorkspacePage() {
       setWorkspaceTabs(frozen.workspaceTabs)
       setFormSchemas(frozen.formSchemas)
       setInstructions(patchSnapshotPdfPaths(frozen.instructions, liveInstructions))
+      setTags(frozen.tags)
       setLoading(false)
       return
     }
@@ -172,6 +175,7 @@ export default function WorkspacePage() {
     if (!mt) { setLoading(false); return }
 
     setWorkspaceTabs(mt.workspace_tabs || [])
+    setTags(mt.tags || [])
 
     const formTabs = (mt.workspace_tabs || []).filter(t => t.tab_type === 'form')
     const instrTabs = (mt.workspace_tabs || []).filter(t => t.tab_type === 'instruction')
@@ -202,10 +206,16 @@ export default function WorkspacePage() {
         instance_order: instance?.instance_order || 0,
         responses,
       })
-      setFormInstances(prev => ({
-        ...prev,
-        [formId]: (prev[formId] || []).map(i => i.instance_key === instanceKey ? { ...i, responses } : i),
-      }))
+      setFormInstances(prev => {
+        const list = prev[formId] || []
+        const exists = list.some(i => i.instance_key === instanceKey)
+        const next = exists
+          ? list.map(i => i.instance_key === instanceKey ? { ...i, responses } : i)
+          // First save for this instance — .map() alone would have nothing to
+          // iterate over and silently drop the update. Create the entry instead.
+          : [...list, { instance_key: instanceKey, instance_role: instance?.instance_role || null, instance_order: instance?.instance_order || 0, responses }]
+        return { ...prev, [formId]: next }
+      })
       setSaveError(null)
       api.notifyReviewUpdate(reviewId).catch(() => {})
     } catch (e) {
@@ -248,6 +258,14 @@ export default function WorkspacePage() {
     return true
   }
 
+  // Matches FormRenderer.jsx's isElementVisible — a conditionally-hidden
+  // question must never be treated as required-but-unanswered.
+  function isElementVisible(el, values) {
+    if (!el.visible_if) return true
+    const { element_id, equals } = el.visible_if
+    return values?.[element_id] === equals
+  }
+
   function isRequiredElementComplete(el, value) {
     if (el.type === 'checkbox') {
       return value === true || value === 'N/A' || (value && typeof value === 'object' && !Array.isArray(value) && value.__na === true)
@@ -285,7 +303,14 @@ export default function WorkspacePage() {
       const roles = form.schema?.multi_instance_roles
       const isMultiInstance = Array.isArray(roles) && roles.length > 0
       if (instances.length === 0) {
-        if (isMultiInstance) errors.push({ tab: tab.label, question: 'Choose a role and fill out this form before submitting.' })
+        if (isMultiInstance) {
+          errors.push({ tab: tab.label, question: 'Choose a role and fill out this form before submitting.' })
+        } else {
+          const hasRequiredQuestion = form.schema.sections.some(section =>
+            (section.elements || []).some(el => el.required)
+          )
+          if (hasRequiredQuestion) errors.push({ tab: tab.label, question: 'This form has required questions that haven\u2019t been answered yet.' })
+        }
         continue
       }
 
@@ -312,6 +337,7 @@ export default function WorkspacePage() {
         let anyAnswered = false
         for (const section of form.schema.sections) {
           for (const el of (section.elements || [])) {
+            if (!isElementVisible(el, responses)) continue
             if (el.type === 'text_block') continue
             if (el.type === 'likert_group') {
               const groupVal = (responses[el.id] && typeof responses[el.id] === 'object') ? responses[el.id] : {}
@@ -344,6 +370,7 @@ export default function WorkspacePage() {
 
       for (const section of form.schema.sections) {
         for (const [elementIndex, el] of (section.elements || []).entries()) {
+          if (!isElementVisible(el, responses)) continue
           if (!el.required) continue
           const val = responses[el.id]
           const questionNumber = (section.elements || [])
@@ -395,6 +422,7 @@ export default function WorkspacePage() {
 
   const currentTab = workspaceTabs[activeTab]
   const isFormWorkspaceTab = currentTab?.tab_type === 'form'
+  const hasFormSwitcher = isFormWorkspaceTab && Array.isArray(formSchemas[currentTab?.ref_id]?.schema?.multi_instance_roles) && formSchemas[currentTab?.ref_id].schema.multi_instance_roles.length > 0
   const isPdfWorkspaceTab = currentTab?.tab_type === 'instruction' && instructions[currentTab?.ref_id]?.content_type === 'pdf'
 
   return (
@@ -456,6 +484,8 @@ export default function WorkspacePage() {
       {/* Content */}
       <div style={isPdfWorkspaceTab
         ? { flex: 1, overflow: 'hidden', padding: 0, width: '100%', minHeight: 0, boxSizing: 'border-box' }
+        : hasFormSwitcher
+          ? { flex: 1, overflow: 'hidden', minHeight: 0, display: 'flex', flexDirection: 'column', width: '100%', maxWidth: 1120, margin: '0 auto', boxSizing: 'border-box' }
         : isFormWorkspaceTab
           ? { flex: 1, overflow: 'auto', padding: '18px 32px 28px', maxWidth: 1120, width: '100%', margin: '0 auto', boxSizing: 'border-box' }
         : { flex: 1, overflow: 'auto', padding: '24px 32px', maxWidth: 1120, width: '100%', margin: '0 auto', boxSizing: 'border-box' }
@@ -485,13 +515,14 @@ export default function WorkspacePage() {
                           readOnly={submitted}
                         />
                       )}
-                      <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: multiInstanceEnabled ? '18px 32px 28px' : 0 }}>
                         <FormRenderer
                           schema={formSchemas[currentTab.ref_id].schema}
                           responses={activeInstance?.responses || {}}
                           onSave={resp => saveFormResponse(currentTab.ref_id, activeInstance?.instance_key ?? '', resp)}
                           readOnly={submitted}
                           timestamps={timestamps}
+                          tags={tags}
                         />
                       </div>
                     </div>

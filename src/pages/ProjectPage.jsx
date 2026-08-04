@@ -83,6 +83,7 @@ export default function ProjectPage() {
   const [loading, setLoading] = useState(true)
   const [newReview, setNewReview] = useState(null)
   const [deleteReviewTarget, setDeleteReviewTarget] = useState(null) // { id, reviewer_name }
+  const [deleteMediaTarget, setDeleteMediaTarget] = useState(null) // { id, name }
   const [showFilter, setShowFilter] = useState(false)
   const [filters, setFilters] = useState({})
   const [search, setSearch] = useState('')
@@ -314,6 +315,14 @@ export default function ProjectPage() {
     setEncounters(encs)
   }
 
+  async function handleDeleteMedia() {
+    if (!deleteMediaTarget) return
+    await api.deleteMediaFile(projectId, deleteMediaTarget.id)
+    setDeleteMediaTarget(null)
+    const encs = await api.listEncounters(projectId)
+    setEncounters(encs)
+  }
+
   async function handleSyncNow() {
     setSyncing(true)
     // Pull latest structure from cloud first, then run full sync
@@ -408,7 +417,10 @@ export default function ProjectPage() {
   }
 
   function applyFilters(encs) {
-    let result = encs
+    // Sorted ascending by id (creation order) so a newly created encounter
+    // always lands after existing ones, rather than wherever the backend
+    // happens to return it.
+    let result = [...encs].sort((a, b) => (a.id ?? 0) - (b.id ?? 0))
     if (search.trim()) {
       const q = search.toLowerCase()
       result = result.filter(enc =>
@@ -923,9 +935,6 @@ export default function ProjectPage() {
               { id: 'encounters', icon: LayoutList, label: 'Encounters' },
               { id: 'progress',   icon: BarChart2,  label: 'Progress' },
               { id: 'activity',   icon: Activity,   label: 'Activity' },
-              { id: 'dataviz',    icon: LineChart,  label: 'Data Visualization' },
-              { id: 'agreement',  icon: GitCompare, label: 'Agreement Between Results' },
-              { id: 'reliability', icon: Gauge,     label: 'Question Reliability' },
             ].map(({ id, icon: Icon, label }) => {
               const active = activePage === id
               return (
@@ -942,6 +951,55 @@ export default function ProjectPage() {
                 </button>
               )
             })}
+
+            {/* Agreement — parent tab (its own content is the pooled ICC/kappa
+                view, formerly "Question Reliability"), with two nested
+                sub-tabs shown whenever any of the three is active. */}
+            {(() => {
+              const agreementGroupIds = ['reliability', 'agreement', 'dataviz']
+              const inGroup = agreementGroupIds.includes(activePage)
+              return (
+                <>
+                  <button onClick={() => setActivePage('reliability')}
+                    className="btn btn-ghost btn-sm"
+                    style={{
+                      justifyContent: 'flex-start', width: '100%',
+                      fontWeight: activePage === 'reliability' ? 600 : 400,
+                      color: activePage === 'reliability' ? 'var(--text)' : 'var(--text-secondary)',
+                      background: activePage === 'reliability' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
+                    }}>
+                    <Gauge size={13} />
+                    Agreement
+                  </button>
+                  {inGroup && (
+                    <>
+                      <button onClick={() => setActivePage('agreement')}
+                        className="btn btn-ghost btn-sm"
+                        style={{
+                          justifyContent: 'flex-start', width: '100%', paddingLeft: 28, fontSize: 12.5,
+                          fontWeight: activePage === 'agreement' ? 600 : 400,
+                          color: activePage === 'agreement' ? 'var(--text)' : 'var(--text-secondary)',
+                          background: activePage === 'agreement' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
+                        }}>
+                        <GitCompare size={12} />
+                        Agreement Between Results
+                      </button>
+                      <button onClick={() => setActivePage('dataviz')}
+                        className="btn btn-ghost btn-sm"
+                        style={{
+                          justifyContent: 'flex-start', width: '100%', paddingLeft: 28, fontSize: 12.5,
+                          fontWeight: activePage === 'dataviz' ? 600 : 400,
+                          color: activePage === 'dataviz' ? 'var(--text)' : 'var(--text-secondary)',
+                          background: activePage === 'dataviz' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
+                        }}>
+                        <LineChart size={12} />
+                        Alignment
+                      </button>
+                    </>
+                  )}
+                </>
+              )
+            })()}
           </div>
 
           {/* Bottom: Settings */}
@@ -1022,7 +1080,7 @@ export default function ProjectPage() {
                 <>
                   <div id="tut-proj-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE).map(enc => (
-                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onRenameEncounter={() => { setRenameEncounterTarget(enc); setRenameInput(enc.name || '') }} onRenameMedia={(mf) => { setRenameMediaTarget(mf); setRenameInput(mf.name || '') }} onAddMedia={() => setNewMediaTarget(enc)} onChangeMediaType={handleChangeMediaType} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onManualLink={handleManualLink} onClearLink={handleClearLink} linkSaving={linkSaving} />
+                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onRenameEncounter={() => { setRenameEncounterTarget(enc); setRenameInput(enc.name || '') }} onRenameMedia={(mf) => { setRenameMediaTarget(mf); setRenameInput(mf.name || '') }} onAddMedia={() => setNewMediaTarget(enc)} onChangeMediaType={handleChangeMediaType} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onDeleteMedia={(mf) => setDeleteMediaTarget(mf)} onManualLink={handleManualLink} onClearLink={handleClearLink} linkSaving={linkSaving} />
                     ))}
                   </div>
                   <Pagination currentPage={currentPage} totalPages={Math.ceil(filtered.length / PAGE_SIZE)} total={filtered.length} pageSize={PAGE_SIZE} onPageChange={setCurrentPage} />
@@ -1057,6 +1115,20 @@ export default function ProjectPage() {
         }
       >
         <p>Delete the review by <strong>{deleteReviewTarget?.reviewer_name}</strong>? All timestamps and form responses in this review will be permanently removed.</p>
+      </Modal>
+
+      <Modal
+        open={!!deleteMediaTarget}
+        onClose={() => setDeleteMediaTarget(null)}
+        title="Delete Media File"
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setDeleteMediaTarget(null)}>Cancel</button>
+            <button className="btn btn-danger" onClick={handleDeleteMedia}>Delete</button>
+          </>
+        }
+      >
+        <p>Delete <strong>{deleteMediaTarget?.name}</strong>? All reviews, timestamps, and form responses for this media file will be permanently removed.</p>
       </Modal>
 
       <Modal
@@ -1486,7 +1558,7 @@ function Pagination({ currentPage, totalPages, total, pageSize, onPageChange }) 
   )
 }
 
-function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncounter, onRenameMedia, onAddMedia, onChangeMediaType, onAddReview, onOpenReview, onDeleteReview, onManualLink, onClearLink, linkSaving }) {
+function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncounter, onRenameMedia, onAddMedia, onChangeMediaType, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onClearLink, linkSaving }) {
   const completedMedia = encounter.media?.filter(m => {
     if (!m.reviews_required) return m.reviews?.some(r => r.status === 'submitted')
     return m.reviews_completed >= m.reviews_required
@@ -1549,12 +1621,14 @@ function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncou
               onAddReview={() => onAddReview(mf)}
               onOpenReview={onOpenReview}
               onDeleteReview={onDeleteReview}
+              onDeleteMedia={onDeleteMedia}
               onManualLink={onManualLink}
               onClearLink={onClearLink}
               onChangeMediaType={onChangeMediaType}
               onRename={() => onRenameMedia(mf)}
               linkSaving={linkSaving}
               isFirst={idx === 0}
+              canDelete={(encounter.media || []).length > 1}
             />
           ))}
           {encounter.media?.length === 0 && (
@@ -1579,7 +1653,7 @@ function reopenedReasonLabel(reason) {
   return 'Reopened'
 }
 
-function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onManualLink, onClearLink, onChangeMediaType, onRename, linkSaving, isFirst }) {
+function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onClearLink, onChangeMediaType, onRename, linkSaving, isFirst, canDelete }) {
   const Icon = MEDIA_ICONS[mediaFile.file_type] || File
   const required = mediaFile.reviews_required
   const completed = mediaFile.reviews_completed || 0
@@ -1693,6 +1767,16 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
         <button id={isFirst ? 'tut-proj-addreview' : undefined} className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22 }} onClick={onAddReview}>
           <Plus size={11} /> Add review
         </button>
+        {canDelete && (
+          <button
+            className="btn btn-ghost btn-icon btn-sm"
+            style={{ color: 'var(--text-muted)', flexShrink: 0 }}
+            title="Delete this media file"
+            onClick={() => onDeleteMedia({ id: mediaFile.id, name: mediaFile.name })}
+          >
+            <X size={13} />
+          </button>
+        )}
       </div>
     </div>
   )
@@ -1954,6 +2038,14 @@ function agreementMediaTypeIdForReview(review, mediaTypes = []) {
     if (bySnapshotName) return mediaTypeOptionId(bySnapshotName.id)
   }
 
+  // Imported cross-file rows carry a plain media_type_name string instead of
+  // any local id or sync_id — match directly by name (e.g. lines up an
+  // imported "UCAT" row with this project's own "UCAT" media type).
+  if (review?.media_type_name) {
+    const byDirectName = mediaTypes.find(type => type.name === review.media_type_name)
+    if (byDirectName) return mediaTypeOptionId(byDirectName.id)
+  }
+
   const formIds = new Set((review?.form_responses || [])
     .map(formResponse => formResponse?.form_id)
     .filter(id => id != null && id !== '')
@@ -2068,10 +2160,11 @@ function AgreementMultiSelect({ label, options, selectedIds, onChange, emptyText
   )
 }
 
-// ── Data Visualization View ───────────────────────────────────────────────────
+// ── Alignment View (formerly "Data Visualization") ─────────────────────────────
 function DataVizView({ projectId, mediaTypes = [] }) {
   const [agreementRows, setAgreementRows] = useState([])
   const [rawReviews, setRawReviews] = useState([])
+  const [importedSources, setImportedSources] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedMediaTypeId, setSelectedMediaTypeId] = useState('')
   const [agreementMode, setAgreementMode] = useState('question')
@@ -2084,11 +2177,16 @@ function DataVizView({ projectId, mediaTypes = [] }) {
     async function load() {
       setLoading(true)
       try {
-        const raw = await api.getProjectInterraterAgreementData(projectId)
+        const [raw, comparisonData] = await Promise.all([
+          api.getProjectInterraterAgreementData(projectId),
+          api.getResultsComparisonData(projectId),
+        ])
         if (!active) return
         setRawReviews(raw || [])
+        setImportedSources(comparisonData?.imported || [])
       } catch {
         setRawReviews([])
+        setImportedSources([])
         setAgreementRows([])
       } finally {
         if (active) setLoading(false)
@@ -2098,18 +2196,56 @@ function DataVizView({ projectId, mediaTypes = [] }) {
     return () => { active = false }
   }, [projectId])
 
+  // Imported results have no local review row at all — synthesize
+  // review-shaped objects from them (one per person per media file) so they
+  // can flow through the exact same grouping/filtering/agreement logic as
+  // this project's own reviews below. Without this, Alignment could
+  // only ever show something for projects with their own local reviews,
+  // which isn't how importing-only workflows actually use this app.
+  const importedPseudoReviews = useMemo(() => {
+    const pseudo = []
+    for (const source of importedSources) {
+      const byMediaAndReviewer = new Map()
+      for (const row of (source.responses_long || [])) {
+        const key = `${row.media_name}||${row.reviewer_name || source.reviewer_name || source.source_name}`
+        if (!byMediaAndReviewer.has(key)) {
+          byMediaAndReviewer.set(key, {
+            media_name: row.media_name,
+            encounter_name: row.encounter_name,
+            media_type_name: row.media_type_name || null,
+            reviewer_name: row.reviewer_name || source.reviewer_name || source.source_name,
+            form_responses: [],
+          })
+        }
+        byMediaAndReviewer.get(key).form_responses.push({
+          form_id: row.form_id,
+          form_name: row.form_name,
+          responses: row.responses,
+          form_snapshot: row.form_snapshot,
+          instance_key: row.instance_key,
+          instance_role: row.instance_role,
+          instance_order: row.instance_order,
+        })
+      }
+      pseudo.push(...byMediaAndReviewer.values())
+    }
+    return pseudo
+  }, [importedSources])
+
+  const allReviews = useMemo(() => [...rawReviews, ...importedPseudoReviews], [rawReviews, importedPseudoReviews])
+
   const mediaTypesWithReviews = useMemo(() => {
     const byId = new Map()
     for (const type of mediaTypes || []) {
       byId.set(mediaTypeOptionId(type.id), { id: mediaTypeOptionId(type.id), name: type.name || 'Media type' })
     }
-    for (const review of rawReviews || []) {
+    for (const review of allReviews || []) {
       const id = agreementMediaTypeIdForReview(review, mediaTypes)
       if (!byId.has(id)) byId.set(id, { id, name: review.media_type_name || (id === 'untyped' ? 'Untyped' : 'Media type') })
     }
-    const reviewedIds = new Set((rawReviews || []).map(review => agreementMediaTypeIdForReview(review, mediaTypes)))
+    const reviewedIds = new Set((allReviews || []).map(review => agreementMediaTypeIdForReview(review, mediaTypes)))
     return Array.from(byId.values()).filter(type => reviewedIds.has(String(type.id)))
-  }, [mediaTypes, rawReviews])
+  }, [mediaTypes, allReviews])
 
   useEffect(() => {
     if (mediaTypesWithReviews.length === 0) {
@@ -2122,8 +2258,8 @@ function DataVizView({ projectId, mediaTypes = [] }) {
 
   const filteredReviews = useMemo(() => {
     if (!selectedMediaTypeId) return []
-    return rawReviews.filter(review => agreementMediaTypeIdForReview(review, mediaTypes) === String(selectedMediaTypeId))
-  }, [mediaTypes, rawReviews, selectedMediaTypeId])
+    return allReviews.filter(review => agreementMediaTypeIdForReview(review, mediaTypes) === String(selectedMediaTypeId))
+  }, [mediaTypes, allReviews, selectedMediaTypeId])
 
   const questionOptions = useMemo(() => collectAgreementQuestionOptions(filteredReviews), [filteredReviews])
 
@@ -2148,7 +2284,7 @@ function DataVizView({ projectId, mediaTypes = [] }) {
     const grouped = new Map()
     for (const review of filteredReviews || []) {
       if (!review?.form_responses?.length) continue
-      const key = `${review.media_file_id}`
+      const key = review.media_name
       if (!grouped.has(key)) {
         grouped.set(key, { mediaName: review.media_name, encounterName: review.encounter_name, reviews: [] })
       }
@@ -2177,7 +2313,7 @@ function DataVizView({ projectId, mediaTypes = [] }) {
     <div style={{ maxWidth: 860 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 20 }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Data Visualization</h1>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Alignment</h1>
           <p className="text-secondary text-sm" style={{ margin: 0 }}>Compare question-level agreement or the final evaluation question for one media type.</p>
         </div>
       </div>
@@ -2302,17 +2438,24 @@ function DataVizView({ projectId, mediaTypes = [] }) {
 }
 
 // ── Agreement Between Results View ────────────────────────────────────────────
-// Compares the current machine's own submitted-review answers ("mine") against
-// an imported results file ("theirs"), using the same computeInterraterAgreementForMediaFile
-// engine that powers Data Visualization above. Matching across the two sets is by
-// encounter_name + media_name (not sync ids), since imported results come from an
-// unrelated install where local ids/sync ids won't line up. Neither set of coding
-// is ever modified — this view only reads api.getResultsComparisonData().
+// Compares any two result sets against each other, using the same
+// computeInterraterAgreementForMediaFile
+// engine that powers Alignment above. Matched by media name alone
+// (not encounter name), since imported results come from an unrelated
+// install where local ids/sync ids won't line up, and two files can label
+// the same encounter differently. Neither set of coding is ever modified —
+// this view only reads api.getResultsComparisonData().
+//
+// Either side of the comparison can be "My Results" (this machine's own
+// submitted reviews, if any exist) OR any imported file — including two
+// different imported files compared directly against each other, with no
+// personal results required at all.
 function AgreementResultsView({ projectId }) {
   const [loading, setLoading] = useState(true)
   const [mineRows, setMineRows] = useState([])
   const [importedSources, setImportedSources] = useState([])
-  const [selectedSourceId, setSelectedSourceId] = useState('')
+  const [sourceAId, setSourceAId] = useState('')
+  const [sourceBId, setSourceBId] = useState('')
 
   const load = useCallback(async () => {
     if (!projectId) return
@@ -2331,41 +2474,69 @@ function AgreementResultsView({ projectId }) {
 
   useEffect(() => { load() }, [load])
 
+  // "My Results" only appears as an option when this machine actually has
+  // submitted results of its own — otherwise every option is an import.
+  const allSources = useMemo(() => {
+    const list = []
+    if (mineRows.length > 0) list.push({ id: 'mine', label: 'My Results' })
+    for (const s of importedSources) {
+      list.push({ id: String(s.id), label: `${s.reviewer_name || s.source_name} · imported ${formatDate(s.imported_at)}` })
+    }
+    return list
+  }, [mineRows, importedSources])
+
   useEffect(() => {
-    if (importedSources.length === 0) {
-      if (selectedSourceId) setSelectedSourceId('')
+    if (allSources.length === 0) {
+      if (sourceAId) setSourceAId('')
       return
     }
-    if (selectedSourceId && importedSources.some(s => String(s.id) === String(selectedSourceId))) return
-    setSelectedSourceId(String(importedSources[0].id))
-  }, [importedSources, selectedSourceId])
+    if (sourceAId && allSources.some(s => s.id === sourceAId)) return
+    setSourceAId(allSources[0].id)
+  }, [allSources, sourceAId])
+
+  useEffect(() => {
+    if (allSources.length < 2) {
+      if (sourceBId) setSourceBId('')
+      return
+    }
+    if (sourceBId && allSources.some(s => s.id === sourceBId) && sourceBId !== sourceAId) return
+    const fallback = allSources.find(s => s.id !== sourceAId)
+    setSourceBId(fallback ? fallback.id : '')
+  }, [allSources, sourceAId, sourceBId])
+
+  function rowsForSource(id) {
+    if (id === 'mine') return mineRows
+    return importedSources.find(s => String(s.id) === id)?.responses_long || []
+  }
 
   async function handleDeleteSource(id) {
     await api.deleteImportedResult(id, projectId)
     load()
   }
 
-  const selectedSource = importedSources.find(s => String(s.id) === String(selectedSourceId))
+  const sourceARows = rowsForSource(sourceAId)
+  const sourceBRows = rowsForSource(sourceBId)
+  const sameSourcePicked = !!sourceAId && sourceAId === sourceBId
 
   const agreementRows = useMemo(() => {
-    if (!selectedSource) return []
+    if (!sourceAId || !sourceBId || sameSourcePicked) return []
     const grouped = new Map()
     const addRow = (row, bucket) => {
-      const key = `${row.encounter_name}||${row.media_name}`
-      if (!grouped.has(key)) grouped.set(key, { encounterName: row.encounter_name, mediaName: row.media_name, mine: [], theirs: [] })
+      const key = row.media_name
+      if (!grouped.has(key)) grouped.set(key, { encounterName: row.encounter_name, mediaName: row.media_name, a: [], b: [] })
       grouped.get(key)[bucket].push(row)
     }
-    for (const row of mineRows) addRow(row, 'mine')
-    for (const row of (selectedSource.responses_long || [])) addRow(row, 'theirs')
+    for (const row of sourceARows) addRow(row, 'a')
+    for (const row of sourceBRows) addRow(row, 'b')
 
     const rows = []
     for (const entry of grouped.values()) {
       // Missing on one side is handled by the "Only In..." tiles below rather than
       // rendered as a broken/empty comparison card here.
-      if (entry.mine.length === 0 || entry.theirs.length === 0) continue
+      if (entry.a.length === 0 || entry.b.length === 0) continue
       const reviewDetails = [
-        { form_responses: entry.mine.map(r => ({ form_id: r.form_id, responses: r.responses, form_snapshot: r.form_snapshot, instance_role: r.instance_role, instance_order: r.instance_order })) },
-        { form_responses: entry.theirs.map(r => ({ form_id: r.form_id, responses: r.responses, form_snapshot: r.form_snapshot, instance_role: r.instance_role, instance_order: r.instance_order })) },
+        { form_responses: entry.a.map(r => ({ form_id: r.form_id, form_name: r.form_name, responses: r.responses, form_snapshot: r.form_snapshot, instance_role: r.instance_role, instance_order: r.instance_order })) },
+        { form_responses: entry.b.map(r => ({ form_id: r.form_id, form_name: r.form_name, responses: r.responses, form_snapshot: r.form_snapshot, instance_role: r.instance_role, instance_order: r.instance_order })) },
       ]
       rows.push(computeInterraterAgreementForMediaFile({
         mediaName: entry.mediaName,
@@ -2375,17 +2546,17 @@ function AgreementResultsView({ projectId }) {
     }
     rows.sort((a, b) => (b.overallAgreement ?? -1) - (a.overallAgreement ?? -1))
     return rows
-  }, [mineRows, selectedSource])
+  }, [sourceAId, sourceBId, sameSourcePicked, sourceARows, sourceBRows])
 
   const missing = useMemo(() => {
-    if (!selectedSource) return { mineOnly: 0, theirsOnly: 0 }
-    const mineKeys = new Set(mineRows.map(r => `${r.encounter_name}||${r.media_name}`))
-    const theirKeys = new Set((selectedSource.responses_long || []).map(r => `${r.encounter_name}||${r.media_name}`))
-    let mineOnly = 0, theirsOnly = 0
-    for (const k of mineKeys) if (!theirKeys.has(k)) mineOnly++
-    for (const k of theirKeys) if (!mineKeys.has(k)) theirsOnly++
-    return { mineOnly, theirsOnly }
-  }, [mineRows, selectedSource])
+    if (!sourceAId || !sourceBId || sameSourcePicked) return { aOnly: 0, bOnly: 0 }
+    const aKeys = new Set(sourceARows.map(r => r.media_name))
+    const bKeys = new Set(sourceBRows.map(r => r.media_name))
+    let aOnly = 0, bOnly = 0
+    for (const k of aKeys) if (!bKeys.has(k)) aOnly++
+    for (const k of bKeys) if (!aKeys.has(k)) bOnly++
+    return { aOnly, bOnly }
+  }, [sourceARows, sourceBRows, sourceAId, sourceBId, sameSourcePicked])
 
   const scoredAgreementRows = agreementRows.filter(row => row.overallAgreement != null)
   const averageAgreement = scoredAgreementRows.length > 0
@@ -2398,98 +2569,124 @@ function AgreementResultsView({ projectId }) {
     <div style={{ maxWidth: 860 }}>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Agreement Between Results</h1>
-        <p className="text-secondary text-sm" style={{ margin: 0 }}>Compare your coding against an imported results file. Neither set of coding is modified.</p>
+        <p className="text-secondary text-sm" style={{ margin: 0 }}>
+          Compare any two result sets against each other — your own results and an imported file, or two
+          different imported files directly. Neither set of coding is modified.
+        </p>
       </div>
 
-      {importedSources.length === 0 ? (
+      {allSources.length === 0 ? (
         <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
           <GitCompare size={38} style={{ margin: '0 auto 14px', opacity: 0.35 }} />
-          <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>No imported results yet</p>
+          <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>No results to compare yet</p>
           <p style={{ fontSize: 13 }}>Use "Import Results" above to load another coder's exported results file.</p>
+        </div>
+      ) : allSources.length < 2 ? (
+        <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
+          <GitCompare size={38} style={{ margin: '0 auto 14px', opacity: 0.35 }} />
+          <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>Need a second result set to compare</p>
+          <p style={{ fontSize: 13 }}>Import at least one more results file to compare against {allSources[0]?.label}.</p>
         </div>
       ) : (
         <>
-          <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <div className="form-field" style={{ margin: 0, flex: 1, minWidth: 220 }}>
-              <label>Compare against</label>
-              <select value={selectedSourceId} onChange={e => setSelectedSourceId(e.target.value)} style={{ height: 34, fontSize: 13, width: '100%' }}>
-                {importedSources.map(s => (
-                  <option key={s.id} value={s.id}>{s.reviewer_name || s.source_name} · imported {formatDate(s.imported_at)}</option>
-                ))}
+          <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginBottom: 16, display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+            <div className="form-field" style={{ margin: 0, flex: 1, minWidth: 200 }}>
+              <label>Compare</label>
+              <select value={sourceAId} onChange={e => setSourceAId(e.target.value)} style={{ height: 34, fontSize: 13, width: '100%' }}>
+                {allSources.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
               </select>
             </div>
-            {selectedSource && (
-              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDeleteSource(selectedSource.id)}>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', paddingBottom: 7 }}>against</div>
+            <div className="form-field" style={{ margin: 0, flex: 1, minWidth: 200 }}>
+              <select value={sourceBId} onChange={e => setSourceBId(e.target.value)} style={{ height: 34, fontSize: 13, width: '100%' }}>
+                {allSources.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+            </div>
+            {sourceBId && sourceBId !== 'mine' && (
+              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDeleteSource(sourceBId)}>
+                Remove this import
+              </button>
+            )}
+            {sourceAId && sourceAId !== 'mine' && sourceAId !== sourceBId && (
+              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDeleteSource(sourceAId)}>
                 Remove this import
               </button>
             )}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
-            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Files Compared</div>
-              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{agreementRows.length}</div>
-            </div>
-            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Overall Agreement</div>
-              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{averageAgreement == null ? '—' : `${Math.round(averageAgreement * 100)}%`}</div>
-            </div>
-            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Only In Mine</div>
-              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{missing.mineOnly}</div>
-            </div>
-            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Only In Imported</div>
-              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{missing.theirsOnly}</div>
-            </div>
-          </div>
-
-          {agreementRows.length === 0 ? (
+          {sameSourcePicked ? (
             <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
-              <p style={{ fontSize: 14, fontWeight: 500 }}>No overlapping media files found between the two result sets.</p>
+              <p style={{ fontSize: 14, fontWeight: 500 }}>Pick two different result sets to compare.</p>
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {agreementRows.map(row => (
-                <div key={`${row.encounterName}-${row.mediaName}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
-                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mediaName}</div>
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{row.encounterName}</div>
-                    </div>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: row.overallAgreement >= 0.8 ? 'var(--success)' : row.overallAgreement >= 0.6 ? 'var(--accent)' : 'var(--danger)' }}>
-                      {row.overallAgreement == null ? '—' : `${Math.round(row.overallAgreement * 100)}%`}
-                    </div>
-                  </div>
-                  {row.questions.length > 0 ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      {row.questions.map(question => (
-                        <div key={`${row.mediaName}-${question.label}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '6px 8px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
-                          <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{question.label}</span>
-                          <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                            {AGREEMENT_METHOD_LABELS[question.method] || question.type} · {Math.round((question.agreement || 0) * 100)}%
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No comparable questions found for this file.</div>
-                  )}
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
+                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Files Compared</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{agreementRows.length}</div>
                 </div>
-              ))}
-            </div>
+                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Overall Agreement</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{averageAgreement == null ? '—' : `${Math.round(averageAgreement * 100)}%`}</div>
+                </div>
+                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Only In First</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{missing.aOnly}</div>
+                </div>
+                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Only In Second</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{missing.bOnly}</div>
+                </div>
+              </div>
+
+              {agreementRows.length === 0 ? (
+                <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <p style={{ fontSize: 14, fontWeight: 500 }}>No overlapping media files found between these two result sets.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {agreementRows.map(row => (
+                    <div key={`${row.encounterName}-${row.mediaName}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mediaName}</div>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{row.encounterName}</div>
+                        </div>
+                        <div style={{ fontSize: 20, fontWeight: 700, color: row.overallAgreement >= 0.8 ? 'var(--success)' : row.overallAgreement >= 0.6 ? 'var(--accent)' : 'var(--danger)' }}>
+                          {row.overallAgreement == null ? '—' : `${Math.round(row.overallAgreement * 100)}%`}
+                        </div>
+                      </div>
+                      {row.questions.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {row.questions.map(question => (
+                            <div key={`${row.mediaName}-${question.label}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '6px 8px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
+                              <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{question.label}</span>
+                              <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                                {AGREEMENT_METHOD_LABELS[question.method] || question.type} · {Math.round((question.agreement || 0) * 100)}%
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No comparable questions found for this file.</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </>
       )}
     </div>
   )
 }
-// ── Question Reliability View ─────────────────────────────────────────────────
+// ── Agreement View (formerly "Question Reliability") ──────────────────────────
 // Pools every submitted review's answer to each opted-in question ACROSS THE
 // WHOLE PROJECT (not per media file) and computes one real ICC / Fleiss' kappa /
 // weighted kappa per question — separate from the per-file percent agreement
 // in DataVizView/AgreementResultsView above, which is untouched by this.
-const RELIABILITY_METHODS = new Set(['icc', 'cohen_kappa', 'weighted_kappa'])
+const RELIABILITY_METHODS = new Set(['icc', 'cohen_kappa', 'weighted_kappa', 'percent', 'weighted_fleiss_kappa'])
 // `table` questions nest a value per (row, column) — out of scope here.
 // `likert_group` questions nest one scalar value per row (per item.id), which
 // IS supported: each row is unpacked into its own pooled question below,
@@ -2502,6 +2699,8 @@ const QUESTION_RELIABILITY_METHOD_LABELS = {
   icc: 'Intraclass correlation (ICC)',
   cohen_kappa: "Cohen's kappa",
   weighted_kappa: 'Weighted kappa',
+  percent: 'Percent agreement',
+  weighted_fleiss_kappa: "Weighted Fleiss' kappa",
 }
 
 // form_snapshot has taken a couple of different shapes across this codebase
@@ -2518,20 +2717,24 @@ function QuestionReliabilityView({ projectId }) {
   const [loading, setLoading] = useState(true)
   const [rawReviews, setRawReviews] = useState([])
   const [currentForms, setCurrentForms] = useState([])
+  const [importedSources, setImportedSources] = useState([])
 
   const load = useCallback(async () => {
     if (!projectId) return
     setLoading(true)
     try {
-      const [data, forms] = await Promise.all([
+      const [data, forms, comparisonData] = await Promise.all([
         api.getProjectInterraterAgreementData(projectId),
         api.listForms(projectId),
+        api.getResultsComparisonData(projectId),
       ])
       setRawReviews(Array.isArray(data) ? data : [])
       setCurrentForms(Array.isArray(forms) ? forms : [])
+      setImportedSources(Array.isArray(comparisonData?.imported) ? comparisonData.imported : [])
     } catch {
       setRawReviews([])
       setCurrentForms([])
+      setImportedSources([])
     } finally {
       setLoading(false)
     }
@@ -2539,69 +2742,115 @@ function QuestionReliabilityView({ projectId }) {
 
   useEffect(() => { load() }, [load])
 
-  const questions = useMemo(() => {
+  const { results: questions, mismatchWarnings } = useMemo(() => {
     // Only submitted reviews count toward reliability statistics — a
     // still-in-progress review isn't a completed rating yet.
     const submitted = rawReviews.filter(r => r.status === 'submitted')
+    const currentFormNames = new Set(currentForms.map(f => f.name))
+    const currentFormsByName = new Map(currentForms.map(f => [f.name, f]))
     const currentFormsById = new Map(currentForms.map(f => [String(f.id), f]))
 
     const questionMap = new Map()
+    const warnings = []
 
     // Registers one value for one pooled question (creating it on first sight).
-    // `meta` carries whatever a reliabilityStats function needs (min/max/options).
-    function record(key, label, method, meta, mediaFileId, value) {
+    // Subject key is now the MEDIA NAME (a string), not the local media_file_id
+    // — the only requirement for two ratings to be pooled as "the same
+    // encounter" is that they share a media name, whether that rating came
+    // from this project's own database or an imported results file from a
+    // completely different install. `meta` carries whatever a
+    // reliabilityStats function needs (min/max/options).
+    function record(key, label, method, meta, subjectKey, value) {
       if (value == null || value === '') return
       if (!questionMap.has(key)) {
         questionMap.set(key, { key, label, method, meta, subjects: new Map() })
       }
       const entry = questionMap.get(key)
-      const bucket = entry.subjects.get(mediaFileId) || []
+      const bucket = entry.subjects.get(subjectKey) || []
       bucket.push(value)
-      entry.subjects.set(mediaFileId, bucket)
+      entry.subjects.set(subjectKey, bucket)
     }
 
+    // Shared by both own-project reviews and imported rows below — keys
+    // questions by FORM NAME (not local form_id, which is meaningless across
+    // installs) plus element id. Uses the current live form's schema when a
+    // form of that name exists in this project (so turning on ICC applies
+    // retroactively to all data, own or imported); falls back to the row's
+    // own frozen snapshot only if no such form exists here.
+    function processFormResponse(formName, formIdForFallback, formSnapshot, responses, instanceRole, instanceOrder, subjectKey) {
+      const liveForm = currentFormsByName.get(formName) || currentFormsById.get(String(formIdForFallback))
+      const schemaSource = liveForm?.schema || formSnapshot
+      const sections = questionReliabilitySchemaSections(schemaSource)
+      const elements = sections.flatMap(section => section?.elements || [])
+      const instanceKeySuffix = instanceRole ? `:${instanceRole}:${instanceOrder}` : ''
+      const instanceLabelSuffix = instanceRole ? ` (${instanceRole} ${instanceOrder})` : ''
+      for (const element of elements) {
+        const method = element?.agreement_method
+        if (!RELIABILITY_METHODS.has(method)) continue
+        if (UNSUPPORTED_COMPOSITE_TYPES.has(element?.type)) continue
+
+        if (ROW_UNPACK_TYPES.has(element?.type)) {
+          // One pooled question PER ROW (e.g. UCAT's "Global Measures" group
+          // has 10 rows == 10 dimension-level ICCs), not one for the whole group.
+          const groupResponses = responses?.[element.id] || {}
+          const rowMeta = { min: 1, max: Number(element.scale) || 5 }
+          for (const item of (element.items || [])) {
+            const key = `${formName}:${element.id}:${item.id}${instanceKeySuffix}`
+            const value = groupResponses?.[item.id]
+            const label = (element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)) + instanceLabelSuffix
+            record(key, label, method, rowMeta, subjectKey, value)
+          }
+          continue
+        }
+
+        const key = `${formName}:${element.id}${instanceKeySuffix}`
+        const value = responses?.[element.id]
+        record(key, (element.label || element.id) + instanceLabelSuffix, method, element, subjectKey, value)
+      }
+    }
+
+    // Own project's submitted reviews — subject = media name.
     for (const review of submitted) {
       for (const formResponse of (review.form_responses || [])) {
-        // Use the CURRENT live form's schema, not this review's frozen
-        // form_snapshot — reliability config (agreement_method,
-        // multi_instance_roles) is a study-wide analysis decision, and should
-        // apply to every submitted review, not just ones created after the
-        // config was turned on. Falls back to the snapshot only if the form
-        // was deleted since. Response VALUES still come from this review's
-        // own data either way, keyed by element id, which stays stable.
-        const liveForm = currentFormsById.get(String(formResponse.form_id))
-        const schemaSource = liveForm?.schema || formResponse.form_snapshot
-        const sections = questionReliabilitySchemaSections(schemaSource)
-        const elements = sections.flatMap(section => section?.elements || [])
-        // Repeatable form instances (e.g. "Trainee 1", "Consultant 1") must
-        // never be pooled together — matched across reviewers by role +
-        // creation order, same as the per-file agreement engine.
-        const instanceRole = formResponse.instance_role || null
-        const instanceOrder = formResponse.instance_order || 0
-        const instanceKeySuffix = instanceRole ? `:${instanceRole}:${instanceOrder}` : ''
-        const instanceLabelSuffix = instanceRole ? ` (${instanceRole} ${instanceOrder})` : ''
-        for (const element of elements) {
-          const method = element?.agreement_method
-          if (!RELIABILITY_METHODS.has(method)) continue
-          if (UNSUPPORTED_COMPOSITE_TYPES.has(element?.type)) continue
+        const formName = formResponse.form_name || currentFormsById.get(String(formResponse.form_id))?.name || null
+        if (!formName) continue // form was deleted and no snapshot name to fall back on
+        processFormResponse(
+          formName, formResponse.form_id, formResponse.form_snapshot, formResponse.responses,
+          formResponse.instance_role || null, formResponse.instance_order || 0,
+          review.media_name
+        )
+      }
+    }
 
-          if (ROW_UNPACK_TYPES.has(element?.type)) {
-            // One pooled question PER ROW (e.g. UCAT's "Global Measures" group
-            // has 10 rows == 10 dimension-level ICCs), not one for the whole group.
-            const groupResponses = formResponse.responses?.[element.id] || {}
-            const rowMeta = { min: 1, max: Number(element.scale) || 5 }
-            for (const item of (element.items || [])) {
-              const key = `${formResponse.form_id}:${element.id}:${item.id}${instanceKeySuffix}`
-              const value = groupResponses?.[item.id]
-              const label = (element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)) + instanceLabelSuffix
-              record(key, label, method, rowMeta, review.media_file_id, value)
-            }
-            continue
-          }
-
-          const key = `${formResponse.form_id}:${element.id}${instanceKeySuffix}`
-          const value = formResponse.responses?.[element.id]
-          record(key, (element.label || element.id) + instanceLabelSuffix, method, element, review.media_file_id, value)
+    // Imported results (from Export/Import Results, potentially a completely
+    // different install) — matched purely by media name, exactly like above.
+    // Each source's data is grouped by the form name it was recorded against;
+    // if that form doesn't match one of THIS project's own forms by name
+    // (e.g. an SDMo export imported into a UCAT project), that data is not
+    // pooled in at all, and a visible warning is raised instead — silently
+    // pooling mismatched forms would produce meaningless numbers.
+    for (const source of importedSources) {
+      const rowsByForm = new Map()
+      for (const row of (source.responses_long || [])) {
+        if (!rowsByForm.has(row.form_name)) rowsByForm.set(row.form_name, [])
+        rowsByForm.get(row.form_name).push(row)
+      }
+      for (const [formName, rows] of rowsByForm) {
+        if (!formName || !currentFormNames.has(formName)) {
+          warnings.push({
+            sourceName: source.source_name,
+            reviewerName: source.reviewer_name,
+            importedFormName: formName || '(unknown)',
+            expectedFormNames: Array.from(currentFormNames),
+          })
+          continue
+        }
+        for (const row of rows) {
+          processFormResponse(
+            formName, row.form_id, row.form_snapshot, row.responses,
+            row.instance_role || null, row.instance_order || 0,
+            row.media_name
+          )
         }
       }
     }
@@ -2620,21 +2869,36 @@ function QuestionReliabilityView({ projectId }) {
       })
     }
     results.sort((a, b) => a.label.localeCompare(b.label))
-    return results
-  }, [rawReviews])
+    return { results, mismatchWarnings: warnings }
+  }, [rawReviews, currentForms, importedSources])
 
   if (loading) return <div className="empty-state"><p>Loading…</p></div>
 
   return (
     <div style={{ maxWidth: 860 }}>
       <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Question Reliability</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Agreement</h1>
         <p className="text-secondary text-sm" style={{ margin: 0 }}>
           For questions set to ICC, Cohen's kappa, or weighted kappa, this pools every rating for that
-          question across all rated encounters and computes one reliability statistic — not a
-          per-file score. Per-file percentage agreement is still shown on Data Visualization.
+          question — from this project and from any imported results files — across all encounters that
+          share a media name, and computes one reliability statistic. Per-file percentage agreement is
+          still shown under Agreement → Alignment.
         </p>
       </div>
+
+      {mismatchWarnings.length > 0 && (
+        <div style={{ border: '1px solid #f5c542', background: '#fef8e7', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: '#7a5c00' }}>Import form mismatch — some imported data was not included</div>
+          {mismatchWarnings.map((w, i) => (
+            <div key={i} style={{ fontSize: 12, color: '#7a5c00', marginTop: 6 }}>
+              "{w.sourceName}"{w.reviewerName ? ` (${w.reviewerName})` : ''} was recorded against form
+              "<strong>{w.importedFormName}</strong>", which doesn't match this project's form
+              {w.expectedFormNames.length === 1 ? '' : 's'} ({w.expectedFormNames.join(', ') || 'none'}).
+              This data was excluded from the calculations below.
+            </div>
+          ))}
+        </div>
+      )}
 
       {questions.length === 0 ? (
         <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
@@ -2649,7 +2913,12 @@ function QuestionReliabilityView({ projectId }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {questions.map(q => {
             const value = q.stat?.value ?? null
-            const interpretation = q.method === 'icc' ? iccInterpretation(value) : kappaInterpretation(value)
+            const interpretation = q.method === 'icc'
+              ? iccInterpretation(value)
+              : q.method === 'percent'
+                ? null
+                : kappaInterpretation(value)
+            const displayValue = value == null ? '—' : q.method === 'percent' ? `${Math.round(value * 100)}%` : value.toFixed(2)
             return (
               <div key={q.key} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
@@ -2659,7 +2928,7 @@ function QuestionReliabilityView({ projectId }) {
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: 20, fontWeight: 700 }}>
-                      {value == null ? '—' : value.toFixed(2)}
+                      {displayValue}
                     </div>
                     {interpretation && (
                       <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>

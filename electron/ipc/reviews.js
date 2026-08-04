@@ -84,7 +84,7 @@ module.exports = function (ipcMain) {
       const effectiveMediaTypeId = review.media_type_id ?? snapshotMediaType?.id ?? review.media_type_sync_id ?? snapshotMediaType?.sync_id ?? null
       const effectiveMediaTypeName = review.media_type_name || snapshotMediaType?.name || (effectiveMediaTypeId == null ? 'Untyped' : 'Media type')
       const formResponses = db.prepare(`
-        SELECT fr.form_id, fr.responses, fr.form_snapshot, f.schema as current_schema,
+        SELECT fr.form_id, fr.responses, fr.form_snapshot, f.name as form_name, f.schema as current_schema,
                fr.instance_key, fr.instance_role, fr.instance_order
         FROM form_responses fr
         LEFT JOIN forms f ON fr.form_id = f.id
@@ -97,6 +97,7 @@ module.exports = function (ipcMain) {
         workspace_snapshot: workspaceSnapshot,
         form_responses: formResponses.map(fr => ({
           form_id: fr.form_id,
+          form_name: fr.form_name || null,
           instance_key: fr.instance_key || '',
           instance_role: fr.instance_role || null,
           instance_order: fr.instance_order || 0,

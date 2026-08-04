@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, ChevronRight, Check } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -10,7 +11,61 @@ function resolveMarkdownAsset(src, assets = []) {
   return assets.find(asset => asset.id === id)?.dataUrl || src
 }
 
-export default function FormRenderer({ schema, responses, onSave, readOnly, timestamps = [] }) {
+// Same tooltip used for tag descriptions in ReviewPage.jsx — kept as its own
+// copy here since FormRenderer.jsx doesn't import from page-level files.
+// Renders via a portal directly into document.body so it can't get trapped
+// behind an ancestor's stacking context, with a short delay instead of the
+// browser's native ~1s default.
+function HoverTooltip({ text, children, inline = false }) {
+  const [show, setShow] = useState(false)
+  const [rect, setRect] = useState(null)
+  const timeoutRef = useRef(null)
+  const wrapperRef = useRef(null)
+
+  function handleEnter() {
+    timeoutRef.current = setTimeout(() => {
+      setRect(wrapperRef.current?.getBoundingClientRect() || null)
+      setShow(true)
+    }, 200)
+  }
+  function handleLeave() {
+    clearTimeout(timeoutRef.current)
+    setShow(false)
+  }
+
+  return (
+    <span ref={wrapperRef} onMouseEnter={handleEnter} onMouseLeave={handleLeave} style={{ position: 'relative', display: inline ? 'inline-block' : 'inline' }}>
+      {children}
+      {show && text && rect && createPortal(
+        <div style={{
+          position: 'fixed',
+          top: Math.max(4, rect.top - 6),
+          left: Math.max(4, rect.left),
+          transform: 'translateY(-100%)',
+          zIndex: 99999,
+          background: '#111', color: '#fff', fontSize: 13, fontWeight: 500, padding: '7px 11px',
+          borderRadius: 7, maxWidth: 260, width: 'max-content', whiteSpace: 'normal', lineHeight: 1.45,
+          boxShadow: '0 4px 14px rgba(0,0,0,0.3)', pointerEvents: 'none',
+        }}>
+          {text}
+        </div>,
+        document.body
+      )}
+    </span>
+  )
+}
+
+// Conditional visibility: an element with `visible_if` only renders (and only
+// counts toward required-question validation) when the referenced element's
+// current answer matches. Used e.g. to hide SDMo's tag-presence questions
+// entirely unless "Did SDM likely occur?" is answered "Yes".
+function isElementVisible(el, values) {
+  if (!el.visible_if) return true
+  const { element_id, equals } = el.visible_if
+  return values?.[element_id] === equals
+}
+
+export default function FormRenderer({ schema, responses, onSave, readOnly, timestamps = [], tags = [] }) {
   const sections = schema?.sections || []
   const manySections = sections.length > 3
   // When a form is set to "at least one question" completion mode, individual
@@ -142,6 +197,7 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
             sectionRef={el => { sectionRefs.current[section.id] = el }}
             readOnly={readOnly}
             timestamps={timestamps}
+            tags={tags}
             relaxedCompletion={relaxedCompletion}
           />
         ))}
@@ -187,7 +243,7 @@ function isElementAnswered(el, value) {
   return isValueAnswered(value)
 }
 
-function FormSection({ section, sectionIndex, values, onChange, collapsed, onToggle, sectionRef, readOnly, timestamps, relaxedCompletion }) {
+function FormSection({ section, sectionIndex, values, onChange, collapsed, onToggle, sectionRef, readOnly, timestamps, tags = [], relaxedCompletion }) {
   const { answered, total } = countAnswered(section, values)
   const complete = total > 0 && answered === total
 
@@ -260,8 +316,10 @@ function FormSection({ section, sectionIndex, values, onChange, collapsed, onTog
           marginLeft: 0,
           transition: 'border-color 0.25s',
         }}>
-          {(section.elements || []).map((el, elementIndex) => {
-            const questionNumber = (section.elements || [])
+          {(section.elements || [])
+            .filter(el => isElementVisible(el, values))
+            .map((el, elementIndex, visibleElements) => {
+            const questionNumber = visibleElements
               .slice(0, elementIndex + 1)
               .filter(item => item.type !== 'text_block').length
             return (
@@ -274,6 +332,7 @@ function FormSection({ section, sectionIndex, values, onChange, collapsed, onTog
                 onChange={v => onChange(el.id, v)}
                 readOnly={readOnly}
                 timestamps={timestamps}
+                tags={tags}
                 relaxedCompletion={relaxedCompletion}
               />
             )
@@ -420,6 +479,13 @@ function controlLabel(el, index, count) {
 function controlEndpointLabel(el, key, index) {
   const arrayKey = key === 'low' ? 'control_low_labels' : 'control_high_labels'
   const sharedKey = key === 'low' ? 'low_label' : 'high_label'
+  const custom = Array.isArray(el[arrayKey]) ? el[arrayKey][index] : ''
+  return custom || el[sharedKey] || ''
+}
+
+function controlEndpointDescription(el, key, index) {
+  const arrayKey = key === 'low' ? 'control_low_descriptions' : 'control_high_descriptions'
+  const sharedKey = key === 'low' ? 'low_description' : 'high_description'
   const custom = Array.isArray(el[arrayKey]) ? el[arrayKey][index] : ''
   return custom || el[sharedKey] || ''
 }
@@ -699,21 +765,21 @@ function NAToggle({ selected, onChange, readOnly, compact = false }) {
   )
 }
 
-function ScaleEndpointLabels({ low, high, min, max, vertical = false, inset = 0 }) {
+function ScaleEndpointLabels({ low, high, min, max, lowDescription, highDescription, vertical = false, inset = 0 }) {
   const lowText = low || min
   const highText = high || max
   if (vertical) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: 132, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.25, minWidth: 42 }}>
-        <span style={{ textAlign: 'left' }}>{highText}</span>
-        <span style={{ textAlign: 'left' }}>{lowText}</span>
+        <HoverTooltip inline text={highDescription}><span style={{ textAlign: 'left', cursor: highDescription ? 'help' : undefined }}>{highText}</span></HoverTooltip>
+        <HoverTooltip inline text={lowDescription}><span style={{ textAlign: 'left', cursor: lowDescription ? 'help' : undefined }}>{lowText}</span></HoverTooltip>
       </div>
     )
   }
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.25, padding: `0 ${inset}px` }}>
-      <span>{lowText}</span>
-      <span style={{ textAlign: 'right' }}>{highText}</span>
+      <HoverTooltip inline text={lowDescription}><span style={{ cursor: lowDescription ? 'help' : undefined }}>{lowText}</span></HoverTooltip>
+      <HoverTooltip inline text={highDescription}><span style={{ textAlign: 'right', cursor: highDescription ? 'help' : undefined }}>{highText}</span></HoverTooltip>
     </div>
   )
 }
@@ -784,7 +850,7 @@ function ControlTitle({ children }) {
   )
 }
 
-function DialControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel, scaleLabels = []}) {
+function DialControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel, lowDescription, highDescription, scaleLabels = []}) {
   const safeValue = Number.isFinite(value) ? value : min
   const bounded = Math.min(max, Math.max(min, safeValue))
   const pct = max === min ? 0 : ((bounded - min) / (max - min)) * 100
@@ -851,13 +917,13 @@ function DialControl({ value, min, max, step, disabled, onChange, label, lowLabe
       </div>
       <NumericStepper value={bounded} min={min} max={max} step={step} disabled={disabled} onChange={onChange} />
       <div style={{ width: '100%' }}>
-        <ScaleEndpointLabels low={lowLabel} high={highLabel} min={min} max={max} />
+        <ScaleEndpointLabels low={lowLabel} high={highLabel} min={min} max={max} lowDescription={lowDescription} highDescription={highDescription} />
       </div>
     </div>
   )
 }
 
-function VerticalSliderControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel }) {
+function VerticalSliderControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel, lowDescription, highDescription }) {
   const safeValue = Number.isFinite(value) ? value : min
   const bounded = Math.min(max, Math.max(min, safeValue))
   const pct = max === min ? 0 : ((bounded - min) / (max - min)) * 100
@@ -876,7 +942,7 @@ function VerticalSliderControl({ value, min, max, step, disabled, onChange, labe
     }}>
       <ControlTitle>{label}</ControlTitle>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <ScaleEndpointLabels low={lowLabel} high={highLabel} min={min} max={max} vertical />
+        <ScaleEndpointLabels low={lowLabel} high={highLabel} min={min} max={max} lowDescription={lowDescription} highDescription={highDescription} vertical />
         <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <input
             type="range"
@@ -896,7 +962,44 @@ function VerticalSliderControl({ value, min, max, step, disabled, onChange, labe
   )
 }
 
-function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps = [], relaxedCompletion, allValues = {} }) {
+function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps = [], relaxedCompletion, allValues = {}, tags = [] }) {
+  // Auto-computed, not manually answered: "Present" if any timestamp logged
+  // during this review used a tag from the given category, "Not Present"
+  // otherwise. Saves itself into responses whenever the computed value
+  // changes, so the review's own record reflects the right answer at
+  // submission time — this isn't just a live display that vanishes.
+  if (el.type === 'tag_category_presence') {
+    const present = timestamps.some(ts => {
+      // Matched by id primarily, but falls back to matching by label — the
+      // label is saved directly on the timestamp at creation time and never
+      // depends on a live cross-reference lookup succeeding, unlike id.
+      const tag = tags.find(t => String(t.id) === String(ts.tag_id) || (t.label && t.label === ts.tag_label))
+      return tag?.category === el.category
+    })
+    const computedValue = present ? 'Present' : 'Not Present'
+    useEffect(() => {
+      if (!readOnly && value !== computedValue) onChange(computedValue)
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [computedValue, readOnly])
+    return (
+      <div>
+        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 99,
+          fontSize: 13, fontWeight: 600,
+          background: present ? 'rgba(34,197,94,0.12)' : 'rgba(148,163,184,0.15)',
+          color: present ? 'var(--success)' : 'var(--text-muted)',
+          border: `1px solid ${present ? 'rgba(34,197,94,0.3)' : 'var(--border)'}`,
+        }}>
+          {computedValue}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+          Based on whether any "{el.category}" tag was used while reviewing this video — not manually answered.
+        </div>
+      </div>
+    )
+  }
+
   if (el.type === 'text_block') {
     return (
       <div className="prose form-markdown-block">
@@ -1203,6 +1306,8 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
             const label = controlLabel(el, idx, count)
             const lowLabel = controlEndpointLabel(el, 'low', idx)
             const highLabel = controlEndpointLabel(el, 'high', idx)
+            const lowDescription = controlEndpointDescription(el, 'low', idx)
+            const highDescription = controlEndpointDescription(el, 'high', idx)
             return el.type === 'dial' ? (
               <DialControl
                 key={`${el.id}-${idx}`}
@@ -1215,6 +1320,8 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
                 label={label}
                 lowLabel={lowLabel}
                 highLabel={highLabel}
+                lowDescription={lowDescription}
+                highDescription={highDescription}
                 scaleLabels={el.scale_labels}
               />
             ) : (
@@ -1229,6 +1336,8 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
                 label={label}
                 lowLabel={lowLabel}
                 highLabel={highLabel}
+                lowDescription={lowDescription}
+                highDescription={highDescription}
               />
             )
           })}

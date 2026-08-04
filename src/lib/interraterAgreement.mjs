@@ -20,6 +20,7 @@ export const AGREEMENT_METHOD_LABELS = {
   icc: 'Intraclass correlation (ICC)',
   cohen_kappa: "Cohen's kappa",
   weighted_kappa: 'Weighted kappa',
+  weighted_fleiss_kappa: "Weighted Fleiss' kappa",
   ordinal: 'Ordinal distance',
   numeric: 'Numeric distance',
   set_overlap: 'Set overlap',
@@ -400,7 +401,13 @@ export function computeInterraterAgreementForMediaFile({
         const instanceRole = formResponse?.instance_role || null
         const instanceOrder = formResponse?.instance_order || 0
         const instanceSuffix = instanceRole ? `:${instanceRole}:${instanceOrder}` : ''
-        const questionKey = `${formResponse?.form_id || 'form'}:${element?.id}${instanceSuffix}`
+        // Prefer form_name over form_id — form_id is either a local integer
+        // (meaningless once compared against another install's local ids) or
+        // a foreign sync_id for imported cross-file rows; form_name is the
+        // one thing that's actually consistent for "the same form" across
+        // installs. Falls back to form_id only for older data that predates
+        // form_name being included here.
+        const questionKey = `${formResponse?.form_name || formResponse?.form_id || 'form'}:${element?.id}${instanceSuffix}`
         if (!formResponsesByQuestion.has(questionKey)) {
           formResponsesByQuestion.set(questionKey, {
             label: instanceRole ? `${getElementLabel(element, element?.id)} (${instanceRole} ${instanceOrder})` : getElementLabel(element, element?.id),

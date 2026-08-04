@@ -211,6 +211,8 @@ export default function ReviewPage() {
   const [workspaceTabs, setWorkspaceTabs] = useState([])
   const [formSchemas, setFormSchemas] = useState({})
   const [instructions, setInstructions] = useState({})
+  const [allInstructions, setAllInstructions] = useState([])
+  const [showSdmoInfo, setShowSdmoInfo] = useState(false)
   const [formInstances, setFormInstances] = useState({}) // { [formId]: [{instance_key, instance_role, instance_order, responses}] }
   const [activeInstanceKey, setActiveInstanceKey] = useState({}) // { [formId]: instance_key }
 
@@ -261,6 +263,17 @@ export default function ReviewPage() {
   useEffect(() => {
     if (mediaTypeName === 'SDMo') setTagsPaletteOpen(true)
   }, [mediaTypeName, reviewId])
+
+  // UCAT media has a fixed layout, not a default: content on the right
+  // (video left, form right = layoutMode 'horizontal'), timestamps below.
+  // Re-applied every render while viewing UCAT so a stray manual toggle
+  // (the buttons are hidden, but state could still be set some other way)
+  // can't leave it in an unintended configuration.
+  useEffect(() => {
+    if (mediaTypeName !== 'UCAT') return
+    setLayoutMode('horizontal')
+    setTimestampsPosition('bottom')
+  }, [mediaTypeName])
 
   useEffect(() => {
     if (!isSampleTour || sampleTourStarted || loading || !videoUrl) return
@@ -417,13 +430,13 @@ export default function ReviewPage() {
 
     if (rev.workspace_snapshot) {
       const frozen = hydrateWorkspaceSnapshot(rev.workspace_snapshot)
-      const needsPdfPathPatch = Object.values(frozen.instructions || {}).some(instr => instr?.content_type === 'pdf' && !instr.file_path)
-      const liveInstructions = needsPdfPathPatch ? await api.listInstructions(enc.project_id) : []
+      const liveInstructions = await api.listInstructions(enc.project_id)
       setTags(frozen.tags)
       setWorkspaceTabs(frozen.workspaceTabs)
       setFormSchemas(frozen.formSchemas)
       setMediaTypeName(frozen.mediaTypeName)
       setInstructions(patchSnapshotPdfPaths(frozen.instructions, liveInstructions))
+      setAllInstructions(liveInstructions)
       setLinkModal(hasLinkedPlayback || playback?.status === 'not_applicable' ? null : playback?.status === 'missing' ? 'missing' : 'not_linked')
       setLoading(false)
       return
@@ -451,6 +464,7 @@ export default function ReviewPage() {
       if (instr) newInstructions[tab.ref_id] = instr
     })
     setInstructions(newInstructions)
+    setAllInstructions(allInstr)
 
     setLinkModal(hasLinkedPlayback || playback?.status === 'not_applicable' ? null : playback?.status === 'missing' ? 'missing' : 'not_linked')
     setLoading(false)
@@ -607,10 +621,18 @@ export default function ReviewPage() {
       instance_order: instance?.instance_order || 0,
       responses,
     })
-    setFormInstances(prev => ({
-      ...prev,
-      [formId]: (prev[formId] || []).map(i => i.instance_key === instanceKey ? { ...i, responses } : i),
-    }))
+    setFormInstances(prev => {
+      const list = prev[formId] || []
+      const exists = list.some(i => i.instance_key === instanceKey)
+      const next = exists
+        ? list.map(i => i.instance_key === instanceKey ? { ...i, responses } : i)
+        // First save for this instance (e.g. a brand-new review with nothing
+        // saved yet) — .map() alone would have nothing to iterate over and
+        // silently drop the update, which is exactly what caused the
+        // "resets after the first change" bug. Create the entry instead.
+        : [...list, { instance_key: instanceKey, instance_role: instance?.instance_role || null, instance_order: instance?.instance_order || 0, responses }]
+      return { ...prev, [formId]: next }
+    })
   }
 
   async function addFormInstance(formId, role) {
@@ -643,6 +665,15 @@ export default function ReviewPage() {
     if (Array.isArray(value)) return value.length > 0
     if (typeof value === 'object') return Object.keys(value).length > 0
     return true
+  }
+
+  // Matches FormRenderer.jsx's isElementVisible — a conditionally-hidden
+  // question (e.g. SDMo's tag-presence questions when "Did SDM likely
+  // occur?" is "No") must never be treated as required-but-unanswered.
+  function isElementVisible(el, values) {
+    if (!el.visible_if) return true
+    const { element_id, equals } = el.visible_if
+    return values?.[element_id] === equals
   }
 
   function isRequiredElementComplete(el, value) {
@@ -683,7 +714,18 @@ export default function ReviewPage() {
       const roles = form.schema?.multi_instance_roles
       const isMultiInstance = Array.isArray(roles) && roles.length > 0
       if (instances.length === 0) {
-        if (isMultiInstance) errors.push({ tab: tab.label, question: 'Choose a role and fill out this form before submitting.' })
+        if (isMultiInstance) {
+          errors.push({ tab: tab.label, question: 'Choose a role and fill out this form before submitting.' })
+        } else {
+          // The form was never opened at all — no form_responses row exists
+          // yet. This still needs to be flagged if the form has any required
+          // question, otherwise a review could submit with zero saved data
+          // and nothing would ever catch it.
+          const hasRequiredQuestion = form.schema.sections.some(section =>
+            (section.elements || []).some(el => el.required)
+          )
+          if (hasRequiredQuestion) errors.push({ tab: tab.label, question: 'This form has required questions that haven\u2019t been answered yet.' })
+        }
         continue
       }
 
@@ -702,6 +744,7 @@ export default function ReviewPage() {
           let anyAnswered = false
           for (const section of form.schema.sections) {
             for (const el of (section.elements || [])) {
+              if (!isElementVisible(el, responses)) continue
               if (el.type === 'text_block') continue
               if (el.type === 'likert_group') {
                 const groupVal = (responses[el.id] && typeof responses[el.id] === 'object') ? responses[el.id] : {}
@@ -734,6 +777,7 @@ export default function ReviewPage() {
 
         for (const section of form.schema.sections) {
           for (const [elementIndex, el] of (section.elements || []).entries()) {
+            if (!isElementVisible(el, responses)) continue
             if (!el.required) continue
             const val = responses[el.id]
             const questionNumber = (section.elements || [])
@@ -858,8 +902,13 @@ export default function ReviewPage() {
   const currentFormInstances = currentTab?.tab_type === 'form' ? (formInstances[currentTab?.ref_id] || []) : []
   const currentActiveInstanceKey = currentTab?.tab_type === 'form' ? activeInstanceKey[currentTab?.ref_id] : null
   const currentActiveInstance = currentFormInstances.find(i => i.instance_key === currentActiveInstanceKey) || currentFormInstances[0]
+  const currentFormRoles = currentTab?.tab_type === 'form' ? formSchemas[currentTab?.ref_id]?.schema?.multi_instance_roles : null
+  const hasFormSwitcher = isFormWorkspaceTab && Array.isArray(currentFormRoles) && currentFormRoles.length > 0
   const workspaceContent = (
-    <div id={isSyncBasicsTab ? 'tut-rev-sync-basics' : undefined} style={isPdfWorkspaceTab ? { height: '100%', minHeight: 0 } : undefined}>
+    <div
+      id={isSyncBasicsTab ? 'tut-rev-sync-basics' : undefined}
+      style={isPdfWorkspaceTab || hasFormSwitcher ? { height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' } : undefined}
+    >
       <WorkspaceTabContent
         tab={currentTab}
         formSchema={currentTab?.tab_type === 'form' ? formSchemas[currentTab?.ref_id] : null}
@@ -873,12 +922,14 @@ export default function ReviewPage() {
         onRemoveInstance={(key) => removeFormInstance(currentTab.ref_id, key)}
         readOnly={submitted}
         timestamps={timestamps}
+        tags={tags}
       />
     </div>
   )
 
   const isHoriz = layoutMode === 'horizontal'
   const isSdmoMedia = mediaTypeName === 'SDMo'
+  const isUcatMedia = mediaTypeName === 'UCAT'
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)', overflow: 'hidden' }}>
@@ -907,8 +958,13 @@ export default function ReviewPage() {
             <button className="btn btn-ghost btn-icon btn-sm" onClick={tour.start} title="Show tutorial">
               <HelpCircle size={15} />
             </button>
+            {isSdmoMedia && (
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowSdmoInfo(true)} title="View SDMo reference documents">
+                SDMo Info
+              </button>
+            )}
             {/* Layout toggle */}
-            {!isSdmoMedia && (
+            {!isSdmoMedia && !isUcatMedia && (
               <button
                 className="btn btn-ghost btn-icon btn-sm"
                 title={isHoriz ? 'Stack video above workspace' : 'Place workspace beside video'}
@@ -1106,6 +1162,8 @@ export default function ReviewPage() {
                     {!workspaceMinimized && (
                       <div style={isPdfWorkspaceTab
                         ? { flex: 1, overflow: 'hidden', padding: 0, minHeight: 0 }
+                        : hasFormSwitcher
+                          ? { flex: 1, overflow: 'hidden', minHeight: 0, display: 'flex', flexDirection: 'column' }
                         : isFormWorkspaceTab
                           ? { flex: 1, overflow: 'auto', padding: '0 20px 20px' }
                         : { flex: 1, overflow: 'auto', padding: 20 }
@@ -1154,6 +1212,8 @@ export default function ReviewPage() {
             </div>
             <div style={isPdfWorkspaceTab
               ? { flex: 1, overflow: 'hidden', padding: 0, width: '100%', minHeight: 0 }
+              : hasFormSwitcher
+                ? { flex: 1, overflow: 'hidden', minHeight: 0, display: 'flex', flexDirection: 'column', width: '100%', maxWidth: 1120, margin: '0 auto' }
               : isFormWorkspaceTab
                 ? { flex: 1, overflow: 'auto', padding: '18px 32px 28px', maxWidth: 1120, width: '100%', margin: '0 auto' }
               : { flex: 1, overflow: 'auto', padding: 24, maxWidth: 800, width: '100%', margin: '0 auto' }
@@ -1321,13 +1381,15 @@ export default function ReviewPage() {
             <span style={{ fontWeight: 600, fontSize: 13 }}>Timestamps</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span className="badge badge-muted">{timestamps.length}</span>
-              <button
-                className="btn btn-ghost btn-icon btn-sm"
-                title={timestampsPosition === 'bottom' ? 'Move timestamps to the side' : 'Move timestamps to the bottom'}
-                onClick={() => setTimestampsPosition(p => p === 'bottom' ? 'side' : 'bottom')}
-              >
-                {timestampsPosition === 'bottom' ? <Columns2 size={12} /> : <Rows2 size={12} />}
-              </button>
+              {!isUcatMedia && (
+                <button
+                  className="btn btn-ghost btn-icon btn-sm"
+                  title={timestampsPosition === 'bottom' ? 'Move timestamps to the side' : 'Move timestamps to the bottom'}
+                  onClick={() => setTimestampsPosition(p => p === 'bottom' ? 'side' : 'bottom')}
+                >
+                  {timestampsPosition === 'bottom' ? <Columns2 size={12} /> : <Rows2 size={12} />}
+                </button>
+              )}
             </div>
           </div>
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1417,8 +1479,68 @@ export default function ReviewPage() {
         </p>
       </Modal>
 
+      {showSdmoInfo && (
+        <SdmoInfoOverlay allInstructions={allInstructions} onClose={() => setShowSdmoInfo(false)} />
+      )}
+
       {tour.node}
       {syncBasicsTour.node}
+    </div>
+  )
+}
+
+// Full-page reference view for SDMo's two PDF documents — "SDMo Items of
+// Inquiry" is no longer a regular workspace tab (removed to reduce clutter
+// in the review UI itself), but both documents remain reachable here via the
+// "SDMo Items of Inquiry" button. Uses the full project instruction list rather
+// than the tab-scoped one, since Items of Inquiry isn't tab-linked anymore.
+function SdmoInfoOverlay({ allInstructions, onClose }) {
+  const docSlots = [
+    { name: 'SDMo Items of Inquiry', instruction: allInstructions.find(i => i.name === 'SDMo Items of Inquiry') },
+    { name: 'SDMo Conversation Distinctions', instruction: allInstructions.find(i => i.name === 'SDMo Conversation Distinctions') },
+  ]
+  const [activeDoc, setActiveDoc] = useState(0)
+  const current = docSlots[activeDoc]
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 500, background: 'var(--bg)',
+      display: 'flex', flexDirection: 'column',
+    }}>
+      <div style={{
+        height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 16px', borderBottom: '1px solid var(--border)', flexShrink: 0,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontWeight: 600, fontSize: 14, marginRight: 12 }}>SDMo Reference Documents</span>
+          {docSlots.map((slot, i) => (
+            <button
+              key={slot.name}
+              className={activeDoc === i ? 'tab-btn active' : 'tab-btn'}
+              onClick={() => setActiveDoc(i)}
+              style={!slot.instruction ? { opacity: 0.5 } : undefined}
+              title={!slot.instruction ? 'Not found for this project' : undefined}
+            >
+              {slot.name}{!slot.instruction && ' (not found)'}
+            </button>
+          ))}
+        </div>
+        <button className="btn btn-secondary btn-sm" onClick={onClose}>
+          <X size={13} /> Close
+        </button>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        {!current?.instruction ? (
+          <div className="empty-state">
+            <p className="text-sm">
+              "{current?.name}" could not be found for this project. If this is an existing (not newly
+              created) SDMo project, it may need to be re-added under Setup → Instructions.
+            </p>
+          </div>
+        ) : (
+          <PdfInstructionFrame instruction={current.instruction} />
+        )}
+      </div>
     </div>
   )
 }
@@ -1825,7 +1947,7 @@ function TagSelectionPanel({ timestamp, tags, onSelect, onBack }) {
   )
 }
 
-function WorkspaceTabContent({ tab, formSchema, instruction, instances = [], activeInstanceKey, responses, onSave, onSwitchInstance, onAddInstance, onRemoveInstance, readOnly, timestamps = [] }) {
+function WorkspaceTabContent({ tab, formSchema, instruction, instances = [], activeInstanceKey, responses, onSave, onSwitchInstance, onAddInstance, onRemoveInstance, readOnly, timestamps = [], tags = [] }) {
   if (!tab) return null
   if (tab.tab_type === 'form') {
     if (!formSchema) return <div className="empty-state"><p className="text-sm">Form not found.</p></div>
@@ -1850,8 +1972,8 @@ function WorkspaceTabContent({ tab, formSchema, instruction, instances = [], act
             readOnly={readOnly}
           />
         )}
-        <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-          <FormRenderer schema={formSchema.schema} responses={responses || {}} onSave={onSave} readOnly={readOnly} timestamps={timestamps} />
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: multiInstanceEnabled ? '0 20px 20px' : 0 }}>
+          <FormRenderer schema={formSchema.schema} responses={responses || {}} onSave={onSave} readOnly={readOnly} timestamps={timestamps} tags={tags} />
         </div>
       </div>
     )

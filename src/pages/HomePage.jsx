@@ -478,7 +478,7 @@ export default function HomePage() {
               </button>
               {defaultProjects.length > 0 && (
                 <button className="btn btn-secondary" onClick={() => setShowTemplates(true)}>
-                  <ClipboardList size={14} /> UCAT / EnIAC
+                  <ClipboardList size={14} /> Template Projects
                 </button>
               )}
               <button className="btn btn-primary" onClick={() => setShowCreate(true)}>

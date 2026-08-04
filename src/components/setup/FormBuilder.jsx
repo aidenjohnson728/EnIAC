@@ -47,10 +47,11 @@ function agreementMethodOptionsForType(type) {
   if (type === 'likert' || type === 'rating') return ['auto', 'ordinal', 'icc', 'weighted_kappa', 'percent']
   if (type === 'likert_group') return ['auto', 'item_group', 'icc', 'weighted_kappa']
   if (type === 'multiselect') return ['auto', 'set_overlap', 'percent']
-  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return ['auto', 'numeric', 'icc']
+  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return ['auto', 'numeric', 'icc', 'weighted_fleiss_kappa']
   if (type === 'timestamp_select') return ['auto', 'timestamp']
   if (type === 'short_answer' || type === 'paragraph') return ['auto', 'exact_text']
   if (type === 'table') return ['auto', 'item_group']
+  if (type === 'tag_category_presence') return ['auto', 'percent']
   return ['auto', 'percent']
 }
 
@@ -68,6 +69,9 @@ function agreementWarningForElement(el, enabled, method) {
   }
   if ((resolved === 'icc' || resolved === 'cohen_kappa' || resolved === 'weighted_kappa') && el.type !== 'likert_group' && el.type !== 'table') {
     return 'This pools every rating for this question across all rated encounters and shows one statistic on the Question Reliability page, not a per-file score.'
+  }
+  if (resolved === 'weighted_fleiss_kappa') {
+    return 'Built for a 1–6 scale collapsed into 4 ordinal bands (1 / 2–3 / 4–5 / 6). Pools every rating across all rated encounters, shown on the Question Reliability page.'
   }
   return ''
 }
