@@ -1496,6 +1496,7 @@ export default function ReviewPage() {
 // than the tab-scoped one, since Items of Inquiry isn't tab-linked anymore.
 function SdmoInfoOverlay({ allInstructions, onClose }) {
   const docSlots = [
+    { name: 'SDMo Tool', instruction: allInstructions.find(i => i.name === 'SDMo Tool') },
     { name: 'SDMo Items of Inquiry', instruction: allInstructions.find(i => i.name === 'SDMo Items of Inquiry') },
     { name: 'SDMo Conversation Distinctions', instruction: allInstructions.find(i => i.name === 'SDMo Conversation Distinctions') },
   ]

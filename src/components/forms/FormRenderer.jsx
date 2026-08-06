@@ -76,11 +76,40 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
 
   const [values, setValues] = useState(responses || {})
   const [collapsed, setCollapsed] = useState(() => {
+    // A section's own `default_collapsed` takes priority when set; only
+    // sections that don't specify one fall back to the >3-sections heuristic.
+    if (sections.some(s => typeof s.default_collapsed === 'boolean')) {
+      return Object.fromEntries(sections.map(s => [
+        s.id,
+        typeof s.default_collapsed === 'boolean' ? s.default_collapsed : manySections,
+      ]))
+    }
     if (!manySections) return {}
     return Object.fromEntries(sections.map(s => [s.id, true]))
   })
   const [activeSection, setActiveSection] = useState(null)
   const sectionRefs = useRef({})
+
+  // Sections can auto-expand once, the first time a referenced question's
+  // answer matches a target value (e.g. SDMo's presence/method-of-inquiry
+  // sections opening once "Did SDM likely occur?" is answered "Yes"). This
+  // only ever opens a section, never force-closes one the person already had
+  // open, even if the triggering answer later changes.
+  useEffect(() => {
+    const toExpand = sections
+      .filter(s => s.expand_when && values?.[s.expand_when.element_id] === s.expand_when.equals)
+      .map(s => s.id)
+    if (toExpand.length === 0) return
+    setCollapsed(c => {
+      let changed = false
+      const next = { ...c }
+      for (const id of toExpand) {
+        if (next[id]) { next[id] = false; changed = true }
+      }
+      return changed ? next : c
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [values])
 
   const valuesRef = useRef(values)
   useEffect(() => {
@@ -785,6 +814,8 @@ function ScaleEndpointLabels({ low, high, min, max, lowDescription, highDescript
 }
 
 function NumericStepper({ value, min, max, step, disabled, onChange }) {
+  const untouched = !Number.isFinite(value)
+
   function apply(nextValue) {
     if (disabled) return
     const n = Number(nextValue)
@@ -796,7 +827,7 @@ function NumericStepper({ value, min, max, step, disabled, onChange }) {
       <button
         type="button"
         disabled={disabled}
-        onClick={() => apply(value - step)}
+        onClick={() => apply(untouched ? min : value - step)}
         className="btn btn-secondary btn-icon btn-sm"
         aria-label="Decrease value"
       >
@@ -804,7 +835,8 @@ function NumericStepper({ value, min, max, step, disabled, onChange }) {
       </button>
       <input
         type="number"
-        value={value}
+        value={untouched ? '' : value}
+        placeholder="--"
         min={min}
         max={max}
         step={step}
@@ -812,7 +844,7 @@ function NumericStepper({ value, min, max, step, disabled, onChange }) {
         onChange={e => apply(e.target.value)}
         style={{
           width: 64, textAlign: 'center', fontWeight: 700, fontSize: 14,
-          color: 'var(--accent)', background: 'var(--accent-light)',
+          color: untouched ? 'var(--text-muted)' : 'var(--accent)', background: untouched ? 'var(--bg-secondary)' : 'var(--accent-light)',
           padding: '4px 6px', borderRadius: 6, border: '1.5px solid transparent',
           outline: 'none', fontFamily: 'var(--font)',
         }}
@@ -820,7 +852,7 @@ function NumericStepper({ value, min, max, step, disabled, onChange }) {
       <button
         type="button"
         disabled={disabled}
-        onClick={() => apply(value + step)}
+        onClick={() => apply(untouched ? min : value + step)}
         className="btn btn-secondary btn-icon btn-sm"
         aria-label="Increase value"
       >
@@ -851,9 +883,9 @@ function ControlTitle({ children }) {
 }
 
 function DialControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel, lowDescription, highDescription, scaleLabels = []}) {
-  const safeValue = Number.isFinite(value) ? value : min
-  const bounded = Math.min(max, Math.max(min, safeValue))
-  const pct = max === min ? 0 : ((bounded - min) / (max - min)) * 100
+  const untouched = !Number.isFinite(value)
+  const bounded = untouched ? min : Math.min(max, Math.max(min, value))
+  const pct = untouched ? 0 : (max === min ? 0 : ((bounded - min) / (max - min)) * 100)
   const angle = -135 + (pct / 100) * 270
   const radius = 36
   const circumference = 2 * Math.PI * radius
@@ -900,22 +932,24 @@ function DialControl({ value, min, max, step, disabled, onChange, label, lowLabe
             strokeDasharray={`${arcLength} ${circumference}`}
             transform="rotate(135 50 50)"
           />
-          <circle
-            cx="50"
-            cy="50"
-            r={radius}
-            stroke="var(--accent)"
-            strokeWidth="10"
-            fill="none"
-            strokeLinecap="round"
-            strokeDasharray={`${progressLength} ${circumference}`}
-            transform="rotate(135 50 50)"
-          />
-          <line x1="50" y1="50" x2="50" y2="18" stroke="var(--text)" strokeWidth="4" strokeLinecap="round" transform={`rotate(${angle} 50 50)`} />
-          <circle cx="50" cy="50" r="11" fill="var(--bg)" stroke="var(--accent)" strokeWidth="4" />
+          {!untouched && (
+            <circle
+              cx="50"
+              cy="50"
+              r={radius}
+              stroke="var(--accent)"
+              strokeWidth="10"
+              fill="none"
+              strokeLinecap="round"
+              strokeDasharray={`${progressLength} ${circumference}`}
+              transform="rotate(135 50 50)"
+            />
+          )}
+          <line x1="50" y1="50" x2="50" y2="18" stroke={untouched ? 'var(--text-muted)' : 'var(--text)'} strokeWidth="4" strokeLinecap="round" opacity={untouched ? 0.4 : 1} transform={`rotate(${angle} 50 50)`} />
+          <circle cx="50" cy="50" r="11" fill="var(--bg)" stroke={untouched ? 'var(--border-strong)' : 'var(--accent)'} strokeWidth="4" />
         </svg>
       </div>
-      <NumericStepper value={bounded} min={min} max={max} step={step} disabled={disabled} onChange={onChange} />
+      <NumericStepper value={untouched ? null : bounded} min={min} max={max} step={step} disabled={disabled} onChange={onChange} />
       <div style={{ width: '100%' }}>
         <ScaleEndpointLabels low={lowLabel} high={highLabel} min={min} max={max} lowDescription={lowDescription} highDescription={highDescription} />
       </div>
@@ -924,9 +958,9 @@ function DialControl({ value, min, max, step, disabled, onChange, label, lowLabe
 }
 
 function VerticalSliderControl({ value, min, max, step, disabled, onChange, label, lowLabel, highLabel, lowDescription, highDescription }) {
-  const safeValue = Number.isFinite(value) ? value : min
-  const bounded = Math.min(max, Math.max(min, safeValue))
-  const pct = max === min ? 0 : ((bounded - min) / (max - min)) * 100
+  const untouched = !Number.isFinite(value)
+  const bounded = untouched ? min : Math.min(max, Math.max(min, value))
+  const pct = untouched ? 0 : (max === min ? 0 : ((bounded - min) / (max - min)) * 100)
   return (
     <div style={{
       display: 'flex',
@@ -943,7 +977,7 @@ function VerticalSliderControl({ value, min, max, step, disabled, onChange, labe
       <ControlTitle>{label}</ControlTitle>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <ScaleEndpointLabels low={lowLabel} high={highLabel} min={min} max={max} lowDescription={lowDescription} highDescription={highDescription} vertical />
-        <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: untouched ? 0.4 : 1 }}>
           <input
             type="range"
             min={min}
@@ -952,12 +986,12 @@ function VerticalSliderControl({ value, min, max, step, disabled, onChange, labe
             value={bounded}
             disabled={disabled}
             onChange={e => onChange(Number(e.target.value))}
-            style={{ height: 140, width: 140, transform: 'rotate(-90deg)', accentColor: 'var(--accent)', cursor: disabled ? 'default' : 'pointer' }}
+            style={{ height: 140, width: 140, transform: 'rotate(-90deg)', accentColor: untouched ? 'var(--text-muted)' : 'var(--accent)', cursor: disabled ? 'default' : 'pointer' }}
           />
         </div>
       </div>
-      <NumericStepper value={bounded} min={min} max={max} step={step} disabled={disabled} onChange={onChange} />
-      <div style={{ width: 48, height: 6, borderRadius: 99, background: `linear-gradient(90deg, var(--accent) 0%, var(--accent) ${pct}%, var(--border) ${pct}%, var(--border) 100%)` }} />
+      <NumericStepper value={untouched ? null : bounded} min={min} max={max} step={step} disabled={disabled} onChange={onChange} />
+      <div style={{ width: 48, height: 6, borderRadius: 99, background: untouched ? 'var(--border)' : `linear-gradient(90deg, var(--accent) 0%, var(--accent) ${pct}%, var(--border) ${pct}%, var(--border) 100%)` }} />
     </div>
   )
 }
@@ -1243,14 +1277,15 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     const max = el.max ?? 100
     const step = el.step ?? 1
     const na = isNA(value)
-    const val = na ? min : (value ?? min)
+    const untouched = !na && !Number.isFinite(value)
+    const val = na ? min : (Number.isFinite(value) ? value : min)
     const bounded = Math.min(max, Math.max(min, Number(val)))
     return (
       <div>
         <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 7, opacity: na ? 0.55 : 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, opacity: untouched ? 0.4 : 1 }}>
               <ScaleEndpointLabels low={el.low_label} high={el.high_label} min={min} max={max} inset={HORIZONTAL_SLIDER_INSET} />
               <HorizontalSliderInput
                 min={min}
@@ -1264,7 +1299,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
               <SliderScaleLabels labels={el.scale_labels} min={min} max={max} />
             </div>
             <NumericStepper
-              value={bounded}
+              value={untouched ? null : bounded}
               min={min}
               max={max}
               step={step}
@@ -1302,7 +1337,6 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-start', opacity: na ? 0.55 : 1 }}>
           {Array.from({ length: count }, (_, idx) => {
             const current = values[idx]
-            const safeCurrent = Number.isFinite(current) ? current : min
             const label = controlLabel(el, idx, count)
             const lowLabel = controlEndpointLabel(el, 'low', idx)
             const highLabel = controlEndpointLabel(el, 'high', idx)
@@ -1311,7 +1345,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
             return el.type === 'dial' ? (
               <DialControl
                 key={`${el.id}-${idx}`}
-                value={safeCurrent}
+                value={current}
                 min={min}
                 max={max}
                 step={step}
@@ -1327,7 +1361,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
             ) : (
               <VerticalSliderControl
                 key={`${el.id}-${idx}`}
-                value={safeCurrent}
+                value={current}
                 min={min}
                 max={max}
                 step={step}
