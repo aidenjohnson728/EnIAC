@@ -308,7 +308,17 @@ export function computeAgreementForQuestion(type, values, weights = DEFAULT_AGRE
   if (cleaned.length < 2) return null
 
   const weight = getAgreementWeight(type, weights, questionMeta)
-  const method = getAgreementMethod(type, questionMeta)
+  // 'icc' and 'weighted_fleiss_kappa' are pooled-engine-only concepts — both
+  // require comparing variance *between* subjects, which is mathematically
+  // undefined for a single file. This function has never actually computed
+  // either one; without this substitution it would silently fall through to
+  // a type-based default below while still reporting the question's
+  // configured (pooled) method, mislabeling whatever was actually computed
+  // as "ICC" or "weighted Fleiss kappa" when it wasn't.
+  const configuredMethod = getAgreementMethod(type, questionMeta)
+  const method = (configuredMethod === 'icc' || configuredMethod === 'weighted_fleiss_kappa')
+    ? defaultAgreementMethodForType(type)
+    : configuredMethod
 
   if (method === 'percent') return { score: agreementForCategorical(values), weight, method }
   if (method === 'cohen_kappa') return { score: agreementForCohenKappa(values), weight, method }
