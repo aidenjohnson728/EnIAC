@@ -33,7 +33,10 @@
                     "label": "Participants held the conversation at a natural pace."
                   }
                 ],
-                "required": true
+                "required": true,
+                "agreement_enabled": true,
+                "agreement_method": "icc",
+                "agreement_weight": 1
               },
               {
                 "id": "el_1783370480860_jbz3",
@@ -54,7 +57,10 @@
                     "label": "Participants asked questions that allowed the other to share additional information."
                   }
                 ],
-                "required": true
+                "required": true,
+                "agreement_enabled": true,
+                "agreement_method": "icc",
+                "agreement_weight": 1
               },
               {
                 "id": "el_1783370609150_cg4o",
@@ -75,7 +81,10 @@
                     "label": "Both participants contributed to the conversational rhythm."
                   }
                 ],
-                "required": true
+                "required": true,
+                "agreement_enabled": true,
+                "agreement_method": "icc",
+                "agreement_weight": 1
               },
               {
                 "id": "el_1783371261565_8svy",
@@ -100,7 +109,10 @@
                     "label": "Participants allowed the other to speak without interruption."
                   }
                 ],
-                "required": true
+                "required": true,
+                "agreement_enabled": true,
+                "agreement_method": "icc",
+                "agreement_weight": 1
               }
             ]
           },
@@ -128,7 +140,10 @@
                     "label": "Participants allowed each other to pause."
                   }
                 ],
-                "required": true
+                "required": true,
+                "agreement_enabled": true,
+                "agreement_method": "icc",
+                "agreement_weight": 1
               }
             ]
           },
@@ -160,7 +175,10 @@
                     "label": "Participants allowed time for the expressions of emotion to be processed."
                   }
                 ],
-                "required": true
+                "required": true,
+                "agreement_enabled": true,
+                "agreement_method": "icc",
+                "agreement_weight": 1
               }
             ]
           },
@@ -192,7 +210,10 @@
                     "label": "Either participant was prevented from completing their conversational turn because of outside factors."
                   }
                 ],
-                "required": true
+                "required": true,
+                "agreement_enabled": true,
+                "agreement_method": "icc",
+                "agreement_weight": 1
               }
             ]
           },
@@ -224,7 +245,10 @@
                     "label": "Participants were visibly engaged in what the other was saying."
                   }
                 ],
-                "required": true
+                "required": true,
+                "agreement_enabled": true,
+                "agreement_method": "icc",
+                "agreement_weight": 1
               }
             ]
           },
@@ -256,7 +280,10 @@
                     "label": "Participants engaged in conversation to get to know each other (outside of clinical roles)."
                   }
                 ],
-                "required": true
+                "required": true,
+                "agreement_enabled": true,
+                "agreement_method": "icc",
+                "agreement_weight": 1
               }
             ]
           },
@@ -288,7 +315,10 @@
                     "label": "Participants prioritized a topic to allow for a more deliberate pace."
                   }
                 ],
-                "required": true
+                "required": true,
+                "agreement_enabled": true,
+                "agreement_method": "icc",
+                "agreement_weight": 1
               }
             ]
           },

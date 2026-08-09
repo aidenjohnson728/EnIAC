@@ -376,6 +376,14 @@ export function computeInterraterAgreementForMediaFile({
   weights = DEFAULT_AGREEMENT_WEIGHTS,
   questionIds = null,
   globalOnly = false,
+  // When true, every reviewer of this file is pooled into one comparison per
+  // question regardless of instance role (Trainee/Consultant) — this is what
+  // Alignment needs, since it's meant to show agreement among everyone who
+  // rated a file automatically, not split by role the way the pooled
+  // Agreement page intentionally is. Defaults to false so Agreement Between
+  // Results (an explicit, user-chosen 2-source comparison) keeps its
+  // existing role-separated behavior unless a caller opts in.
+  poolAcrossRoles = false,
 }) {
   const questionSummaries = []
   const formResponsesByQuestion = new Map()
@@ -384,6 +392,7 @@ export function computeInterraterAgreementForMediaFile({
     : null
 
   for (const review of reviewDetails) {
+    const reviewerName = review?.reviewerName || review?.reviewer_name || 'Unknown reviewer'
     const responses = review?.form_responses || []
     for (const formResponse of responses) {
       const schema = formResponse?.form_snapshot || null
@@ -394,13 +403,16 @@ export function computeInterraterAgreementForMediaFile({
         if (globalOnly && element?.global_agreement_question !== true) continue
         if (selectedQuestionIds && !selectedQuestionIds.has(String(element?.id))) continue
         // Repeatable form instances (e.g. "Trainee 1", "Consultant 1") must
-        // never be pooled together — they rate different people, not the
-        // same subject twice. Matched across reviewers by role + creation
-        // order (not instance_key, which is unique per review and would
-        // never match across two different reviewers' own instances).
+        // never be pooled together by default — they rate different people,
+        // not the same subject twice. Matched across reviewers by role +
+        // creation order (not instance_key, which is unique per review and
+        // would never match across two different reviewers' own instances).
+        // When poolAcrossRoles is true, this separation is deliberately
+        // skipped — every reviewer of this file counts toward one shared
+        // comparison per question, regardless of which role they held.
         const instanceRole = formResponse?.instance_role || null
         const instanceOrder = formResponse?.instance_order || 0
-        const instanceSuffix = instanceRole ? `:${instanceRole}:${instanceOrder}` : ''
+        const instanceSuffix = (instanceRole && !poolAcrossRoles) ? `:${instanceRole}:${instanceOrder}` : ''
         // Prefer form_name over form_id — form_id is either a local integer
         // (meaningless once compared against another install's local ids) or
         // a foreign sync_id for imported cross-file rows; form_name is the
@@ -410,7 +422,7 @@ export function computeInterraterAgreementForMediaFile({
         const questionKey = `${formResponse?.form_name || formResponse?.form_id || 'form'}:${element?.id}${instanceSuffix}`
         if (!formResponsesByQuestion.has(questionKey)) {
           formResponsesByQuestion.set(questionKey, {
-            label: instanceRole ? `${getElementLabel(element, element?.id)} (${instanceRole} ${instanceOrder})` : getElementLabel(element, element?.id),
+            label: (instanceRole && !poolAcrossRoles) ? `${getElementLabel(element, element?.id)} (${instanceRole} ${instanceOrder})` : getElementLabel(element, element?.id),
             type: getQuestionType(element),
             formId: formResponse?.form_id || null,
             questionId: element?.id,
@@ -422,7 +434,7 @@ export function computeInterraterAgreementForMediaFile({
         }
         const entry = formResponsesByQuestion.get(questionKey)
         const responseValue = values?.[element?.id]
-        entry.values.push(responseValue)
+        entry.values.push({ reviewerName, value: responseValue })
       }
     }
   }
@@ -434,7 +446,8 @@ export function computeInterraterAgreementForMediaFile({
       excludedQuestionCount++
       continue
     }
-    const result = computeAgreementForQuestion(question.type, question.values, weights, {
+    const plainValues = question.values.map(v => v.value)
+    const result = computeAgreementForQuestion(question.type, plainValues, weights, {
       ...question.meta,
       formId: question.formId,
       questionId: question.questionId,
@@ -446,6 +459,15 @@ export function computeInterraterAgreementForMediaFile({
         agreement: result.score,
         weight: result.weight,
         method: result.method || getAgreementMethod(question.type, question.meta),
+        // The element's own schema — specifically needed so a UI can
+        // translate a likert_group answer's row IDs into their actual
+        // labels rather than showing raw element IDs.
+        meta: question.meta,
+        // Individual reviewer answers, kept alongside the aggregate score so
+        // a UI can show "who answered what" on demand without recomputing
+        // anything — this is the same data the score above was computed
+        // from, not a separate fetch.
+        rawAnswers: question.values,
       })
     }
   }
@@ -463,6 +485,11 @@ export function computeInterraterAgreementForMediaFile({
     questionCount: scoredQuestions.length,
     excludedQuestionCount,
     overallAgreement,
-    questions: scoredQuestions.sort((a, b) => (b.agreement || 0) - (a.agreement || 0)),
+    // Left in natural form-question order (the order questions were
+    // discovered while walking the form's own schema) — sorting by agreement
+    // is a display choice, not something this shared engine should decide
+    // for every consumer. Alignment and Agreement Between Results each sort
+    // this at render time based on whichever order the person has selected.
+    questions: scoredQuestions,
   }
 }

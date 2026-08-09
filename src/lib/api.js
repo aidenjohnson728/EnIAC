@@ -21,6 +21,7 @@ export const api = isElectron ? window.api : {
   getEncounter: async () => null,
   createEncounter: async () => ({ id: Date.now() }),
   renameEncounter: async () => true,
+  deleteEncounter: async () => true,
   countEncounterReviews: async () => 0,
   deleteEncounter: async () => true,
   bulkDeleteEncounters: async () => ({ deleted: 0 }),

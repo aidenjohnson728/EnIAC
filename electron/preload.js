@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('api', {
   getEncounter: (id) => ipcRenderer.invoke('encounters:get', id),
   createEncounter: (projectId, name) => ipcRenderer.invoke('encounters:create', projectId, name),
   renameEncounter: (projectId, encounterId, name) => ipcRenderer.invoke('encounters:rename', projectId, encounterId, name),
+  deleteEncounter: (projectId, encounterId) => ipcRenderer.invoke('encounters:delete', projectId, encounterId),
   countEncounterReviews: (encounterId) => ipcRenderer.invoke('encounters:countReviews', encounterId),
   deleteEncounter: (projectId, encounterId) => ipcRenderer.invoke('encounters:delete', projectId, encounterId),
   bulkDeleteEncounters: (projectId, ids) => ipcRenderer.invoke('encounters:bulkDelete', projectId, ids),

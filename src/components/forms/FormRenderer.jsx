@@ -1091,19 +1091,32 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     // between two whole numbers (e.g. 3.5), both are highlighted rather than
     // picking one arbitrarily. Purely advisory — never auto-fills or blocks
     // picking a different value.
+    //
+    // Three outcomes depending on the linked source group's own answers:
+    // - every answered sub-item is numeric -> highlight the average, as before
+    // - every answered sub-item is marked N/A -> highlight the N/A option instead
+    // - a mix of numeric and N/A answers -> no highlight at all; averaging a
+    //   subset of the numbers while ignoring the N/A ones would misrepresent
+    //   what the source group actually says, so showing nothing is safer than
+    //   guessing.
     function guideValuesForItem(item) {
-      if (!item?.guide_source_id) return []
+      if (!item?.guide_source_id) return { numeric: [], isNA: false }
       const sourceVal = allValues?.[item.guide_source_id]
-      if (!sourceVal || typeof sourceVal !== 'object') return []
-      const answered = Object.values(sourceVal).filter(v => typeof v === 'number' && Number.isFinite(v))
-      if (answered.length === 0) return []
-      const avg = answered.reduce((a, b) => a + b, 0) / answered.length
+      if (!sourceVal || typeof sourceVal !== 'object') return { numeric: [], isNA: false }
+      const answered = Object.values(sourceVal).filter(v => v === 'N/A' || (typeof v === 'number' && Number.isFinite(v)))
+      if (answered.length === 0) return { numeric: [], isNA: false }
+      const naCount = answered.filter(v => v === 'N/A').length
+      if (naCount === answered.length) return { numeric: [], isNA: true }
+      if (naCount > 0) return { numeric: [], isNA: false }
+
+      const numericAnswered = answered
+      const avg = numericAnswered.reduce((a, b) => a + b, 0) / numericAnswered.length
       const clamped = Math.min(scale, Math.max(1, avg))
       const lower = Math.floor(clamped)
       const upper = Math.ceil(clamped)
-      if (lower === upper) return [lower]
+      if (lower === upper) return { numeric: [lower], isNA: false }
       const isExactlyHalfway = Math.abs((clamped - lower) - 0.5) < 1e-9
-      return isExactlyHalfway ? [lower, upper] : [Math.round(clamped)]
+      return { numeric: isExactlyHalfway ? [lower, upper] : [Math.round(clamped)], isNA: false }
     }
 
     return (
@@ -1116,18 +1129,25 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
         </div>
         {items.map((item, i) => {
           const itemVal = groupVal[item.id]
-          const guideValues = guideValuesForItem(item)
+          const guideResult = guideValuesForItem(item)
           return (
             <div key={item.id} style={{ display: 'flex', alignItems: 'center', padding: '5px 6px', background: i % 2 === 1 ? 'rgba(0,0,0,0.025)' : 'transparent', borderRadius: 4 }}>
               <div style={{ flex: 1, fontSize: 13, paddingRight: 10, lineHeight: 1.4 }}>{item.label || `Statement ${i + 1}`}</div>
               {el.has_na && (
-                <div style={{ width: COL_W, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+                <div
+                  title={guideResult.isNA ? 'Suggested — every linked sub-item was marked N/A' : undefined}
+                  style={{
+                    width: COL_W, display: 'flex', justifyContent: 'center', flexShrink: 0, borderRadius: 6,
+                    background: guideResult.isNA ? 'rgba(59,130,246,0.14)' : 'transparent',
+                    transition: 'background 0.15s',
+                  }}
+                >
                   <RadioDot selected={itemVal === 'N/A'} onClick={() => onChange({ ...groupVal, [item.id]: itemVal === 'N/A' ? undefined : 'N/A' })} readOnly={readOnly} />
                 </div>
               )}
               {points.map(p => {
-                const isGuided = guideValues.includes(p)
-                const guideLabel = guideValues.length > 1 ? `${guideValues[0]}.5` : guideValues[0]
+                const isGuided = guideResult.numeric.includes(p)
+                const guideLabel = guideResult.numeric.length > 1 ? `${guideResult.numeric[0]}.5` : guideResult.numeric[0]
                 return (
                   <div
                     key={p}

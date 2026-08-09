@@ -105,7 +105,11 @@ export function computeICC(subjectGroups, meta = {}) {
 export function computeFleissKappa(subjectGroups) {
   const groups = usableGroups(subjectGroups, toCategoryKey)
   const n = groups.length
-  if (n < 2) return null
+  // Unlike computeICC, this doesn't need 2+ subjects mathematically — both
+  // pObserved and pExpected below are computed from pooled ratings, not
+  // between-subject variance, so a single subject with 2+ raters is a
+  // perfectly well-defined (if noisier) estimate.
+  if (n < 1) return null
 
   const categoryTotals = new Map()
   let sumK = 0
@@ -131,7 +135,12 @@ export function computeFleissKappa(subjectGroups) {
     const p = count / sumK
     pExpected += p * p
   }
-  if (pExpected >= 1) return null
+  // pExpected === 1 means every single rating across every subject fell into
+  // the same category — zero variance. Kappa's denominator (1 - pExpected)
+  // is then exactly zero, making it mathematically undefined, not merely
+  // "not enough data" — worth a distinct signal so the UI can explain this
+  // correctly instead of showing an unexplained blank result.
+  if (pExpected >= 1) return { method: 'cohen_kappa', value: null, reason: 'no_variance', subjectCount: n, ratingCount: sumK }
 
   const kappa = (pObserved - pExpected) / (1 - pExpected)
   return {
@@ -153,7 +162,9 @@ export function computeFleissKappa(subjectGroups) {
 export function computeWeightedKappa(subjectGroups, meta = {}) {
   const groups = usableGroups(subjectGroups, v => toNumericValue(v, meta))
   const n = groups.length
-  if (n < 2) return null
+  // Same reasoning as computeFleissKappa above — no between-subject variance
+  // involved, so n>=1 is mathematically sufficient.
+  if (n < 1) return null
 
   const allValues = groups.flat()
   const configuredRange = Number(meta.max) - Number(meta.min)
@@ -192,7 +203,7 @@ export function computeWeightedKappa(subjectGroups, meta = {}) {
     }
   }
   const pExpected = pExpectedPairs > 0 ? pExpectedSum / pExpectedPairs : 0
-  if (pExpected >= 1) return null
+  if (pExpected >= 1) return { method: 'weighted_kappa', value: null, reason: 'no_variance', subjectCount: n, ratingCount: sumK }
 
   const kappa = (pObserved - pExpected) / (1 - pExpected)
   return {
@@ -215,7 +226,10 @@ export function computeWeightedKappa(subjectGroups, meta = {}) {
 export function computePooledPercentAgreement(subjectGroups) {
   const groups = usableGroups(subjectGroups, toCategoryKey)
   const n = groups.length
-  if (n < 2) return null
+  // This is Pbar only — no chance-correction term — so it never needed
+  // between-subject comparison to begin with. A single subject with 2+
+  // raters is a completely valid (if small) percent-agreement estimate.
+  if (n < 1) return null
 
   let sumK = 0
   let subjectAgreementSum = 0
@@ -280,7 +294,10 @@ export function computeWeightedFleissKappaSixPointBanded(subjectGroups, meta = {
     .map(group => group.map(v => mapSixPointToFourBand(toNumericValue(v, meta))).filter(v => v !== null))
     .filter(group => group.length >= 2)
   const n = bandedGroups.length
-  if (n < 2) return null
+  // Same reasoning as computeFleissKappa/computeWeightedKappa — Pbar and Pe
+  // are both computed from pooled ratings, not between-subject variance, so
+  // one subject with 2+ raters is mathematically sufficient.
+  if (n < 1) return null
 
   const w = FOUR_BAND_QUADRATIC_WEIGHTS
   const categoryTotals = new Map([[1, 0], [2, 0], [3, 0], [4, 0]])
@@ -317,7 +334,7 @@ export function computeWeightedFleissKappaSixPointBanded(subjectGroups, meta = {
       pe += proportions[ki] * proportions[kj] * w[ki][kj]
     }
   }
-  if (pe >= 1) return null
+  if (pe >= 1) return { method: 'weighted_fleiss_kappa', value: null, reason: 'no_variance', subjectCount: n, ratingCount: sumK }
 
   const kappa = (pbar - pe) / (1 - pe)
   return {

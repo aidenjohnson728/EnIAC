@@ -84,6 +84,7 @@ export default function ProjectPage() {
   const [newReview, setNewReview] = useState(null)
   const [deleteReviewTarget, setDeleteReviewTarget] = useState(null) // { id, reviewer_name }
   const [deleteMediaTarget, setDeleteMediaTarget] = useState(null) // { id, name }
+  const [deleteEncounterTarget, setDeleteEncounterTarget] = useState(null) // { id, name }
   const [showFilter, setShowFilter] = useState(false)
   const [filters, setFilters] = useState({})
   const [search, setSearch] = useState('')
@@ -106,11 +107,9 @@ export default function ProjectPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [autolinking, setAutolinking] = useState(false)
   const [linkSaving, setLinkSaving] = useState(null)
-  const [showNewEncounterModal, setShowNewEncounterModal] = useState(false)
   const [showShareModal, setShowShareModal] = useState(false)
   const [shareClearReviews, setShareClearReviews] = useState(false)
   const [sharing, setSharing] = useState(false)
-  const [newEncounterName, setNewEncounterName] = useState('')
   const [newMediaTarget, setNewMediaTarget] = useState(null)
   const [isDraggingNewMedia, setIsDraggingNewMedia] = useState(false)
   const [showScanModal, setShowScanModal] = useState(false)
@@ -323,6 +322,15 @@ export default function ProjectPage() {
     setEncounters(encs)
   }
 
+  async function handleDeleteEncounter() {
+    if (!deleteEncounterTarget) return
+    await api.deleteEncounter(projectId, deleteEncounterTarget.id)
+    setDeleteEncounterTarget(null)
+    const encs = await api.listEncounters(projectId)
+    setEncounters(encs)
+    showToast('Encounter deleted.')
+  }
+
   async function handleSyncNow() {
     setSyncing(true)
     // Pull latest structure from cloud first, then run full sync
@@ -486,29 +494,32 @@ export default function ProjectPage() {
     return parts[parts.length - 1] || filePath
   }
 
-  async function handleCreateEncounter() {
-    const name = newEncounterName.trim()
-    if (!name) return
-    const result = await api.createEncounter(projectId, name)
-    setShowNewEncounterModal(false)
-    setNewEncounterName('')
+  async function handleAddEncounterWithMedia() {
+    // No name-typing step anymore — the encounter starts with a placeholder,
+    // immediately opens straight into picking a video, and both the
+    // encounter name and media name get set to the video's own filename once
+    // it's actually chosen. Mirrors the same placeholder-then-rename pattern
+    // already used for media files below.
+    const result = await api.createEncounter(projectId, 'New Encounter')
     await refreshEncounterData()
     if (result?.id) {
       setExpanded(e => ({ ...e, [result.id]: true }))
-      // Streamlined flow: go straight into "Add Media" for the encounter that
-      // was just created, instead of requiring someone to find and click a
-      // separate "Add Media" button afterward.
-      setNewMediaTarget({ id: result.id, name })
+      setNewMediaTarget({ id: result.id, name: 'New Encounter' })
     }
-    showToast('Encounter added.')
   }
 
-  async function finalizeNewMediaLink(mediaId, filePath, currentName) {
+  async function finalizeNewMediaLink(mediaId, filePath, currentName, encounterId, encounterName) {
     if (!filePath) return
     await api.setMediaLink(mediaId, projectId, filePath)
     const linkedName = basenameFromPath(filePath)
     if (linkedName && linkedName !== currentName) {
       await api.renameMediaFile(projectId, mediaId, linkedName)
+    }
+    // The encounter itself also takes the video's name now, matching the
+    // media name exactly — only when it's still carrying the placeholder, so
+    // this never clobbers a name someone already set deliberately.
+    if (linkedName && encounterId && encounterName === 'New Encounter') {
+      await api.renameEncounter(projectId, encounterId, linkedName)
     }
     await refreshEncounterData()
     showToast('Video linked.')
@@ -517,6 +528,7 @@ export default function ProjectPage() {
   async function handleCreateMediaFile() {
     if (!newMediaTarget?.id) return
     const encounterId = newMediaTarget.id
+    const encounterName = newMediaTarget.name
     // Placeholder name only — immediately overwritten by the real filename
     // once a file is picked below. If the file dialog is canceled, this is
     // what's left; still renameable manually afterward like any media file.
@@ -541,7 +553,7 @@ export default function ProjectPage() {
     // automatically (still editable afterward via the existing rename option).
     if (created?.id) {
       const filePath = await api.browseMediaFile(created.id)
-      await finalizeNewMediaLink(created.id, filePath, placeholderName)
+      await finalizeNewMediaLink(created.id, filePath, placeholderName, encounterId, encounterName)
     }
   }
 
@@ -567,6 +579,7 @@ export default function ProjectPage() {
   async function handleDropNewMediaFile(filePath) {
     if (!newMediaTarget?.id || !filePath) return
     const encounterId = newMediaTarget.id
+    const encounterName = newMediaTarget.name
     // The dropped file's own name becomes the media name directly — no
     // placeholder needed here since the real filename is already known.
     const name = basenameFromPath(filePath)
@@ -578,7 +591,7 @@ export default function ProjectPage() {
     setNewMediaTarget(null)
     await refreshEncounterData()
     showToast('Media added.')
-    if (created?.id) await finalizeNewMediaLink(created.id, filePath, name)
+    if (created?.id) await finalizeNewMediaLink(created.id, filePath, name, encounterId, encounterName)
   }
 
   async function handleRenameEncounter() {
@@ -1039,7 +1052,7 @@ export default function ProjectPage() {
                   </p>
                 </div>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  <button className="btn btn-primary btn-sm" onClick={() => setShowNewEncounterModal(true)}>
+                  <button className="btn btn-primary btn-sm" onClick={handleAddEncounterWithMedia}>
                     <Plus size={13} /> Add Encounter
                   </button>
                   <button className="btn btn-secondary btn-sm" onClick={handleOpenScanModal} disabled={scanningFolder}>
@@ -1067,7 +1080,7 @@ export default function ProjectPage() {
                   <p>No encounters found</p>
                   {encounters.length === 0 && (
                     <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-                      <button className="btn btn-primary btn-sm" onClick={() => setShowNewEncounterModal(true)}>
+                      <button className="btn btn-primary btn-sm" onClick={handleAddEncounterWithMedia}>
                         <Plus size={13} /> Add Encounter
                       </button>
                       <button className="btn btn-secondary btn-sm" onClick={handleOpenScanModal}>
@@ -1080,7 +1093,7 @@ export default function ProjectPage() {
                 <>
                   <div id="tut-proj-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE).map(enc => (
-                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onRenameEncounter={() => { setRenameEncounterTarget(enc); setRenameInput(enc.name || '') }} onRenameMedia={(mf) => { setRenameMediaTarget(mf); setRenameInput(mf.name || '') }} onAddMedia={() => setNewMediaTarget(enc)} onChangeMediaType={handleChangeMediaType} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onDeleteMedia={(mf) => setDeleteMediaTarget(mf)} onManualLink={handleManualLink} onClearLink={handleClearLink} linkSaving={linkSaving} />
+                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onRenameEncounter={() => { setRenameEncounterTarget(enc); setRenameInput(enc.name || '') }} onDeleteEncounter={() => setDeleteEncounterTarget(enc)} onRenameMedia={(mf) => { setRenameMediaTarget(mf); setRenameInput(mf.name || '') }} onAddMedia={() => setNewMediaTarget(enc)} onChangeMediaType={handleChangeMediaType} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onDeleteMedia={(mf) => setDeleteMediaTarget(mf)} onManualLink={handleManualLink} onClearLink={handleClearLink} linkSaving={linkSaving} />
                     ))}
                   </div>
                   <Pagination currentPage={currentPage} totalPages={Math.ceil(filtered.length / PAGE_SIZE)} total={filtered.length} pageSize={PAGE_SIZE} onPageChange={setCurrentPage} />
@@ -1132,6 +1145,20 @@ export default function ProjectPage() {
       </Modal>
 
       <Modal
+        open={!!deleteEncounterTarget}
+        onClose={() => setDeleteEncounterTarget(null)}
+        title="Delete Encounter"
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setDeleteEncounterTarget(null)}>Cancel</button>
+            <button className="btn btn-danger" onClick={handleDeleteEncounter}>Delete</button>
+          </>
+        }
+      >
+        <p>Delete <strong>{deleteEncounterTarget?.name}</strong>? All media files, reviews, timestamps, and form responses for this encounter will be permanently removed.</p>
+      </Modal>
+
+      <Modal
         open={showShareModal}
         onClose={() => { setShowShareModal(false); setShareClearReviews(false) }}
         title="Share Project"
@@ -1160,31 +1187,6 @@ export default function ProjectPage() {
             </span>
           </span>
         </label>
-      </Modal>
-
-      <Modal
-        open={showNewEncounterModal}
-        onClose={() => setShowNewEncounterModal(false)}
-        title="Add Encounter"
-        footer={
-          <>
-            <button className="btn btn-secondary" onClick={() => setShowNewEncounterModal(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleCreateEncounter} disabled={!newEncounterName.trim()}>
-              Add Encounter
-            </button>
-          </>
-        }
-      >
-        <div className="form-field">
-          <label>Encounter Name</label>
-          <input
-            autoFocus
-            value={newEncounterName}
-            onChange={e => setNewEncounterName(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleCreateEncounter()}
-            placeholder="e.g. Encounter 001"
-          />
-        </div>
       </Modal>
 
       <Modal
@@ -1558,7 +1560,7 @@ function Pagination({ currentPage, totalPages, total, pageSize, onPageChange }) 
   )
 }
 
-function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncounter, onRenameMedia, onAddMedia, onChangeMediaType, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onClearLink, linkSaving }) {
+function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncounter, onDeleteEncounter, onRenameMedia, onAddMedia, onChangeMediaType, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onClearLink, linkSaving }) {
   const completedMedia = encounter.media?.filter(m => {
     if (!m.reviews_required) return m.reviews?.some(r => r.status === 'submitted')
     return m.reviews_completed >= m.reviews_required
@@ -1607,6 +1609,14 @@ function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncou
           <span className={`badge ${complete ? 'badge-success' : 'badge-muted'}`}>
             {complete ? 'Complete' : `${completedMedia.length}/${total}`}
           </span>
+          <button
+            className="btn btn-ghost btn-icon btn-sm"
+            title="Delete encounter"
+            style={{ width: 22, height: 22, padding: 0, color: 'var(--danger)' }}
+            onClick={e => { e.stopPropagation(); onDeleteEncounter() }}
+          >
+            <X size={13} />
+          </button>
         </div>
       </div>
 
@@ -2160,6 +2170,126 @@ function AgreementMultiSelect({ label, options, selectedIds, onChange, emptyText
   )
 }
 
+// Formats a single reviewer's raw answer for display in the answers table
+// below each question — handles the value shapes that actually occur across
+// question types (dial/vertical_slider arrays, likert_group objects,
+// multiselect arrays, plain scalars) without needing per-type branching at
+// every call site.
+function formatRawAnswerValue(value, rowLabelById = null) {
+  if (value === null || value === undefined || value === '') return '—'
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '—'
+    return value.map(v => formatRawAnswerValue(v, rowLabelById)).join(', ')
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value).filter(([k]) => k !== '__na')
+    if (entries.length === 0) return '—'
+    return entries.map(([k, v]) => `${(rowLabelById && rowLabelById.get(k)) || k}: ${formatRawAnswerValue(v, rowLabelById)}`).join(', ')
+  }
+  if (value === true) return 'Yes'
+  if (value === false) return 'No'
+  return String(value)
+}
+
+// One question's summary line, with a collapsed-by-default table underneath
+// showing exactly what each individual reviewer answered — shared by
+// Alignment and Agreement Between Results so both behave identically rather
+// than maintaining two separate copies of the same expand/collapse logic.
+function QuestionAgreementRow({ question, rowKey, methodExtra }) {
+  const [expanded, setExpanded] = useState(false)
+  const hasAnswers = Array.isArray(question.rawAnswers) && question.rawAnswers.length > 0
+  // likert_group answers are objects keyed by row element ID — translate
+  // those into their actual row labels rather than showing raw IDs.
+  const rowLabelById = useMemo(() => {
+    const items = question.meta?.items
+    if (!Array.isArray(items)) return null
+    return new Map(items.map(item => [String(item.id), item.label || item.id]))
+  }, [question.meta])
+  return (
+    <div style={{ background: 'var(--bg-secondary)', borderRadius: 8, overflow: 'hidden' }}>
+      <button
+        type="button"
+        onClick={() => hasAnswers && setExpanded(v => !v)}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+          width: '100%', padding: '6px 8px', fontSize: 12, background: 'transparent', border: 'none',
+          cursor: hasAnswers ? 'pointer' : 'default', textAlign: 'left', font: 'inherit',
+        }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          {hasAnswers && (expanded ? <ChevronDown size={12} style={{ flexShrink: 0, color: 'var(--text-muted)' }} /> : <ChevronRight size={12} style={{ flexShrink: 0, color: 'var(--text-muted)' }} />)}
+          <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }} className="truncate">{question.label}</span>
+        </span>
+        <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+          {AGREEMENT_METHOD_LABELS[question.method] || question.type}{methodExtra ? ` · ${methodExtra(question)}` : ''} · {Math.round((question.agreement || 0) * 100)}%
+        </span>
+      </button>
+      {expanded && hasAnswers && (
+        <div style={{ padding: '0 8px 8px', overflowX: 'auto' }}>
+          {rowLabelById ? (
+            // Matrix layout: one row per sub-item, one column per reviewer.
+            // Lets you scan straight across a single sub-item to see whether
+            // everyone agreed on THAT one thing — the actual question this
+            // table exists to answer — rather than hunting through a long
+            // comma-joined line per reviewer.
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)', minWidth: 160 }}>Item</th>
+                  {question.rawAnswers.map((a, i) => (
+                    <th key={`${rowKey}-head-${a.reviewerName}-${i}`} style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                      {a.reviewerName}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from(rowLabelById.entries()).map(([itemId, itemLabel]) => {
+                  const short = itemLabel.length > 60 ? `${itemLabel.slice(0, 57)}…` : itemLabel
+                  const disagreement = new Set(question.rawAnswers.map(a => JSON.stringify((a.value || {})[itemId] ?? null))).size > 1
+                  return (
+                    <tr key={`${rowKey}-item-${itemId}`}>
+                      <td title={itemLabel} style={{ padding: '4px 6px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>{short}</td>
+                      {question.rawAnswers.map((a, i) => (
+                        <td key={`${rowKey}-cell-${itemId}-${i}`} style={{
+                          padding: '4px 6px', borderBottom: '1px solid var(--border)',
+                          color: disagreement ? 'var(--danger)' : 'var(--text)',
+                          fontWeight: disagreement ? 600 : 400,
+                        }}>
+                          {formatRawAnswerValue((a.value || {})[itemId])}
+                        </td>
+                      ))}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          ) : (
+            // Simple two-column layout for single-value questions — already
+            // clear as-is, no matrix needed for one value per reviewer.
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)' }}>Reviewer</th>
+                  <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)' }}>Answer</th>
+                </tr>
+              </thead>
+              <tbody>
+                {question.rawAnswers.map((a, i) => (
+                  <tr key={`${rowKey}-${a.reviewerName}-${i}`}>
+                    <td style={{ padding: '4px 6px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>{a.reviewerName}</td>
+                    <td style={{ padding: '4px 6px', color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>{formatRawAnswerValue(a.value)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Alignment View (formerly "Data Visualization") ─────────────────────────────
 function DataVizView({ projectId, mediaTypes = [] }) {
   const [agreementRows, setAgreementRows] = useState([])
@@ -2170,6 +2300,10 @@ function DataVizView({ projectId, mediaTypes = [] }) {
   const [agreementMode, setAgreementMode] = useState('question')
   const [selectedSectionIds, setSelectedSectionIds] = useState([])
   const [selectedQuestionIds, setSelectedQuestionIds] = useState([])
+  // 'form_order' (default) shows questions in the order they appear on the
+  // form itself; 'agreement_desc' shows the lowest-agreement questions last,
+  // highest first — useful for scanning straight to the weakest questions.
+  const [questionSortMode, setQuestionSortMode] = useState('form_order')
 
   useEffect(() => {
     if (!projectId) return
@@ -2297,6 +2431,10 @@ function DataVizView({ projectId, mediaTypes = [] }) {
       reviewDetails: entry.reviews,
       questionIds: effectiveQuestionIds,
       globalOnly: agreementMode === 'final',
+      // Alignment shows agreement among everyone who rated a file
+      // automatically — unlike Agreement Between Results, it doesn't split
+      // by instance role (Trainee/Consultant).
+      poolAcrossRoles: true,
     })).filter(item => item.reviewCount >= 2)
     rows.sort((a, b) => (b.overallAgreement ?? -1) - (a.overallAgreement ?? -1))
     setAgreementRows(rows)
@@ -2400,38 +2538,64 @@ function DataVizView({ projectId, mediaTypes = [] }) {
           <p style={{ fontSize: 13 }}>Submit at least two reviews for the same file, or adjust the media type and agreement filters.</p>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {agreementRows.map(row => (
-            <div key={`${row.encounterName}-${row.mediaName}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mediaName}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                    {row.encounterName} · {row.reviewCount} reviews
-                    {row.excludedQuestionCount > 0 ? ` · ${row.excludedQuestionCount} excluded` : ''}
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Order questions by:</span>
+            <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+              <button
+                className="btn btn-sm"
+                style={{ borderRadius: 0, background: questionSortMode === 'form_order' ? 'var(--accent)' : 'transparent', color: questionSortMode === 'form_order' ? '#fff' : 'var(--text)' }}
+                onClick={() => setQuestionSortMode('form_order')}
+              >
+                Form order
+              </button>
+              <button
+                className="btn btn-sm"
+                style={{ borderRadius: 0, background: questionSortMode === 'agreement_desc' ? 'var(--accent)' : 'transparent', color: questionSortMode === 'agreement_desc' ? '#fff' : 'var(--text)' }}
+                onClick={() => setQuestionSortMode('agreement_desc')}
+              >
+                Agreement, highest first
+              </button>
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {agreementRows.map(row => {
+              const orderedQuestions = questionSortMode === 'agreement_desc'
+                ? [...row.questions].sort((a, b) => (b.agreement || 0) - (a.agreement || 0))
+                : row.questions
+              return (
+              <div key={`${row.encounterName}-${row.mediaName}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mediaName}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      {row.encounterName} · {row.reviewCount} reviews
+                      {row.excludedQuestionCount > 0 ? ` · ${row.excludedQuestionCount} excluded` : ''}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: row.overallAgreement >= 0.8 ? 'var(--success)' : row.overallAgreement >= 0.6 ? 'var(--accent)' : 'var(--danger)' }}>
+                    {row.overallAgreement == null ? '—' : `${Math.round(row.overallAgreement * 100)}%`}
                   </div>
                 </div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: row.overallAgreement >= 0.8 ? 'var(--success)' : row.overallAgreement >= 0.6 ? 'var(--accent)' : 'var(--danger)' }}>
-                  {row.overallAgreement == null ? '—' : `${Math.round(row.overallAgreement * 100)}%`}
-                </div>
+                {orderedQuestions.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {orderedQuestions.slice(0, 6).map(question => (
+                      <QuestionAgreementRow
+                        key={`${row.mediaName}-${question.label}`}
+                        rowKey={`${row.mediaName}-${question.label}`}
+                        question={question}
+                        methodExtra={q => `w${q.weight ?? 1}`}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No comparable form questions were found for this video.</div>
+                )}
               </div>
-              {row.questions.length > 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {row.questions.slice(0, 6).map(question => (
-                    <div key={`${row.mediaName}-${question.label}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '6px 8px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
-                      <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{question.label}</span>
-                      <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                        {AGREEMENT_METHOD_LABELS[question.method] || question.type} · w{question.weight ?? 1} · {Math.round((question.agreement || 0) * 100)}%
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No comparable form questions were found for this video.</div>
-              )}
-            </div>
-          ))}
-        </div>
+              )
+            })}
+          </div>
+        </>
       )}
     </div>
   )
@@ -2456,6 +2620,7 @@ function AgreementResultsView({ projectId }) {
   const [importedSources, setImportedSources] = useState([])
   const [sourceAId, setSourceAId] = useState('')
   const [sourceBId, setSourceBId] = useState('')
+  const [questionSortMode, setQuestionSortMode] = useState('form_order')
 
   const load = useCallback(async () => {
     if (!projectId) return
@@ -2529,14 +2694,32 @@ function AgreementResultsView({ projectId }) {
     for (const row of sourceARows) addRow(row, 'a')
     for (const row of sourceBRows) addRow(row, 'b')
 
+    // Groups a side's rows by reviewer first — a side can genuinely have
+    // more than one rater (e.g. an imported source covering several
+    // reviewers), and treating them as a single blended "review" would both
+    // hide who actually answered what and mix distinct people's ratings
+    // together in the raw-answers table below.
+    function buildPseudoReviews(rows, fallbackName) {
+      const byReviewer = new Map()
+      for (const row of rows) {
+        const reviewerName = row.reviewer_name || fallbackName
+        if (!byReviewer.has(reviewerName)) byReviewer.set(reviewerName, { reviewerName, form_responses: [] })
+        byReviewer.get(reviewerName).form_responses.push({
+          form_id: row.form_id, form_name: row.form_name, responses: row.responses,
+          form_snapshot: row.form_snapshot, instance_role: row.instance_role, instance_order: row.instance_order,
+        })
+      }
+      return Array.from(byReviewer.values())
+    }
+
     const rows = []
     for (const entry of grouped.values()) {
       // Missing on one side is handled by the "Only In..." tiles below rather than
       // rendered as a broken/empty comparison card here.
       if (entry.a.length === 0 || entry.b.length === 0) continue
       const reviewDetails = [
-        { form_responses: entry.a.map(r => ({ form_id: r.form_id, form_name: r.form_name, responses: r.responses, form_snapshot: r.form_snapshot, instance_role: r.instance_role, instance_order: r.instance_order })) },
-        { form_responses: entry.b.map(r => ({ form_id: r.form_id, form_name: r.form_name, responses: r.responses, form_snapshot: r.form_snapshot, instance_role: r.instance_role, instance_order: r.instance_order })) },
+        ...buildPseudoReviews(entry.a, 'First'),
+        ...buildPseudoReviews(entry.b, 'Second'),
       ]
       rows.push(computeInterraterAgreementForMediaFile({
         mediaName: entry.mediaName,
@@ -2547,16 +2730,6 @@ function AgreementResultsView({ projectId }) {
     rows.sort((a, b) => (b.overallAgreement ?? -1) - (a.overallAgreement ?? -1))
     return rows
   }, [sourceAId, sourceBId, sameSourcePicked, sourceARows, sourceBRows])
-
-  const missing = useMemo(() => {
-    if (!sourceAId || !sourceBId || sameSourcePicked) return { aOnly: 0, bOnly: 0 }
-    const aKeys = new Set(sourceARows.map(r => r.media_name))
-    const bKeys = new Set(sourceBRows.map(r => r.media_name))
-    let aOnly = 0, bOnly = 0
-    for (const k of aKeys) if (!bKeys.has(k)) aOnly++
-    for (const k of bKeys) if (!aKeys.has(k)) bOnly++
-    return { aOnly, bOnly }
-  }, [sourceARows, sourceBRows, sourceAId, sourceBId, sameSourcePicked])
 
   const scoredAgreementRows = agreementRows.filter(row => row.overallAgreement != null)
   const averageAgreement = scoredAgreementRows.length > 0
@@ -2629,14 +2802,6 @@ function AgreementResultsView({ projectId }) {
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Overall Agreement</div>
                   <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{averageAgreement == null ? '—' : `${Math.round(averageAgreement * 100)}%`}</div>
                 </div>
-                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Only In First</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{missing.aOnly}</div>
-                </div>
-                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Only In Second</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{missing.bOnly}</div>
-                </div>
               </div>
 
               {agreementRows.length === 0 ? (
@@ -2644,35 +2809,60 @@ function AgreementResultsView({ projectId }) {
                   <p style={{ fontSize: 14, fontWeight: 500 }}>No overlapping media files found between these two result sets.</p>
                 </div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  {agreementRows.map(row => (
-                    <div key={`${row.encounterName}-${row.mediaName}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
-                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
-                        <div>
-                          <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mediaName}</div>
-                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{row.encounterName}</div>
-                        </div>
-                        <div style={{ fontSize: 20, fontWeight: 700, color: row.overallAgreement >= 0.8 ? 'var(--success)' : row.overallAgreement >= 0.6 ? 'var(--accent)' : 'var(--danger)' }}>
-                          {row.overallAgreement == null ? '—' : `${Math.round(row.overallAgreement * 100)}%`}
-                        </div>
-                      </div>
-                      {row.questions.length > 0 ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                          {row.questions.map(question => (
-                            <div key={`${row.mediaName}-${question.label}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '6px 8px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
-                              <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{question.label}</span>
-                              <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                                {AGREEMENT_METHOD_LABELS[question.method] || question.type} · {Math.round((question.agreement || 0) * 100)}%
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No comparable questions found for this file.</div>
-                      )}
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Order questions by:</span>
+                    <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                      <button
+                        className="btn btn-sm"
+                        style={{ borderRadius: 0, background: questionSortMode === 'form_order' ? 'var(--accent)' : 'transparent', color: questionSortMode === 'form_order' ? '#fff' : 'var(--text)' }}
+                        onClick={() => setQuestionSortMode('form_order')}
+                      >
+                        Form order
+                      </button>
+                      <button
+                        className="btn btn-sm"
+                        style={{ borderRadius: 0, background: questionSortMode === 'agreement_desc' ? 'var(--accent)' : 'transparent', color: questionSortMode === 'agreement_desc' ? '#fff' : 'var(--text)' }}
+                        onClick={() => setQuestionSortMode('agreement_desc')}
+                      >
+                        Agreement, highest first
+                      </button>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {agreementRows.map(row => {
+                      const orderedQuestions = questionSortMode === 'agreement_desc'
+                        ? [...row.questions].sort((a, b) => (b.agreement || 0) - (a.agreement || 0))
+                        : row.questions
+                      return (
+                      <div key={`${row.encounterName}-${row.mediaName}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mediaName}</div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{row.encounterName}</div>
+                          </div>
+                          <div style={{ fontSize: 20, fontWeight: 700, color: row.overallAgreement >= 0.8 ? 'var(--success)' : row.overallAgreement >= 0.6 ? 'var(--accent)' : 'var(--danger)' }}>
+                            {row.overallAgreement == null ? '—' : `${Math.round(row.overallAgreement * 100)}%`}
+                          </div>
+                        </div>
+                        {orderedQuestions.length > 0 ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {orderedQuestions.map(question => (
+                              <QuestionAgreementRow
+                                key={`${row.mediaName}-${question.label}`}
+                                rowKey={`${row.mediaName}-${question.label}`}
+                                question={question}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No comparable questions found for this file.</div>
+                        )}
+                      </div>
+                      )
+                    })}
+                  </div>
+                </>
               )}
             </>
           )}
@@ -2913,6 +3103,7 @@ function QuestionReliabilityView({ projectId }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {questions.map(q => {
             const value = q.stat?.value ?? null
+            const noVariance = q.stat?.reason === 'no_variance'
             const interpretation = q.method === 'icc'
               ? iccInterpretation(value)
               : q.method === 'percent'
@@ -2940,7 +3131,12 @@ function QuestionReliabilityView({ projectId }) {
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
                   {q.subjectsUsable} of {q.subjectsSeen} rated encounter{q.subjectsSeen === 1 ? '' : 's'} had 2+
                   reviewers and count toward this statistic.
-                  {q.subjectsUsable < 2 && ' Not enough data yet for a reliable estimate.'}
+                  {/* ICC needs 2+ subjects to define between-subject variance at all;
+                      percent agreement and kappa-family methods only need 1+, since
+                      they're computed from pooled ratings rather than variance across
+                      subjects. */}
+                  {!noVariance && q.subjectsUsable < (q.method === 'icc' ? 2 : 1) && ' Not enough data yet for a reliable estimate.'}
+                  {noVariance && ' Every rating agreed exactly, with no variation at all — kappa is mathematically undefined in this case, not simply low. This isn\u2019t a data shortage; it will resolve once ratings include some disagreement or a wider mix of values.'}
                 </div>
               </div>
             )

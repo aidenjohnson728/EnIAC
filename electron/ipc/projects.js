@@ -208,8 +208,8 @@ module.exports = function (ipcMain) {
     const project = db.prepare('SELECT name FROM projects WHERE id=?').get(projectId)
     const safeName = (project?.name || 'project').replace(/[^a-zA-Z0-9_-]/g, '_')
     const { filePath } = await dialog.showSaveDialog({
-      defaultPath: `sdmo-${safeName}.json`,
-      filters: [{ name: 'SDMo Project', extensions: ['json'] }],
+      defaultPath: `${safeName}.json`,
+      filters: [{ name: 'EnIAC Project', extensions: ['json'] }],
     })
     if (!filePath) return null
     const data = buildExport(db, projectId, { clearReviews: !!options?.clearReviews })
@@ -219,7 +219,7 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('sync:importAsNew', async () => {
     const { filePaths } = await dialog.showOpenDialog({
-      filters: [{ name: 'SDMo Project', extensions: ['json'] }],
+      filters: [{ name: 'EnIAC Project', extensions: ['json'] }],
       properties: ['openFile'],
     })
     if (!filePaths?.[0]) return null
@@ -231,7 +231,7 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('sync:loadFile', async (_, projectId) => {
     const { filePaths } = await dialog.showOpenDialog({
-      filters: [{ name: 'SDMo Project', extensions: ['json'] }],
+      filters: [{ name: 'EnIAC Project', extensions: ['json'] }],
       properties: ['openFile'],
     })
     if (!filePaths?.[0]) return null
