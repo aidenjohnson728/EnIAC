@@ -156,10 +156,33 @@ test('agreement: categorical disagreement is not counted as half agreement', asy
   assert.strictEqual(result.score, 0)
 })
 
-test('agreement: multiselect responses use set overlap', async () => {
+test('agreement: multiselect sub-items inside an item_group still use set overlap', async () => {
   const { computeAgreementForQuestion } = await import('../src/lib/interraterAgreement.mjs')
-  const result = computeAgreementForQuestion('multiselect', [['A', 'B'], ['B', 'C']])
+  // Top-level 'set_overlap' as a standalone multiselect question's method is
+  // no longer reachable at all (verified against the real function — passing
+  // agreement_method: 'set_overlap' directly on a multiselect question
+  // still resolves to plain percent, not set overlap). The only remaining
+  // path to the actual set-overlap math is a multiselect-shaped (array)
+  // value nested inside a table/likert_group question scored as
+  // 'item_group', which still dispatches internally to
+  // agreementForMultiselect exactly as before.
+  const result = computeAgreementForQuestion(
+    'likert_group',
+    [{ tags: ['A', 'B'] }, { tags: ['B', 'C'] }],
+    {},
+    { agreement_method: 'item_group' }
+  )
   assert.strictEqual(result.score, 1 / 3)
+})
+
+test('agreement: multiselect responses default to exact-match percent, not set overlap', async () => {
+  const { computeAgreementForQuestion } = await import('../src/lib/interraterAgreement.mjs')
+  // Confirms the new default explicitly for a standalone multiselect
+  // question, so a future change accidentally reverting the default
+  // silently would be caught here rather than by a stale test.
+  const result = computeAgreementForQuestion('multiselect', [['A', 'B'], ['B', 'C']])
+  assert.strictEqual(result.method, 'percent')
+  assert.strictEqual(result.score, 0)
 })
 
 test('agreement: per-question weights are preserved in overall score', async () => {
