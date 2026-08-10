@@ -224,6 +224,7 @@ export default function ReviewPage() {
   const [workspaceExpanded, setWorkspaceExpanded] = useState(false)
   const [layoutMode, setLayoutMode] = useState('vertical') // 'vertical' | 'horizontal'
   const [tagsPaletteOpen, setTagsPaletteOpen] = useState(false)
+  const [sdmoPanelWidth, setSdmoPanelWidth] = useState(240)
   const [sdmoPanelView, setSdmoPanelView] = useState('tags') // 'tags' | 'notes' — SDMo's merged side panel
   const [timestampsPosition, setTimestampsPosition] = useState('side') // 'side' | 'bottom' — independent of layoutMode
   const [splitPct, setSplitPct] = useState(44) // video height% (vertical) or width% (horizontal)
@@ -253,6 +254,7 @@ export default function ReviewPage() {
 
   const splitDragRef = useRef(null)
   const mainAreaRef = useRef(null)
+  const outerAreaRef = useRef(null)
   const videoPanelRef = useRef(null)
 
   useEffect(() => { load() }, [reviewId])
@@ -523,6 +525,58 @@ export default function ReviewPage() {
     if (filePath) linkFileByPath(filePath)
   }
 
+  // Auto-fits the video panel to the video's own aspect ratio the moment its
+  // dimensions become known (right after a video loads), so it displays with
+  // no letterboxing initially. Only adjusts splitPct — the one dimension the
+  // video panel doesn't already have fixed by the layout (100% width in
+  // vertical/SDMo layout, 100% height in horizontal layout) — so a manual
+  // resize of the notes/form panel width still factors in correctly, since
+  // mainAreaRef's measured size already excludes whatever that panel
+  // currently takes up. Clamped to the same [20,75] range as manual
+  // dragging; a video far more extreme than that range will still show some
+  // letterboxing, same as if it were resized by hand to those limits.
+  //
+  // For SDMo specifically, the side panel is a second adjustable dimension,
+  // not just a fixed input — treating its current width as fixed (as the
+  // rest of this function does for every other media type) can leave real
+  // letterboxing on screen that a wider or narrower panel would have
+  // resolved. So for SDMo, this solves for the panel width and splitPct
+  // together: first finds the panel width that would let the video reach
+  // full height with no leftover space, clamps that to the panel's own
+  // [200,560] range, then recalculates the required height for whatever
+  // width the video actually ends up with after that clamp — rather than
+  // assuming the ideal panel width was always reachable.
+  function autoFitVideoToPanel(videoEl) {
+    if (!videoEl?.videoWidth || !videoEl?.videoHeight) return
+    const videoAspect = videoEl.videoWidth / videoEl.videoHeight
+
+    if (isSdmoMedia) {
+      const outer = outerAreaRef.current
+      const mainArea = mainAreaRef.current
+      if (!outer || !mainArea) return
+      const outerRect = outer.getBoundingClientRect()
+      const mainRect = mainArea.getBoundingClientRect()
+      if (outerRect.width <= 0 || mainRect.height <= 0) return
+      const idealPanelWidth = outerRect.width - mainRect.height * videoAspect
+      const panelWidth = Math.min(560, Math.max(200, idealPanelWidth))
+      setSdmoPanelWidth(panelWidth)
+      const actualVideoWidth = outerRect.width - panelWidth
+      const requiredHeight = actualVideoWidth / videoAspect
+      const desiredPct = (requiredHeight / mainRect.height) * 100
+      setSplitPct(Math.min(75, Math.max(20, desiredPct)))
+      return
+    }
+
+    const container = mainAreaRef.current
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+    const desiredPct = layoutMode === 'horizontal'
+      ? ((rect.height * videoAspect) / rect.width) * 100
+      : ((rect.width / videoAspect) / rect.height) * 100
+    setSplitPct(Math.min(75, Math.max(20, desiredPct)))
+  }
+
   // --- Drag-to-resize split ---
   function onDividerMouseDown(e) {
     e.preventDefault()
@@ -538,6 +592,29 @@ export default function ReviewPage() {
       const delta = (isHoriz ? ev.clientX : ev.clientY) - startPos
       const deltaPct = (delta / totalSize) * 100
       setSplitPct(Math.min(75, Math.max(20, startPct + deltaPct)))
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  // Same drag-to-resize idea as the video/workspace divider above, but for
+  // SDMo's merged Tags/Notes side panel — a fixed-width sidebar rather than a
+  // proportional split, so this tracks pixels dragged directly instead of a
+  // percentage of the container.
+  function onSdmoPanelDividerMouseDown(e) {
+    e.preventDefault()
+    const startPos = e.clientX
+    const startWidth = sdmoPanelWidth
+
+    function onMove(ev) {
+      // Panel is on the right edge and its own left border is what's being
+      // dragged, so moving the pointer left (negative delta) should widen it.
+      const delta = startPos - ev.clientX
+      setSdmoPanelWidth(Math.min(560, Math.max(200, startWidth + delta)))
     }
     function onUp() {
       document.removeEventListener('mousemove', onMove)
@@ -987,7 +1064,7 @@ export default function ReviewPage() {
       )}
 
       {/* Main area */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: timestampsPosition === 'bottom' ? 'column' : 'row', overflow: 'hidden' }}>
+      <div ref={outerAreaRef} style={{ flex: 1, display: 'flex', flexDirection: timestampsPosition === 'bottom' ? 'column' : 'row', overflow: 'hidden' }}>
 
         {/* Center: video + workspace (with resizable split) */}
         {!workspaceExpanded && (
@@ -1022,7 +1099,7 @@ export default function ReviewPage() {
                   controls={false}
                   onClick={toggleVideoPlayback}
                   style={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain', cursor: 'pointer' }}
-                  onLoadedMetadata={e => { setVideoDuration(e.target.duration); setVideoCurrentTime(e.target.currentTime || 0); setVideoMuted(e.target.muted) }}
+                  onLoadedMetadata={e => { setVideoDuration(e.target.duration); setVideoCurrentTime(e.target.currentTime || 0); setVideoMuted(e.target.muted); autoFitVideoToPanel(e.target) }}
                   onTimeUpdate={e => setVideoCurrentTime(e.target.currentTime)}
                   onPlay={() => setVideoPaused(false)}
                   onPause={() => setVideoPaused(true)}
@@ -1239,9 +1316,19 @@ export default function ReviewPage() {
               {tagsPaletteOpen ? '›' : '‹'}
             </button>
             <div style={{
-              width: tagsPaletteOpen ? 240 : 0, overflow: 'hidden', borderLeft: '1px solid var(--border)',
-              display: 'flex', flexDirection: 'column', transition: 'width 0.2s ease', height: '100%',
+              width: tagsPaletteOpen ? sdmoPanelWidth : 0, overflow: 'hidden', borderLeft: '1px solid var(--border)',
+              display: 'flex', flexDirection: 'column', transition: tagsPaletteOpen ? 'none' : 'width 0.2s ease', height: '100%',
+              position: 'relative',
             }}>
+              {tagsPaletteOpen && (
+                <div
+                  onMouseDown={onSdmoPanelDividerMouseDown}
+                  title="Drag to resize"
+                  style={{
+                    position: 'absolute', left: -3, top: 0, bottom: 0, width: 6, cursor: 'col-resize', zIndex: 21,
+                  }}
+                />
+              )}
               <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
                 <div style={{ display: 'flex', gap: 4 }}>
                   <button
@@ -1269,6 +1356,7 @@ export default function ReviewPage() {
                 {sdmoPanelView === 'tags' ? (
                   <TagPaletteList
                     tags={tags}
+                    timestamps={timestamps}
                     readOnly={submitted}
                     onLeftClick={(tag) => handlePaletteTagClick(tag, { withNote: false })}
                     onRightClick={(tag) => handlePaletteTagClick(tag, { withNote: true })}
@@ -1741,7 +1829,7 @@ function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, onTagClick, rea
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 8px 7px 10px' }}>
         <button
           className="btn btn-ghost btn-icon btn-sm"
-          style={{ padding: '2px 4px', color: 'var(--accent)', fontFamily: 'monospace', fontSize: 12, fontWeight: 700, flexShrink: 0 }}
+          style={{ padding: '2px 4px', color: 'var(--accent)', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, flexShrink: 0 }}
           onClick={e => { e.stopPropagation(); onSeek() }}
           title="Seek to timestamp"
         >
@@ -1754,7 +1842,7 @@ function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, onTagClick, rea
               disabled={readOnly}
               onClick={() => onTagClick?.()}
               style={{
-                fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 99,
+                fontSize: 13, fontWeight: 500, padding: '2px 8px', borderRadius: 99,
                 background: tagColor ? tagColor + '1a' : 'var(--bg-active)',
                 color: tagColor || 'var(--text-secondary)',
                 border: `1px solid ${tagColor ? tagColor + '44' : 'var(--border)'}`,
@@ -1795,7 +1883,7 @@ function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, onTagClick, rea
             disabled={readOnly}
             onChange={e => onChange({ notes: e.target.value })}
             rows={2}
-            style={{ fontSize: 12, resize: 'none', minHeight: 'unset' }}
+            style={{ fontSize: 16, lineHeight: 1.5, resize: 'none', minHeight: 'unset' }}
           />
         </div>
       )}
@@ -1849,7 +1937,7 @@ function HoverTooltip({ text, children, inline = false }) {
   )
 }
 
-function TagPaletteList({ tags, onLeftClick, onRightClick, readOnly }) {
+function TagPaletteList({ tags, timestamps = [], onLeftClick, onRightClick, readOnly }) {
   const groupedTags = useMemo(() => {
     const buckets = new Map()
     for (const tagItem of tags) {
@@ -1860,15 +1948,34 @@ function TagPaletteList({ tags, onLeftClick, onRightClick, readOnly }) {
     return Array.from(buckets.entries())
   }, [tags])
 
+  // Same matching logic as FormRenderer's tag_category_presence computation
+  // (id primarily, falling back to label) — this needs to stay in sync with
+  // that, since it's now the only visible indicator of presence at all; the
+  // form question itself no longer renders.
+  function categoryHasPresence(category) {
+    return timestamps.some(ts => {
+      const tag = tags.find(t => String(t.id) === String(ts.tag_id) || (t.label && t.label === ts.tag_label))
+      return tag && (tag.category || '').trim() === category
+    })
+  }
+
   if (groupedTags.length === 0) {
     return <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '10px 2px' }}>No tags are available for this media type yet.</div>
   }
 
   return (
     <>
-      {groupedTags.map(([category, categoryTags]) => (
+      {groupedTags.map(([category, categoryTags]) => {
+        const present = categoryHasPresence(category)
+        return (
         <div key={category}>
-          <div style={{ padding: '8px 2px 4px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)' }}>
+          <div style={{
+            padding: '8px 2px 4px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em',
+            display: 'flex', alignItems: 'center', gap: 5,
+            color: present ? 'var(--success)' : 'var(--text-muted)',
+            transition: 'color 0.15s',
+          }}>
+            {present && <CheckCircle2 size={12} strokeWidth={2.5} />}
             {category}
           </div>
           {categoryTags.map(t => (
@@ -1886,7 +1993,8 @@ function TagPaletteList({ tags, onLeftClick, onRightClick, readOnly }) {
             </HoverTooltip>
           ))}
         </div>
-      ))}
+        )
+      })}
     </>
   )
 }

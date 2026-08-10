@@ -9,13 +9,13 @@
         "sections": [
           {
             "id": "el_1785960658018_680a",
-            "title": "Evidence of Distinction Dials",
+            "title": "SDM Conversation Distinctions",
             "description": "",
             "elements": [
               {
                 "id": "el_1783636630317_uk5h",
                 "type": "dial",
-                "label": "Evidence of Distinction Dials",
+                "label": "SDM Conversation Distinctions",
                 "required": false,
                 "has_na": false,
                 "agreement_enabled": true,
@@ -184,7 +184,7 @@
               {
                 "id": "el_1785960658018_6585",
                 "type": "multiple_choice",
-                "label": "Did the identified inquiry items relate to one another in a way that constitutes a method of inquiry?",
+                "label": "Did the inquiry acts present in the encounter work together as a method of inquiry",
                 "options": [
                   "Yes",
                   "No"

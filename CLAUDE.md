@@ -6,9 +6,13 @@
 
 ## What This App Is
 
-SDMo is a clinical encounter coding desktop app for research studies. Coders watch videos (or review PDFs) and log timestamped observations while filling out structured forms. Multi-user projects sync via a shared local folder or OneDrive/Google Drive.
+EnIAC (formerly SDMo — see note below) is a clinical encounter coding desktop app for research studies. Coders watch videos (or review PDFs) and log timestamped observations while filling out structured forms. Multi-user projects sync via a shared local folder or OneDrive/Google Drive.
 
 Core flow: Home → Project → Encounters → open media file → Review page (video + timestamp logger + form workspace) → Submit.
+
+The app ships two built-in project templates, each with its own form and agreement configuration: **SDMo** and **UCAT**. Both live in `electron/services/defaultProjectTemplates/` (`sdmo.json`, `ucat.json`) and are consumed by `electron/services/defaultProjects.js`. Editing a template only affects **newly created** projects — an existing project's own copy of its form/media-type config must be updated separately (Setup → Forms) or the project recreated.
+
+> **Naming note:** the product was renamed from SDMo to EnIAC. `app.setName('SDMo')` in `main.js` is intentionally unchanged (see Misc) — the internal app name and userData path stay "SDMo" for backward compatibility with existing installs, independent of the "EnIAC" display name and branding used everywhere else (window titles, exported filenames, file-picker filter labels, etc.). When adding new user-facing strings, use "EnIAC" — but never touch `app.setName`.
 
 ---
 
@@ -26,7 +30,7 @@ npm run dist:win  # Windows NSIS → release/
 
 No linter. Tests live in `test/`, use `test/_harness.js` (zero-dep runner), and rely on `test/helpers.js` for in-memory DB setup.
 
-Releases are migration-sensitive. Follow `RELEASE.md` for version bumps, migration/update tests, diagnostics checks, and GitHub Release publishing.
+Releases are migration-sensitive. Follow `RELEASE.md` for version bumps, migration/update tests, diagnostics checks, and GitHub Release publishing. A same-version asset swap (replacing a release's binaries without bumping the version) skips `npm version` entirely and re-uploads with `gh release upload <tag> ... --clobber` — existing installs on that version won't be prompted to update, since the auto-updater compares version strings.
 
 ---
 
@@ -83,6 +87,30 @@ The app is in production. Installed users must be able to update without losing 
 - **Video/audio:** always use the HTTP media server (`mediaServer.js`). `getMediaUrl(filePath)` returns a token URL that supports HTTP range requests. Call `media:getUrl` IPC from the renderer.
 - **PDFs / other files:** use the `localfile://` protocol registered in `main.js`. Do **not** replace it with `protocol.handle` + `net.fetch` — that breaks range requests.
 - Both mechanisms enforce an allowlist. Never serve arbitrary renderer-provided paths.
+- **Adding a new encounter** goes straight from "Add Encounter" into picking/dropping a video — there's no separate name-typing step. The encounter and its media file both take the video's own filename once it's linked (`ProjectPage.jsx`, `finalizeNewMediaLink`); only renames a placeholder name, never overwrites one someone set on purpose.
+
+### Agreement & reliability
+
+Inter-rater agreement is computed by **two separate engines** with different jobs — don't conflate them or move logic between them without checking both consumers.
+
+- **`src/lib/reliabilityStats.mjs`** — pooled statistics (ICC, Cohen's kappa, weighted kappa, percent agreement, weighted Fleiss kappa) computed **across every encounter that shares a media name**, project-wide plus any imported results files. Powers `QuestionReliabilityView` (ProjectPage's **Agreement** tab).
+- **`src/lib/interraterAgreement.mjs`** — per-file comparison for a **single** video at a time. Powers **Alignment** and **Agreement Between Results** (both in `ProjectPage.jsx`).
+- **ICC always needs 2+ subjects; every other method here only needs 1+.** ICC's model is a ratio of *between-subject* variance to total variance — mathematically undefined with one subject, full stop, no way around it. Every other method (kappa-family, percent agreement) is computed from pooled ratings, not between-subject variance, so a single subject with 2+ raters is a valid (if noisier) estimate. This is why `computeICC` alone keeps its `n < 2` guard while the others were relaxed to `n < 1`. Don't "fix" the others back to matching ICC's stricter guard — that was the actual bug, once.
+- **`interraterAgreement.mjs` can never report a real ICC or weighted Fleiss kappa** — it only ever has one subject (one video) per comparison. If a question's `agreement_method` is `icc` or `weighted_fleiss_kappa`, `computeAgreementForQuestion` substitutes the type's actual per-file default (e.g. `item_group` for `likert_group`, `ordinal` for `likert`) *before* computing, so the returned `method` label always matches what was genuinely computed — never trust `questionMeta.agreement_method` directly as the displayed label in this file.
+- **A `null` result from a kappa-family function can mean two different things**, and the UI must distinguish them: not enough subjects (`reason` absent), or mathematically undefined because every rating agreed with zero variance (`reason: 'no_variance'`, `pExpected`/`pe === 1` makes the denominator zero). Collapsing these into one generic "not enough data" message is misleading — the second case needs real data variety to ever resolve, not just more encounters.
+- **Alignment pools across instance roles by default; Agreement Between Results does not.** `computeInterraterAgreementForMediaFile`'s `poolAcrossRoles` param controls this — Alignment passes `true` (it's automatic and meant to show agreement among everyone who rated a file, Trainee and Consultant together), Agreement Between Results leaves it `false` (an explicit, user-chosen comparison between two specific sources, which may or may not be role-specific). Don't default this to `true` globally — it silently changes what a role-separated pooled stat means.
+- **Cross-file/cross-install matching key is `media_name`, never `encounter_name`.** Encounter names are a display label only and can legitimately collide across different videos. Every subject-grouping key in both engines is media name (optionally + `form_name:element_id:instance_role:instance_order` for per-question keys) — don't add encounter_name into a matching key.
+
+### Multi-instance forms
+
+A form can opt into repeatable instances within one review (e.g. UCAT's Trainee/Consultant) via `schema.multi_instance_roles: [...]`. Each instance is identified by `instance_key` (unique per review), `instance_role`, `instance_order`.
+
+- **A multi-instance form with zero instances must show a role-picker, never the form itself** (`FormInstancePrompt` in `ReviewPage.jsx`/`WorkspacePage.jsx`) — this is intentional, not a loading state: an answer must never be saved with no role attached, since it can't be matched to Trainee/Consultant in agreement/reliability afterward.
+- **Cross-reviewer instance matching uses role + creation order, not `instance_key`** — `instance_key` is unique per review and would never match across two different reviewers' own instances of the same role.
+
+### `tag_category_presence` questions
+
+This question type is **auto-computed, never manually answered**, and (as of this session) **not rendered as a form question at all** — `FormRenderer.jsx` returns `null` for it, while still running the effect that computes and saves "Present"/"Not Present" based on whether any tag from the matching category was used. Presence is shown instead directly on the Notes/Tags panel (`TagPaletteList` in `ReviewPage.jsx`/`WorkspacePage.jsx`): a category header turns green with a checkmark once a tag under it has been used. Both places match tags to categories the same way (id primarily, falling back to label) — keep them in sync if either changes. A form section made up entirely of `tag_category_presence` questions is filtered out of rendering entirely (would otherwise show as an empty, clickable header with nothing inside).
 
 ### UI patterns
 
@@ -90,6 +118,7 @@ The app is in production. Installed users must be able to update without losing 
 - Persistent banners: inline `<div>` with `background`, `borderBottom`, `padding: '8px 20px'` pattern — see the `syncError` / offline banners in `ProjectPage`. Use for states that need to stay visible until resolved.
 - Setup section indices come from `src/lib/setupSections.js` (`SETUP_SECTIONS`). Never hardcode section numbers.
 - Page routes: `/` → HomePage, `/project/:id` → ProjectPage, `/project/:id/setup` → SetupPage, `/review/:id` → ReviewPage, `/workspace/:id` → WorkspacePage.
+- Dial/slider controls distinguish "untouched" (`null`, shows "--") from a real answer at `min` — don't coerce through `Number()` before checking for this, `Number(null) === 0` silently turns a reset/clear into a real answer of `0` (then clamped up to `min`). The shared `NumericStepper` component includes a reset-to-untouched control; any new numeric control wrapping it should pass `null` through as-is, not run it through a clamp first.
 
 ### App updates and diagnostics
 
@@ -103,7 +132,7 @@ The app is in production. Installed users must be able to update without losing 
 ### Misc
 
 - Use `node-fetch@2` (CommonJS) for HTTP in the main process. Do **not** upgrade to v3 (ESM only).
-- `app.setName('SDMo')` is called at the top of `main.js` — this sets the userData path. Don't move it.
+- `app.setName('SDMo')` is called at the top of `main.js` — this sets the userData path. Don't move it, and don't change the string to "EnIAC" — see the naming note at the top of this file.
 - Form schema: `{ sections: [{ id, title, elements: [{ id, type, label }] }] }`. Form responses are keyed by element UUID. In Excel export iterate `sec.elements`, not `sec.questions`.
 
 ---
@@ -123,9 +152,11 @@ The app is in production. Installed users must be able to update without losing 
 | `electron/mediaLinks.js` | Per-machine file path resolution (`resolveLink`, `upsertLink`) |
 | `electron/services/structure.js` | Forms/instructions/media-types save+delete domain logic; version-history capture (`form_versions`/`media_type_versions`), `listVersionHistory`, `restoreVersion` |
 | `electron/services/snapshots.js` | Review-time workspace/form snapshots; `buildWorkspaceSnapshot`, `localizeWorkspaceSnapshot`, structure-migration preview/apply |
+| `electron/services/defaultProjects.js` | Seeds new projects from the SDMo/UCAT templates; only affects project creation, never existing projects |
+| `electron/services/defaultProjectTemplates/*.json` | The SDMo and UCAT template schemas themselves (forms, media types, instructions) |
 | `electron/ipc/contracts.js` | IPC argument validators |
-| `electron/ipc/projects.js` | Project CRUD, password, sync:now |
-| `electron/ipc/encounters.js` | Encounter CRUD + bulk ops, structure Excel export/import |
+| `electron/ipc/projects.js` | Project CRUD, password, sync:now, save/share project file |
+| `electron/ipc/encounters.js` | Encounter CRUD + bulk ops (including delete/bulkDelete), structure Excel export/import |
 | `electron/ipc/media.js` | Media file CRUD + bulk ops, linking, playback |
 | `electron/ipc/reviews.js` | Reviews, timestamps, form responses, soft-delete/restore |
 | `electron/ipc/cloud.js` | Cloud OAuth, folder ops, cloud sync trigger |
@@ -133,6 +164,11 @@ The app is in production. Installed users must be able to update without losing 
 | `electron/cloud/googledrive.js` | Google Drive API v3 adapter (port 3878) |
 | `src/lib/api.js` | Renderer API wrapper + browser-mode mocks |
 | `src/lib/setupSections.js` | `SETUP_SECTIONS` constants — source of truth for Setup tab indices |
+| `src/lib/reliabilityStats.mjs` | Pooled ICC/kappa/percent agreement math — powers the Agreement tab |
+| `src/lib/interraterAgreement.mjs` | Per-file agreement math — powers Alignment and Agreement Between Results |
+| `src/pages/ProjectPage.jsx` | Encounters list, Agreement/Alignment/Agreement Between Results views, project-level actions (share, delete encounter, etc.) |
+| `src/pages/ReviewPage.jsx` | Video player, timestamp logging, form workspace, SDMo's merged Tags/Notes panel, video auto-fit layout |
+| `src/components/forms/FormRenderer.jsx` | Renders a form schema into inputs; guide-highlight, dial/slider controls, `tag_category_presence` auto-compute |
 
 ---
 
@@ -147,7 +183,7 @@ projects
         └── media_files → media_type_id
               └── reviews (soft-deleted via deleted_at; workspace_snapshot, media_type_sync_id/version)
                     └── timestamps
-                    └── form_responses (form_sync_id, form_version, form_snapshot)
+                    └── form_responses (form_sync_id, form_version, form_snapshot, instance_key, instance_role, instance_order)
 form_versions        ← per-edit history of each form's schema (keyed by form_sync_id + version)
 media_type_versions  ← per-edit history of each media type's config (tags + workspace tabs)
 deleted_structure    ← sync tombstones for structural entities
@@ -159,7 +195,7 @@ media_file_links     ← per-machine path resolution (not synced)
 
 Forms and media types are **versioned**. Editing one bumps its `schema_version` / `config_version` and `structure.js` captures the prior state into `form_versions` / `media_type_versions` (via `captureFormVersion` / `captureMediaTypeVersion`, `INSERT OR IGNORE`). The Setup UI lists history (`setup:listVersionHistory`) and can restore a prior version as a new latest version (`setup:restoreVersion`).
 
-Each **review captures a snapshot** of the exact instrument it was filled against: `reviews.workspace_snapshot` (media type + tags + workspace tabs + full form schemas) and `form_responses.form_snapshot` (the one form's schema). `WorkspacePage` renders from this snapshot, so a coder always sees the form as it was — later edits don't retroactively change in-flight or submitted reviews. The Excel export and `Responses_Long` sheet read these snapshots, so old answers keep their original labels and removed questions are never dropped.
+Each **review captures a snapshot** of the exact instrument it was filled against: `reviews.workspace_snapshot` (media type + tags + workspace tabs + full form schemas) and `form_responses.form_snapshot` (the one form's schema). `WorkspacePage` renders from this snapshot, so a coder always sees the form as it was — later edits don't retroactively change in-flight or submitted reviews. The Excel export and `Responses_Long` sheet read these snapshots, so old answers keep their original labels and removed questions are never dropped. **`interraterAgreement.mjs` reads `form_snapshot` directly** (no live-schema fallback) — an imported results file's own `form_snapshot` must be complete and accurate for its questions' `agreement_method`/type to be read correctly by Alignment or Agreement Between Results.
 
 Re-aligning existing reviews to the current structure is **opt-in**, never automatic: `setup:previewStructureMigration` shows how many drafts/submitted reviews match, `setup:migrateStructureReviews` rewrites their snapshots. Don't auto-migrate on edit.
 

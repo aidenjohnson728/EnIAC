@@ -57,6 +57,7 @@ export const api = isElectron ? window.api : {
   addFormInstance: async (_reviewId, _formId, role) => ({ instance_key: String(Date.now()), instance_role: role, instance_order: 1 }),
   removeFormInstance: async () => true,
   exportResults: async () => null,
+  exportResultsCsv: async () => null,
   importResultsFiles: async () => ({ imported: 0, skipped: [] }),
   listImportedResults: async () => [],
   deleteImportedResult: async () => true,

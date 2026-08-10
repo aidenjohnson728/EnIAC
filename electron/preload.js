@@ -200,6 +200,7 @@ contextBridge.exposeInMainWorld('api', {
   browseMediaFile: (mediaFileId) => ipcRenderer.invoke('media:browseFile', mediaFileId),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   exportResults: (projectId) => ipcRenderer.invoke('reviews:exportResults', projectId),
+  exportResultsCsv: (projectId) => ipcRenderer.invoke('reviews:exportResultsCsv', projectId),
   importResultsFiles: (projectId) => ipcRenderer.invoke('reviews:importResultsFiles', projectId),
   listImportedResults: (projectId) => ipcRenderer.invoke('reviews:listImportedResults', projectId),
   deleteImportedResult: (id) => ipcRenderer.invoke('reviews:deleteImportedResult', id),

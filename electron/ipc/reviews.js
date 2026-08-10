@@ -55,6 +55,121 @@ function getMyResponsesLong(db, projectId) {
   return rows
 }
 
+// form_snapshot has taken a couple of different shapes across this codebase
+// (bare {sections}, or {schema:{sections}}) — same defensive lookup pattern
+// used elsewhere in the app.
+function getSchemaSectionsForExport(schema) {
+  if (!schema) return []
+  if (Array.isArray(schema.sections)) return schema.sections
+  if (Array.isArray(schema.schema?.sections)) return schema.schema.sections
+  return []
+}
+
+function csvEscape(value) {
+  if (value === null || value === undefined) return ''
+  const str = String(value)
+  if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`
+  return str
+}
+
+// Reduces any response value down to one plain, human-readable cell —
+// statistical software needs a single scalar per cell, not a JSON blob.
+// Object-valued questions (likert_group rows, tag-presence groups) are
+// unpacked into their own separate rows below rather than reaching this
+// function as a whole object; this only handles what's left after that:
+// arrays (multiselect, or an un-unpacked edge case) get joined with '; '.
+function formatCsvAnswerValue(value) {
+  if (value === null || value === undefined || value === '') return ''
+  if (Array.isArray(value)) return value.map(formatCsvAnswerValue).join('; ')
+  if (typeof value === 'object') return JSON.stringify(value)
+  if (value === true) return 'Yes'
+  if (value === false) return 'No'
+  return String(value)
+}
+
+// Flattens one responses_long row (one review × form × instance, with a
+// single nested `responses` object keyed by element id) into one flat CSV
+// row PER INDIVIDUAL QUESTION — and per sub-item for likert_group/table
+// questions, and per sub-value for a multi-dial question — mirroring the
+// same "one pooled thing per sub-item" unpacking already used by the
+// reliability engine in ProjectPage.jsx, for the same reason: a single cell
+// containing a nested object or array isn't usable in stats software.
+// Deliberately excludes anything not useful for statistical analysis —
+// review_sync_id, form_id, instance_key, and the full form_snapshot schema
+// are all internal bookkeeping, not data a researcher would want as a column.
+function flattenResponseRowForCsv(row) {
+  const sections = getSchemaSectionsForExport(row.form_snapshot)
+  const elements = sections.flatMap(s => s?.elements || [])
+  const out = []
+  const base = {
+    encounter_name: row.encounter_name,
+    media_name: row.media_name,
+    media_type_name: row.media_type_name,
+    reviewer_name: row.reviewer_name,
+    form_name: row.form_name,
+    instance_role: row.instance_role || '',
+    instance_order: row.instance_order || '',
+  }
+
+  for (const el of elements) {
+    if (el.type === 'text_block') continue
+    const value = row.responses?.[el.id]
+
+    if (el.type === 'likert_group' || el.type === 'table') {
+      const groupVal = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {}
+      for (const item of (el.items || [])) {
+        out.push({
+          ...base,
+          question_id: `${el.id}:${item.id}`,
+          question_label: el.label ? `${el.label} - ${item.label || item.id}` : (item.label || item.id),
+          question_type: el.type,
+          answer: formatCsvAnswerValue(groupVal[item.id]),
+        })
+      }
+      continue
+    }
+
+    if ((el.type === 'dial' || el.type === 'vertical_slider') && Number(el.count || 1) > 1) {
+      const count = Math.min(5, Math.max(1, Number(el.count || 1)))
+      const arr = Array.isArray(value) ? value : []
+      for (let idx = 0; idx < count; idx++) {
+        const subLabel = el.control_labels?.[idx] || `Sub-value ${idx + 1}`
+        out.push({
+          ...base,
+          question_id: `${el.id}:${idx}`,
+          question_label: el.label ? `${el.label} - ${subLabel}` : subLabel,
+          question_type: el.type,
+          answer: formatCsvAnswerValue(arr[idx]),
+        })
+      }
+      continue
+    }
+
+    out.push({
+      ...base,
+      question_id: el.id,
+      question_label: el.label || el.id,
+      question_type: el.type,
+      answer: formatCsvAnswerValue(value),
+    })
+  }
+  return out
+}
+
+function buildCsvFromResponsesLong(rows) {
+  const headers = [
+    'encounter_name', 'media_name', 'media_type_name', 'reviewer_name', 'form_name',
+    'instance_role', 'instance_order', 'question_id', 'question_label', 'question_type', 'answer',
+  ]
+  const lines = [headers.join(',')]
+  for (const row of rows) {
+    for (const flat of flattenResponseRowForCsv(row)) {
+      lines.push(headers.map(h => csvEscape(flat[h])).join(','))
+    }
+  }
+  return lines.join('\n')
+}
+
 module.exports = function (ipcMain) {
   ipcMain.handle('reviews:projectAgreementData', (_, projectId) => {
     const db = getDb()
@@ -345,6 +460,40 @@ module.exports = function (ipcMain) {
     })
     if (canceled || !filePath) return null
     fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8')
+    return filePath
+  })
+
+  // CSV variant of the export above — same underlying data (this machine's
+  // own submitted reviews), but flattened into one row per question/sub-item
+  // and stripped of everything that isn't directly useful in statistical
+  // software (no form_snapshot, no review_sync_id, no nested JSON values).
+  // The JSON export above is unaffected and stays the format used to
+  // re-import into another EnIAC install.
+  ipcMain.handle('reviews:exportResultsCsv', async (_, projectId) => {
+    const db = getDb()
+    const project = db.prepare('SELECT name FROM projects WHERE id=?').get(projectId)
+    // Own reviews alone would only ever produce a single-reviewer CSV, which
+    // isn't usable for agreement statistics — those need multiple raters'
+    // scores present together. Imported results (from Import Results, or
+    // another coder's exported JSON) use the exact same responses_long shape
+    // as getMyResponsesLong's output, so they combine directly with no
+    // reshaping needed — same source data reviews:getResultsComparisonData
+    // already uses to feed the Agreement Between Results page.
+    const ownRows = getMyResponsesLong(db, projectId)
+    const importedSources = db.prepare('SELECT data FROM imported_results WHERE project_id=?').all(projectId)
+    const importedRows = importedSources.flatMap(s => {
+      try { return JSON.parse(s.data) } catch { return [] }
+    })
+    const rows = [...ownRows, ...importedRows]
+    const csv = buildCsvFromResponsesLong(rows)
+    const stamp = new Date().toISOString().slice(0, 10)
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Export Results (CSV)',
+      defaultPath: `${(project?.name || 'project').replace(/[^\w.-]+/g, '_')}-results-${stamp}.csv`,
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    })
+    if (canceled || !filePath) return null
+    fs.writeFileSync(filePath, csv, 'utf-8')
     return filePath
   })
 

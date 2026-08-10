@@ -14,6 +14,17 @@ export const DEFAULT_AGREEMENT_WEIGHTS = {
   table: 0.6,
 }
 
+// CHANGE (2026-08-10): ordinal distance, numeric distance, and set overlap
+// removed from the offered/default method list per request — this project
+// wants plain percent (exact-match) agreement for likert/rating, slider-type,
+// and multiselect questions instead of a partial-credit distance metric.
+// The underlying agreementForOrdinal/agreementForNumeric/agreementForMultiselect
+// functions are NOT deleted below: agreementForObject (used for 'item_group',
+// i.e. table/likert_group questions) still calls them internally to score
+// each row/item of a table, and agreementForWeightedKappa still needs
+// ordinalValue/getOrdinalRange. This change only affects what a standalone
+// question defaults to and what's offered as an explicit choice — it does
+// not touch how table/likert_group sub-items are scored.
 export const AGREEMENT_METHOD_LABELS = {
   auto: 'Auto',
   percent: 'Percent agreement',
@@ -21,9 +32,6 @@ export const AGREEMENT_METHOD_LABELS = {
   cohen_kappa: "Cohen's kappa",
   weighted_kappa: 'Weighted kappa',
   weighted_fleiss_kappa: "Weighted Fleiss' kappa",
-  ordinal: 'Ordinal distance',
-  numeric: 'Numeric distance',
-  set_overlap: 'Set overlap',
   timestamp: 'Timestamp tolerance',
   exact_text: 'Exact text match',
   item_group: 'Item-level agreement',
@@ -34,12 +42,12 @@ export function defaultAgreementEnabledForType(type) {
 }
 
 export function defaultAgreementMethodForType(type) {
-  if (type === 'multiselect') return 'set_overlap'
   if (type === 'timestamp_select') return 'timestamp'
   if (type === 'likert_group' || type === 'table') return 'item_group'
-  if (type === 'likert' || type === 'rating') return 'ordinal'
-  if (type === 'slider' || type === 'dial' || type === 'vertical_slider') return 'numeric'
   if (type === 'short_answer' || type === 'paragraph') return 'exact_text'
+  // multiselect (was 'set_overlap'), likert/rating (was 'ordinal'), and
+  // slider/dial/vertical_slider (was 'numeric') now all fall through to the
+  // default below and use plain percent/exact-match agreement.
   return 'percent'
 }
 
@@ -125,6 +133,10 @@ function numericValues(values) {
     .filter(v => v !== null)
 }
 
+// Still used internally by agreementForObject() for scoring individual
+// numeric-typed columns/rows inside a table or likert_group. No longer used
+// as a standalone question's default or offered method (see change note at
+// top of file).
 function agreementForNumeric(values, meta = {}) {
   const numeric = values
     .map(v => Array.isArray(v) ? v.map(item => numericValues([item])[0]).filter(v => v !== undefined) : numericValues([v])[0])
@@ -171,6 +183,10 @@ function ordinalValue(value, meta = {}) {
   return null
 }
 
+// Still used internally by agreementForObject() for scoring individual
+// ordinal-typed columns/rows inside a table or likert_group, and by
+// agreementForWeightedKappa(). No longer used as a standalone question's
+// default or offered method (see change note at top of file).
 function agreementForOrdinal(values, meta = {}) {
   const numeric = values.map(v => ordinalValue(v, meta)).filter(v => v !== null)
   if (numeric.length < 2) return null
@@ -179,6 +195,11 @@ function agreementForOrdinal(values, meta = {}) {
   return averagePairwise(numeric, (a, b) => 1 - Math.min(1, Math.abs(a - b) / range))
 }
 
+// Still used internally by agreementForObject() for scoring individual
+// multiselect-typed columns/rows inside a table or likert_group. No longer
+// used as a standalone multiselect question's default or offered method
+// (see change note at top of file) — standalone multiselect questions now
+// use agreementForCategorical (percent/exact-match) instead.
 function agreementForMultiselect(values) {
   const normalized = values
     .map(v => {
@@ -328,36 +349,32 @@ export function computeAgreementForQuestion(type, values, weights = DEFAULT_AGRE
       : agreementForWeightedKappa(values, questionMeta)
     return { score, weight, method }
   }
-  if (method === 'ordinal') return { score: agreementForOrdinal(values, questionMeta), weight, method }
-  if (method === 'numeric') return { score: agreementForNumeric(values, questionMeta), weight, method }
-  if (method === 'set_overlap') return { score: agreementForMultiselect(values), weight, method }
+  // 'ordinal', 'numeric', and 'set_overlap' are intentionally no longer
+  // reachable here as top-level methods — they were removed from
+  // defaultAgreementMethodForType() and from AGREEMENT_METHOD_LABELS, so
+  // 'auto' resolution and any UI-driven selection can no longer produce
+  // them for a standalone question. If a legacy stored questionMeta still
+  // has agreement_method explicitly set to one of those three, it now falls
+  // through to the switch below and is scored as plain percent/categorical
+  // agreement via the 'default' case, rather than silently doing distance
+  // scoring — so old configuration data can't reintroduce this by accident.
   if (method === 'timestamp') return { score: agreementForTimestamp(values, questionMeta), weight, method }
   if (method === 'exact_text') return { score: agreementForText(values), weight, method }
   if (method === 'item_group') return { score: agreementForObject(values, questionMeta), weight, method }
 
   switch (type) {
-    case 'multiselect':
-      return { score: agreementForMultiselect(values), weight, method }
     case 'timestamp_select':
       return { score: agreementForTimestamp(values, questionMeta), weight, method }
     case 'short_answer':
     case 'paragraph':
       return { score: agreementForText(values), weight, method }
-    case 'checkbox':
-      return { score: agreementForCategorical(values), weight, method }
-    case 'multiple_choice':
-      return { score: agreementForCategorical(values), weight, method }
-    case 'rating':
-    case 'likert':
-      return { score: agreementForOrdinal(values, questionMeta), weight, method }
     case 'likert_group':
       return { score: agreementForObject(values, questionMeta), weight, method }
-    case 'slider':
-    case 'dial':
-    case 'vertical_slider':
-      return { score: agreementForNumeric(values, questionMeta), weight, method }
     case 'table':
       return { score: agreementForObject(values, questionMeta), weight, method }
+    // multiselect, checkbox, multiple_choice, rating, likert, slider, dial,
+    // vertical_slider, and any unrecognized type all fall through to plain
+    // categorical (exact-match/percent) agreement.
     default:
       return { score: agreementForCategorical(values), weight, method }
   }

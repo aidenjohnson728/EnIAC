@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Upload, HelpCircle, Link2, Cloud, ArrowLeft, Folder, GraduationCap, ClipboardList } from 'lucide-react'
+import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Upload, HelpCircle, GraduationCap, ClipboardList } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
@@ -14,12 +14,6 @@ const TUTORIAL_STEPS = [
     placement: 'bottom',
     title: 'Your Reviewer Name',
     body: 'This name is attached to every review you create. Use the same name on every device, spelled the same way, so synced reviews stay grouped under the right person.',
-  },
-  {
-    targetId: 'tut-import',
-    placement: 'bottom',
-    title: 'Joining an Existing Project',
-    body: "A colleague already set up the project? Click Import to join from the shared sync folder or a project .json file. You'll then link your own local media files; videos stay on your machine and are never uploaded by EnIAC.",
   },
   {
     targetId: 'tut-new',
@@ -59,22 +53,9 @@ export default function HomePage() {
   const [reviewerName, setReviewerName] = useState(null)
   const [showIdentity, setShowIdentity] = useState(false)
   const [nameInput, setNameInput] = useState('')
-  const [importedProject, setImportedProject] = useState(null) // { id, name, syncHint, alreadySynced? }
+  const [importedProject, setImportedProject] = useState(null) // { id, name, syncHint }
   const [importMediaFolder, setImportMediaFolder] = useState('')
   const [importSyncFolder, setImportSyncFolder] = useState('')
-  // Join flow
-  const [joinStep, setJoinStep] = useState(null) // null | 'choose' | 'local' | 'cloud-auth' | 'cloud-browse'
-  const [joinLocalFolder, setJoinLocalFolder] = useState('')
-  const [joinCloudProvider, setJoinCloudProvider] = useState(null)
-  const [joinCloudBreadcrumb, setJoinCloudBreadcrumb] = useState([])
-  const [joinCloudFolders, setJoinCloudFolders] = useState([])
-  const [joinCloudLoading, setJoinCloudLoading] = useState(false)
-  const [joinCloudMessage, setJoinCloudMessage] = useState('')
-  const [joinGoogleStateFolder, setJoinGoogleStateFolder] = useState(null)
-  const [joinFolderLinkInput, setJoinFolderLinkInput] = useState('')
-  const [joinFolderLinkLoading, setJoinFolderLinkLoading] = useState(false)
-  const [joinError, setJoinError] = useState(null)
-  const [joinLoading, setJoinLoading] = useState(false)
   const tour = useTour(TUTORIAL_STEPS, TUTORIAL_KEY)
   const navigate = useNavigate()
 
@@ -107,180 +88,6 @@ export default function HomePage() {
     setShowIdentity(false)
   }
 
-  function resetJoin() {
-    setJoinStep(null)
-    setJoinLocalFolder('')
-    setJoinCloudProvider(null)
-    setJoinCloudBreadcrumb([])
-    setJoinCloudFolders([])
-    setJoinCloudMessage('')
-    setJoinGoogleStateFolder(null)
-    setJoinFolderLinkInput('')
-    setJoinFolderLinkLoading(false)
-    setJoinError(null)
-    setJoinLoading(false)
-    setJoinCloudLoading(false)
-  }
-
-  async function handleJoinLocalFolder() {
-    if (!joinLocalFolder) return
-    setJoinLoading(true)
-    setJoinError(null)
-    const result = await api.joinFromLocalFolder(joinLocalFolder)
-    setJoinLoading(false)
-    if (result?.ok) {
-      await load()
-      resetJoin()
-      setImportMediaFolder('')
-      setImportSyncFolder('')
-      setImportedProject({ id: result.projectId, name: result.projectName, syncHint: { mode: 'local', provider: null }, alreadySynced: true })
-    } else {
-      setJoinError(result?.error || 'Failed to join project')
-    }
-  }
-
-  async function handleCloudConnect(provider) {
-    setJoinCloudLoading(true)
-    setJoinError(null)
-    setJoinCloudMessage('')
-    if (provider === 'googledrive') {
-      setJoinGoogleStateFolder(null)
-      setJoinCloudMessage('Google Drive step 1 of 2: choose the shared EnIAC sync folder for this project.')
-      const picked = await api.cloudPickGoogleDriveFolder()
-      if (picked?.error) { setJoinError(picked.error); setJoinCloudLoading(false); return }
-      const folder = picked?.folder
-      if (!folder?.id) { setJoinError('No Google Drive folder was selected'); setJoinCloudLoading(false); return }
-
-      setJoinCloudMessage(`Selected "${folder.name || 'Google Drive folder'}". Checking for EnIAC project files...`)
-      let result = await api.joinFromCloudFolder('googledrive', folder.id, folder.name || 'Google Drive Folder')
-      if (result?.error && result.error.includes('project-state.json')) {
-        setJoinGoogleStateFolder({ id: folder.id, name: folder.name || 'Google Drive Folder' })
-        setJoinCloudMessage(
-          `Google Drive needs one more file permission. Select project-state.json and manifest.json inside "${folder.name || 'the folder you just picked'}".`
-        )
-        setJoinCloudLoading(false)
-        return
-      }
-      setJoinCloudLoading(false)
-      setJoinCloudMessage('')
-      if (result?.ok) {
-        await load()
-        resetJoin()
-        setImportMediaFolder('')
-        setImportSyncFolder('')
-        setImportedProject({ id: result.projectId, name: result.projectName, syncHint: { mode: 'cloud', provider: 'googledrive' }, alreadySynced: true })
-      } else {
-        setJoinError(result?.error || 'Failed to join project')
-      }
-      return
-    }
-
-    const result = provider === 'onedrive' ? await api.cloudConnectOneDrive() : await api.cloudConnectGoogleDrive()
-    if (result?.error) { setJoinError(result.error); setJoinCloudLoading(false); return }
-    setJoinCloudProvider(provider)
-    const foldersResult = await api.cloudListFolders(provider, null)
-    setJoinCloudFolders(foldersResult?.folders || [])
-    setJoinCloudBreadcrumb([])
-    setJoinCloudLoading(false)
-    setJoinCloudMessage('')
-    setJoinStep('cloud-browse')
-  }
-
-  async function handlePickGoogleDriveStateFile() {
-    const folder = joinGoogleStateFolder
-    if (!folder?.id) return
-    setJoinCloudLoading(true)
-    setJoinError(null)
-    setJoinCloudMessage(`Google Drive step 2 of 2: select project-state.json and manifest.json inside "${folder.name}". If Google shows other JSON files, do not pick those.`)
-    const pickedState = await api.cloudPickGoogleDriveFiles([])
-    if (pickedState?.error) { setJoinError(pickedState.error); setJoinCloudLoading(false); return }
-    const pickedFiles = pickedState.files || []
-    const stateFile = pickedFiles.find(f => f.name === 'project-state.json')
-    const manifestFile = pickedFiles.find(f => f.name === 'manifest.json')
-    if (!stateFile?.id) { setJoinError('No project-state.json file was selected'); setJoinCloudLoading(false); return }
-    if (!manifestFile?.id) {
-      setJoinError('Select both project-state.json and manifest.json from the sync folder you chose.')
-      setJoinCloudLoading(false)
-      return
-    }
-    for (const file of [stateFile, manifestFile]) {
-      if (Array.isArray(file.parents) && file.parents.length > 0 && !file.parents.includes(folder.id)) {
-        setJoinError(`${file.name} is not inside "${folder.name}". Select the metadata files from the folder you chose in step 1.`)
-        setJoinCloudLoading(false)
-        return
-      }
-    }
-    setJoinCloudMessage(`Selected project-state.json and manifest.json from "${folder.name}". Importing project...`)
-    const result = await api.joinFromCloudFolder('googledrive', folder.id, folder.name, stateFile.id)
-    setJoinCloudLoading(false)
-    setJoinCloudMessage('')
-    if (result?.ok) {
-      await load()
-      resetJoin()
-      setImportMediaFolder('')
-      setImportSyncFolder('')
-      setImportedProject({ id: result.projectId, name: result.projectName, syncHint: { mode: 'cloud', provider: 'googledrive' }, alreadySynced: true })
-    } else {
-      setJoinError(result?.error || 'Failed to join project')
-    }
-  }
-
-  async function handleCloudNavigate(folder) {
-    setJoinCloudLoading(true)
-    const result = await api.cloudListFolders(joinCloudProvider, folder.id)
-    setJoinCloudFolders(result?.folders || [])
-    setJoinCloudBreadcrumb(b => [...b, { id: folder.id, name: folder.name }])
-    setJoinCloudLoading(false)
-  }
-
-  async function handleCloudBreadcrumbClick(idx) {
-    setJoinCloudLoading(true)
-    const crumb = joinCloudBreadcrumb[idx]
-    const result = await api.cloudListFolders(joinCloudProvider, crumb ? crumb.id : null)
-    setJoinCloudFolders(result?.folders || [])
-    setJoinCloudBreadcrumb(b => idx < 0 ? [] : b.slice(0, idx + 1))
-    setJoinCloudLoading(false)
-  }
-
-  async function handleJoinCloudFolder(folder) {
-    setJoinLoading(true)
-    setJoinError(null)
-    const result = await api.joinFromCloudFolder(joinCloudProvider, folder.id, folder.name)
-    setJoinLoading(false)
-    if (result?.ok) {
-      await load()
-      resetJoin()
-      setImportMediaFolder('')
-      setImportSyncFolder('')
-      setImportedProject({ id: result.projectId, name: result.projectName, syncHint: { mode: 'cloud', provider: joinCloudProvider }, alreadySynced: true })
-    } else {
-      setJoinError(result?.error || 'Failed to join project')
-    }
-  }
-
-  async function handleJoinOneDriveLink() {
-    const link = joinFolderLinkInput.trim()
-    if (!link || joinCloudProvider !== 'onedrive') return
-    setJoinFolderLinkLoading(true)
-    setJoinError(null)
-    const resolved = await api.cloudResolveFolderLink('onedrive', link)
-    if (resolved?.error) {
-      setJoinFolderLinkLoading(false)
-      setJoinError(resolved.error)
-      return
-    }
-    const result = await api.joinFromCloudFolder('onedrive', resolved.folderId, resolved.folderName || 'OneDrive Folder')
-    setJoinFolderLinkLoading(false)
-    if (result?.ok) {
-      await load()
-      resetJoin()
-      setImportMediaFolder('')
-      setImportSyncFolder('')
-      setImportedProject({ id: result.projectId, name: result.projectName, syncHint: { mode: 'cloud', provider: 'onedrive' }, alreadySynced: true })
-    } else {
-      setJoinError(result?.error || 'Failed to join project')
-    }
-  }
 
   async function handleImportProject() {
     const result = await api.importProjectAsNew()
@@ -301,15 +108,11 @@ export default function HomePage() {
   async function handleFinishImport() {
     const proj = await api.getProject(importedProject.id)
     const syncMode = importedProject.syncHint?.mode
-    if (importedProject.alreadySynced) {
-      await api.updateProject(importedProject.id, { ...proj, media_folder: importMediaFolder || null })
-    } else {
-      await api.updateProject(importedProject.id, {
-        ...proj,
-        media_folder: importMediaFolder || null,
-        sync_folder: syncMode === 'local' ? (importSyncFolder || null) : null,
-      })
-    }
+    await api.updateProject(importedProject.id, {
+      ...proj,
+      media_folder: importMediaFolder || null,
+      sync_folder: syncMode === 'local' ? (importSyncFolder || null) : null,
+    })
     if (importMediaFolder) {
       await api.scanMediaFolder(importMediaFolder, importedProject.id)
     }
@@ -363,11 +166,8 @@ export default function HomePage() {
               {reviewerName || 'Set your name'}
             </span>
           </button>
-          <button id="tut-import" className="btn btn-secondary btn-sm" onClick={() => setJoinStep('choose')} title="Join an existing project by connecting to its sync folder">
-            <Link2 size={14} /> Join Project
-          </button>
           <button className="btn btn-secondary btn-sm" onClick={handleImportProject} title="Import a project from a .json export file">
-            <Upload size={14} /> Import File
+            <Upload size={14} /> Import Project
           </button>
           <button className="btn btn-secondary btn-sm" onClick={handleTrySample} title="Open a ready-made tutorial project with a guided walkthrough">
             <GraduationCap size={14} /> Tutorial Project
@@ -644,251 +444,6 @@ export default function HomePage() {
         <p>Are you sure you want to delete <strong>{deleteTarget?.name}</strong>? This will permanently remove all encounters, reviews, and timestamps. The media files on disk will not be affected.</p>
       </Modal>
 
-      {/* Join Project Modal */}
-      {joinStep && (() => {
-        const providerLabel = joinCloudProvider === 'onedrive' ? 'OneDrive' : joinCloudProvider === 'googledrive' ? 'Google Drive' : ''
-        const currentFolderName = joinCloudBreadcrumb.length > 0 ? joinCloudBreadcrumb[joinCloudBreadcrumb.length - 1].name : null
-
-        const footer = joinStep === 'local' ? (
-          <>
-            <button className="btn btn-secondary" onClick={() => { setJoinStep('choose'); setJoinError(null) }}>
-              <ArrowLeft size={14} /> Back
-            </button>
-            <button className="btn btn-primary" onClick={handleJoinLocalFolder} disabled={!joinLocalFolder || joinLoading}>
-              {joinLoading ? 'Joining…' : 'Join Project'}
-            </button>
-          </>
-        ) : joinStep === 'cloud-auth' ? (
-          <button className="btn btn-secondary" onClick={() => { setJoinStep('choose'); setJoinError(null) }}>
-            <ArrowLeft size={14} /> Back
-          </button>
-        ) : joinStep === 'cloud-browse' ? (
-          <button className="btn btn-secondary" onClick={() => { setJoinStep('cloud-auth'); setJoinCloudProvider(null); setJoinError(null) }}>
-            <ArrowLeft size={14} /> Back
-          </button>
-        ) : null
-
-        return (
-          <Modal
-            open
-            onClose={joinLoading || joinCloudLoading ? null : resetJoin}
-            title="Join a Project"
-            footer={footer}
-          >
-            {joinStep === 'choose' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 4 }}>
-                  Connect to an existing project's sync folder. The project setup is pulled automatically — no file sharing needed.
-                </p>
-                <button
-                  className="btn btn-secondary"
-                  style={{ justifyContent: 'flex-start', gap: 12, padding: '14px 16px', height: 'auto', textAlign: 'left' }}
-                  onClick={() => setJoinStep('local')}
-                >
-                  <Folder size={18} style={{ flexShrink: 0 }} />
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>Local / Network Folder</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                      Shared drive, Dropbox, OneDrive local sync, or network folder
-                    </div>
-                  </div>
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  style={{ justifyContent: 'flex-start', gap: 12, padding: '14px 16px', height: 'auto', textAlign: 'left' }}
-                  onClick={() => setJoinStep('cloud-auth')}
-                >
-                  <Cloud size={18} style={{ flexShrink: 0 }} />
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>Cloud (OneDrive / Google Drive)</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                      Connect directly via API — no local sync client required
-                    </div>
-                  </div>
-                </button>
-              </div>
-            )}
-
-            {joinStep === 'local' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                  Browse to the shared sync folder for this project. Ask the project owner which folder to point to.
-                </p>
-                <div className="form-field">
-                  <label>Sync Folder</label>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <input
-                      value={joinLocalFolder}
-                      onChange={e => setJoinLocalFolder(e.target.value)}
-                      placeholder="/path/to/shared/ProjectName"
-                    />
-                    <button className="btn btn-secondary" style={{ flexShrink: 0 }} onClick={async () => {
-                      const p = await api.selectFolder(); if (p) setJoinLocalFolder(p)
-                    }}>
-                      <FolderOpen size={14} /> Browse
-                    </button>
-                  </div>
-                </div>
-                {joinError && <p style={{ color: 'var(--danger)', fontSize: 13 }}>{joinError}</p>}
-              </div>
-            )}
-
-            {joinStep === 'cloud-auth' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 4 }}>
-                  Sign in to the cloud service the project owner used, then select the shared folder.
-                </p>
-                <button
-                  className="btn btn-secondary"
-                  style={{ justifyContent: 'flex-start', gap: 10, padding: '12px 14px', height: 'auto' }}
-                  onClick={() => handleCloudConnect('onedrive')}
-                  disabled={joinCloudLoading}
-                >
-                  <span style={{ fontSize: 18 }}>☁</span>
-                  <span style={{ fontWeight: 600, fontSize: 13 }}>Connect with OneDrive</span>
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  style={{ justifyContent: 'flex-start', gap: 10, padding: '12px 14px', height: 'auto' }}
-                  onClick={() => handleCloudConnect('googledrive')}
-                  disabled={joinCloudLoading}
-                >
-                  <span style={{ fontSize: 18 }}>📁</span>
-                  <span style={{ fontWeight: 600, fontSize: 13 }}>Pick Folder with Google Drive</span>
-                </button>
-                <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 12px', fontSize: 12, color: '#92400e', lineHeight: 1.5 }}>
-                  OneDrive is recommended for direct cloud sync. Google Drive uses limited file access, so EnIAC may ask you to approve access to project files again during sync.
-                </div>
-                {joinGoogleStateFolder && (
-                  <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: '#1d4ed8', lineHeight: 1.5, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <div>
-                      <strong>One more Google Drive permission is needed.</strong>
-                      <br />
-                      In the next picker, choose <strong>project-state.json</strong> and <strong>manifest.json</strong> from <strong>{joinGoogleStateFolder.name}</strong>. If you see other JSON files elsewhere in Drive, ignore them.
-                    </div>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      style={{ alignSelf: 'flex-start' }}
-                      onClick={handlePickGoogleDriveStateFile}
-                      disabled={joinCloudLoading}
-                    >
-                      Select project-state.json and manifest.json
-                    </button>
-                  </div>
-                )}
-                {joinCloudLoading && (
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                    {joinCloudMessage || 'Waiting for browser selection...'}
-                  </div>
-                )}
-                {joinError && <p style={{ color: 'var(--danger)', fontSize: 13 }}>{joinError}</p>}
-              </div>
-            )}
-
-            {joinStep === 'cloud-browse' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                  Navigate to the project's sync folder in {providerLabel}, then click <strong>Join</strong>.
-                </p>
-                {joinCloudProvider === 'onedrive' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <label style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
-                      Or paste a shared OneDrive folder link
-                    </label>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <input
-                        style={{ flex: 1, fontSize: 13 }}
-                        placeholder="https://onedrive.live.com/..."
-                        value={joinFolderLinkInput}
-                        onChange={e => setJoinFolderLinkInput(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') handleJoinOneDriveLink() }}
-                        disabled={joinFolderLinkLoading || joinLoading}
-                      />
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={handleJoinOneDriveLink}
-                        disabled={joinFolderLinkLoading || joinLoading || !joinFolderLinkInput.trim()}
-                      >
-                        {joinFolderLinkLoading ? '...' : 'Use Link'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {/* Breadcrumb */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', fontSize: 12, color: 'var(--text-muted)' }}>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    style={{ padding: '2px 6px', fontSize: 12 }}
-                    onClick={() => handleCloudBreadcrumbClick(-1)}
-                  >
-                    {providerLabel}
-                  </button>
-                  {joinCloudBreadcrumb.map((crumb, i) => (
-                    <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <ChevronRight size={12} />
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        style={{ padding: '2px 6px', fontSize: 12 }}
-                        onClick={() => handleCloudBreadcrumbClick(i)}
-                      >
-                        {crumb.name}
-                      </button>
-                    </span>
-                  ))}
-                </div>
-
-                {/* Folder list */}
-                <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', minHeight: 120, maxHeight: 260, overflowY: 'auto' }}>
-                  {joinCloudLoading ? (
-                    <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}><div className="spinner" /></div>
-                  ) : joinCloudFolders.length === 0 ? (
-                    <div style={{ padding: 20, color: 'var(--text-muted)', fontSize: 13, textAlign: 'center' }}>No folders found</div>
-                  ) : joinCloudFolders.map(folder => (
-                    <div
-                      key={folder.id}
-                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
-                      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-secondary)'}
-                      onMouseLeave={e => e.currentTarget.style.background = ''}
-                    >
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        style={{ justifyContent: 'flex-start', gap: 8, flex: 1, padding: '2px 0', fontWeight: 400 }}
-                        onClick={() => handleCloudNavigate(folder)}
-                      >
-                        <Folder size={14} color="var(--text-muted)" />
-                        <span style={{ fontSize: 13 }}>{folder.name}</span>
-                        <ChevronRight size={12} color="var(--text-muted)" style={{ marginLeft: 'auto' }} />
-                      </button>
-                      <button
-                        className="btn btn-primary btn-sm"
-                        style={{ marginLeft: 8, flexShrink: 0 }}
-                        onClick={() => handleJoinCloudFolder(folder)}
-                        disabled={joinLoading}
-                      >
-                        Join
-                      </button>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Join current folder button */}
-                {currentFolderName && (
-                  <button
-                    className="btn btn-primary"
-                    onClick={() => handleJoinCloudFolder(joinCloudBreadcrumb[joinCloudBreadcrumb.length - 1])}
-                    disabled={joinLoading}
-                  >
-                    {joinLoading ? 'Joining…' : `Join "${currentFolderName}"`}
-                  </button>
-                )}
-
-                {joinError && <p style={{ color: 'var(--danger)', fontSize: 13 }}>{joinError}</p>}
-              </div>
-            )}
-          </Modal>
-        )
-      })()}
-
       {/* Tutorial */}
       {tour.node}
 
@@ -927,15 +482,7 @@ export default function HomePage() {
                 </span>
               </div>
 
-              {/* Sync is already configured for joined projects */}
-              {importedProject.alreadySynced && (
-                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--text-secondary)' }}>
-                  Sync is already configured — this project will sync automatically.
-                </div>
-              )}
-
-              {/* Sync setup — varies by hint (file import only) */}
-              {!importedProject.alreadySynced && hint.mode === 'cloud' && (
+              {hint.mode === 'cloud' && (
                 <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: '#1d4ed8' }}>
                   <strong>This project syncs via {providerLabel}.</strong>
                   <br /><br />
@@ -944,7 +491,7 @@ export default function HomePage() {
                 </div>
               )}
 
-              {!importedProject.alreadySynced && hint.mode === 'local' && (
+              {hint.mode === 'local' && (
                 <div className="form-field">
                   <label>Sync Folder</label>
                   <div style={{ display: 'flex', gap: 8 }}>
@@ -966,7 +513,7 @@ export default function HomePage() {
                 </div>
               )}
 
-              {!importedProject.alreadySynced && hint.mode === 'none' && (
+              {hint.mode === 'none' && (
                 <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: 'var(--text-secondary)' }}>
                   No automatic sync configured. You can set this up later in <strong>Setup → Sync</strong>, or exchange reviews manually using <strong>Share File</strong> and <strong>Import File</strong> on the project page.
                 </div>

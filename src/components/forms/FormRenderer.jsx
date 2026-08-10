@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, ChevronRight, Check } from 'lucide-react'
+import { ChevronDown, ChevronRight, Check, RotateCcw } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -171,6 +171,8 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
             display: 'flex', flexWrap: 'wrap', gap: 2,
           }}>
             {sections.map((section, i) => {
+              const hasVisibleContent = (section.elements || []).some(el => el.type !== 'tag_category_presence')
+              if (!hasVisibleContent) return null
               const { answered, total } = countAnswered(section, values)
               const complete = total > 0 && answered === total
               const isActive = activeSection === section.id
@@ -210,26 +212,37 @@ export default function FormRenderer({ schema, responses, onSave, readOnly, time
         </div>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: sections.length > 1 ? 0 : 12 }}>
-        {sections.map((section, i) => (
-          <FormSection
-            key={section.id}
-            section={section}
-            sectionIndex={i}
-            values={values}
-            onChange={handleChange}
-            collapsed={!!collapsed[section.id]}
-            onToggle={() => {
-              const opening = !!collapsed[section.id]
-              if (opening) setActiveSection(section.id)
-              setCollapsed(c => ({ ...c, [section.id]: !c[section.id] }))
-            }}
-            sectionRef={el => { sectionRefs.current[section.id] = el }}
-            readOnly={readOnly}
-            timestamps={timestamps}
-            tags={tags}
-            relaxedCompletion={relaxedCompletion}
-          />
-        ))}
+        {sections.map((section, i) => {
+          // A section made up entirely of tag_category_presence questions has
+          // nothing visible to show — but it must still render normally
+          // (mounted, not filtered out) so those questions' auto-compute
+          // effects actually run and save a value. Hiding via CSS keeps them
+          // mounted; removing them from the array entirely (an earlier,
+          // broken version of this) left their values permanently undefined,
+          // since React never runs effects for something it never mounts.
+          const hasVisibleContent = (section.elements || []).some(el => el.type !== 'tag_category_presence')
+          return (
+          <div key={section.id} style={hasVisibleContent ? undefined : { display: 'none' }}>
+            <FormSection
+              section={section}
+              sectionIndex={i}
+              values={values}
+              onChange={handleChange}
+              collapsed={!!collapsed[section.id]}
+              onToggle={() => {
+                const opening = !!collapsed[section.id]
+                if (opening) setActiveSection(section.id)
+                setCollapsed(c => ({ ...c, [section.id]: !c[section.id] }))
+              }}
+              sectionRef={el => { sectionRefs.current[section.id] = el }}
+              readOnly={readOnly}
+              timestamps={timestamps}
+              tags={tags}
+              relaxedCompletion={relaxedCompletion}
+            />
+          </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -822,6 +835,11 @@ function NumericStepper({ value, min, max, step, disabled, onChange }) {
     if (Number.isFinite(n)) onChange(Math.min(max, Math.max(min, n)))
   }
 
+  function reset() {
+    if (disabled) return
+    onChange(null)
+  }
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
       <button
@@ -858,6 +876,19 @@ function NumericStepper({ value, min, max, step, disabled, onChange }) {
       >
         +
       </button>
+      {!untouched && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={reset}
+          className="btn btn-ghost btn-icon btn-sm"
+          title="Reset to unanswered"
+          aria-label="Reset to unanswered"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <RotateCcw size={13} />
+        </button>
+      )}
     </div>
   )
 }
@@ -1015,23 +1046,13 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
       if (!readOnly && value !== computedValue) onChange(computedValue)
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [computedValue, readOnly])
-    return (
-      <div>
-        <QLabel el={el} questionNumber={questionNumber} relaxedCompletion={relaxedCompletion} />
-        <div style={{
-          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 99,
-          fontSize: 13, fontWeight: 600,
-          background: present ? 'rgba(34,197,94,0.12)' : 'rgba(148,163,184,0.15)',
-          color: present ? 'var(--success)' : 'var(--text-muted)',
-          border: `1px solid ${present ? 'rgba(34,197,94,0.3)' : 'var(--border)'}`,
-        }}>
-          {computedValue}
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-          Based on whether any "{el.category}" tag was used while reviewing this video — not manually answered.
-        </div>
-      </div>
-    )
+    // No longer rendered as a form question — presence/non-presence is now
+    // shown directly on the Notes/Tags panel instead (a category header
+    // turns green with a checkmark once a tag under it has been used).
+    // Still computed and saved above exactly as before, so agreement and
+    // required-question validation are unaffected — only the visible form
+    // UI for this question is gone.
+    return null
   }
 
   if (el.type === 'text_block') {
@@ -1347,7 +1368,11 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
         if (Array.isArray(value) && i < value.length) return value[i]
         return null
       })
-      next[index] = Math.min(max, Math.max(min, Number(nextValue)))
+      // nextValue === null is the reset signal from NumericStepper's reset
+      // button — must be stored as-is, not coerced through Number()/clamped,
+      // or it silently becomes 0 -> clamped up to min, which looks like a
+      // real touched value instead of clearing back to untouched.
+      next[index] = nextValue === null ? null : Math.min(max, Math.max(min, Number(nextValue)))
       onChange(next)
     }
 

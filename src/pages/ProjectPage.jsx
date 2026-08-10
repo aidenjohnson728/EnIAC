@@ -5,7 +5,7 @@ import {
   Video, FileText, File, Plus, CheckCircle2, Circle,
   Search, X, Play, RefreshCw, Share2, FolderDown, AlertTriangle, Cloud, User,
   LayoutList, BarChart2, Activity, LineChart, HelpCircle, Pencil,
-  Download, Upload, GitCompare, Gauge
+  Download, Upload, Gauge
 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import { SETUP_SECTIONS } from '../lib/setupSections'
@@ -108,6 +108,8 @@ export default function ProjectPage() {
   const [autolinking, setAutolinking] = useState(false)
   const [linkSaving, setLinkSaving] = useState(null)
   const [showShareModal, setShowShareModal] = useState(false)
+  const [showExportMenu, setShowExportMenu] = useState(false)
+  const exportMenuRef = useRef(null)
   const [shareClearReviews, setShareClearReviews] = useState(false)
   const [sharing, setSharing] = useState(false)
   const [newMediaTarget, setNewMediaTarget] = useState(null)
@@ -144,6 +146,17 @@ export default function ProjectPage() {
   })
 
   useEffect(() => { load() }, [projectId, location.pathname])
+
+  useEffect(() => {
+    if (!showExportMenu) return
+    function handleClickOutside(e) {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target)) {
+        setShowExportMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showExportMenu])
 
   useEffect(() => {
     if (!isSampleTour || sampleTourStarted || loading || encounters.length === 0) return
@@ -707,9 +720,16 @@ export default function ProjectPage() {
     }
   }
 
-  async function handleExportResults() {
+  async function handleExportResultsJson() {
+    setShowExportMenu(false)
     const p = await api.exportResults(projectId)
-    if (p) showToast('Results exported.')
+    if (p) showToast('Results exported as JSON.')
+  }
+
+  async function handleExportResultsCsv() {
+    setShowExportMenu(false)
+    const p = await api.exportResultsCsv(projectId)
+    if (p) showToast('Results exported as CSV.')
   }
 
   async function handleImportResults() {
@@ -791,9 +811,49 @@ export default function ProjectPage() {
           <button className="btn btn-ghost btn-sm" onClick={() => setShowShareModal(true)} title="Save project file to share with teammates">
             <Share2 size={13} /> Share Project
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={handleExportResults} title="Export only your coding results as a portable JSON file">
-            <Upload size={13} /> Export Results
-          </button>
+          <div ref={exportMenuRef} style={{ position: 'relative' }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowExportMenu(s => !s)}
+              title="Export your coding results — JSON to share with another EnIAC install, or CSV for statistical software"
+            >
+              <Upload size={13} /> Export Results <ChevronDown size={11} />
+            </button>
+            {showExportMenu && (
+              <div style={{
+                position: 'absolute', top: '100%', left: 0, marginTop: 4, width: 240,
+                background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
+                boxShadow: 'var(--shadow-md)', padding: 6, zIndex: 1000,
+              }}>
+                <button
+                  onClick={handleExportResultsJson}
+                  style={{
+                    width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
+                    padding: '8px 10px', border: 'none', background: 'transparent', borderRadius: 6,
+                    cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font)',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-secondary)' }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                >
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>Export JSON</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>For importing into another EnIAC install</span>
+                </button>
+                <button
+                  onClick={handleExportResultsCsv}
+                  style={{
+                    width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
+                    padding: '8px 10px', border: 'none', background: 'transparent', borderRadius: 6,
+                    cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font)',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-secondary)' }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                >
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>Export CSV</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>For R, SPSS, Stata, or other statistical software</span>
+                </button>
+              </div>
+            )}
+          </div>
           <button className="btn btn-ghost btn-sm" onClick={handleImportResults} title="Import another coder's exported results for comparison">
             <Download size={13} /> Import Results
           </button>
@@ -965,54 +1025,32 @@ export default function ProjectPage() {
               )
             })}
 
-            {/* Agreement — parent tab (its own content is the pooled ICC/kappa
-                view, formerly "Question Reliability"), with two nested
-                sub-tabs shown whenever any of the three is active. */}
-            {(() => {
-              const agreementGroupIds = ['reliability', 'agreement', 'dataviz']
-              const inGroup = agreementGroupIds.includes(activePage)
-              return (
-                <>
-                  <button onClick={() => setActivePage('reliability')}
-                    className="btn btn-ghost btn-sm"
-                    style={{
-                      justifyContent: 'flex-start', width: '100%',
-                      fontWeight: activePage === 'reliability' ? 600 : 400,
-                      color: activePage === 'reliability' ? 'var(--text)' : 'var(--text-secondary)',
-                      background: activePage === 'reliability' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
-                    }}>
-                    <Gauge size={13} />
-                    Agreement
-                  </button>
-                  {inGroup && (
-                    <>
-                      <button onClick={() => setActivePage('agreement')}
-                        className="btn btn-ghost btn-sm"
-                        style={{
-                          justifyContent: 'flex-start', width: '100%', paddingLeft: 28, fontSize: 12.5,
-                          fontWeight: activePage === 'agreement' ? 600 : 400,
-                          color: activePage === 'agreement' ? 'var(--text)' : 'var(--text-secondary)',
-                          background: activePage === 'agreement' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
-                        }}>
-                        <GitCompare size={12} />
-                        Agreement Between Results
-                      </button>
-                      <button onClick={() => setActivePage('dataviz')}
-                        className="btn btn-ghost btn-sm"
-                        style={{
-                          justifyContent: 'flex-start', width: '100%', paddingLeft: 28, fontSize: 12.5,
-                          fontWeight: activePage === 'dataviz' ? 600 : 400,
-                          color: activePage === 'dataviz' ? 'var(--text)' : 'var(--text-secondary)',
-                          background: activePage === 'dataviz' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
-                        }}>
-                        <LineChart size={12} />
-                        Alignment
-                      </button>
-                    </>
-                  )}
-                </>
-              )
-            })()}
+            {/* Agreement and Alignment — previously nested as parent/subtab
+                since there were two related subtabs to group; now flat,
+                independent nav items since Agreement Between Results was
+                removed and only one would remain nested. */}
+            <button onClick={() => setActivePage('reliability')}
+              className="btn btn-ghost btn-sm"
+              style={{
+                justifyContent: 'flex-start', width: '100%',
+                fontWeight: activePage === 'reliability' ? 600 : 400,
+                color: activePage === 'reliability' ? 'var(--text)' : 'var(--text-secondary)',
+                background: activePage === 'reliability' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
+              }}>
+              <Gauge size={13} />
+              Agreement
+            </button>
+            <button onClick={() => setActivePage('dataviz')}
+              className="btn btn-ghost btn-sm"
+              style={{
+                justifyContent: 'flex-start', width: '100%',
+                fontWeight: activePage === 'dataviz' ? 600 : 400,
+                color: activePage === 'dataviz' ? 'var(--text)' : 'var(--text-secondary)',
+                background: activePage === 'dataviz' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
+              }}>
+              <LineChart size={13} />
+              Alignment
+            </button>
           </div>
 
           {/* Bottom: Settings */}
@@ -1110,7 +1148,6 @@ export default function ProjectPage() {
 
           {/* ── DATA VISUALIZATION ── */}
           {activePage === 'dataviz' && <DataVizView projectId={projectId} mediaTypes={mediaTypes} />}
-          {activePage === 'agreement' && <AgreementResultsView projectId={projectId} />}
           {activePage === 'reliability' && <QuestionReliabilityView projectId={projectId} />}
 
         </div>
@@ -2192,9 +2229,8 @@ function formatRawAnswerValue(value, rowLabelById = null) {
 }
 
 // One question's summary line, with a collapsed-by-default table underneath
-// showing exactly what each individual reviewer answered — shared by
-// Alignment and Agreement Between Results so both behave identically rather
-// than maintaining two separate copies of the same expand/collapse logic.
+// showing exactly what each individual reviewer answered — used by
+// Alignment.
 function QuestionAgreementRow({ question, rowKey, methodExtra }) {
   const [expanded, setExpanded] = useState(false)
   const hasAnswers = Array.isArray(question.rawAnswers) && question.rawAnswers.length > 0
@@ -2432,8 +2468,9 @@ function DataVizView({ projectId, mediaTypes = [] }) {
       questionIds: effectiveQuestionIds,
       globalOnly: agreementMode === 'final',
       // Alignment shows agreement among everyone who rated a file
-      // automatically — unlike Agreement Between Results, it doesn't split
-      // by instance role (Trainee/Consultant).
+      // automatically, regardless of instance role (Trainee/Consultant) —
+      // the shared engine's default is role-separated, so this explicitly
+      // opts out of that split.
       poolAcrossRoles: true,
     })).filter(item => item.reviewCount >= 2)
     rows.sort((a, b) => (b.overallAgreement ?? -1) - (a.overallAgreement ?? -1))
@@ -2601,288 +2638,23 @@ function DataVizView({ projectId, mediaTypes = [] }) {
   )
 }
 
-// ── Agreement Between Results View ────────────────────────────────────────────
-// Compares any two result sets against each other, using the same
-// computeInterraterAgreementForMediaFile
-// engine that powers Alignment above. Matched by media name alone
-// (not encounter name), since imported results come from an unrelated
-// install where local ids/sync ids won't line up, and two files can label
-// the same encounter differently. Neither set of coding is ever modified —
-// this view only reads api.getResultsComparisonData().
-//
-// Either side of the comparison can be "My Results" (this machine's own
-// submitted reviews, if any exist) OR any imported file — including two
-// different imported files compared directly against each other, with no
-// personal results required at all.
-function AgreementResultsView({ projectId }) {
-  const [loading, setLoading] = useState(true)
-  const [mineRows, setMineRows] = useState([])
-  const [importedSources, setImportedSources] = useState([])
-  const [sourceAId, setSourceAId] = useState('')
-  const [sourceBId, setSourceBId] = useState('')
-  const [questionSortMode, setQuestionSortMode] = useState('form_order')
-
-  const load = useCallback(async () => {
-    if (!projectId) return
-    setLoading(true)
-    try {
-      const data = await api.getResultsComparisonData(projectId)
-      setMineRows(data?.mine || [])
-      setImportedSources(data?.imported || [])
-    } catch {
-      setMineRows([])
-      setImportedSources([])
-    } finally {
-      setLoading(false)
-    }
-  }, [projectId])
-
-  useEffect(() => { load() }, [load])
-
-  // "My Results" only appears as an option when this machine actually has
-  // submitted results of its own — otherwise every option is an import.
-  const allSources = useMemo(() => {
-    const list = []
-    if (mineRows.length > 0) list.push({ id: 'mine', label: 'My Results' })
-    for (const s of importedSources) {
-      list.push({ id: String(s.id), label: `${s.reviewer_name || s.source_name} · imported ${formatDate(s.imported_at)}` })
-    }
-    return list
-  }, [mineRows, importedSources])
-
-  useEffect(() => {
-    if (allSources.length === 0) {
-      if (sourceAId) setSourceAId('')
-      return
-    }
-    if (sourceAId && allSources.some(s => s.id === sourceAId)) return
-    setSourceAId(allSources[0].id)
-  }, [allSources, sourceAId])
-
-  useEffect(() => {
-    if (allSources.length < 2) {
-      if (sourceBId) setSourceBId('')
-      return
-    }
-    if (sourceBId && allSources.some(s => s.id === sourceBId) && sourceBId !== sourceAId) return
-    const fallback = allSources.find(s => s.id !== sourceAId)
-    setSourceBId(fallback ? fallback.id : '')
-  }, [allSources, sourceAId, sourceBId])
-
-  function rowsForSource(id) {
-    if (id === 'mine') return mineRows
-    return importedSources.find(s => String(s.id) === id)?.responses_long || []
-  }
-
-  async function handleDeleteSource(id) {
-    await api.deleteImportedResult(id, projectId)
-    load()
-  }
-
-  const sourceARows = rowsForSource(sourceAId)
-  const sourceBRows = rowsForSource(sourceBId)
-  const sameSourcePicked = !!sourceAId && sourceAId === sourceBId
-
-  const agreementRows = useMemo(() => {
-    if (!sourceAId || !sourceBId || sameSourcePicked) return []
-    const grouped = new Map()
-    const addRow = (row, bucket) => {
-      const key = row.media_name
-      if (!grouped.has(key)) grouped.set(key, { encounterName: row.encounter_name, mediaName: row.media_name, a: [], b: [] })
-      grouped.get(key)[bucket].push(row)
-    }
-    for (const row of sourceARows) addRow(row, 'a')
-    for (const row of sourceBRows) addRow(row, 'b')
-
-    // Groups a side's rows by reviewer first — a side can genuinely have
-    // more than one rater (e.g. an imported source covering several
-    // reviewers), and treating them as a single blended "review" would both
-    // hide who actually answered what and mix distinct people's ratings
-    // together in the raw-answers table below.
-    function buildPseudoReviews(rows, fallbackName) {
-      const byReviewer = new Map()
-      for (const row of rows) {
-        const reviewerName = row.reviewer_name || fallbackName
-        if (!byReviewer.has(reviewerName)) byReviewer.set(reviewerName, { reviewerName, form_responses: [] })
-        byReviewer.get(reviewerName).form_responses.push({
-          form_id: row.form_id, form_name: row.form_name, responses: row.responses,
-          form_snapshot: row.form_snapshot, instance_role: row.instance_role, instance_order: row.instance_order,
-        })
-      }
-      return Array.from(byReviewer.values())
-    }
-
-    const rows = []
-    for (const entry of grouped.values()) {
-      // Missing on one side is handled by the "Only In..." tiles below rather than
-      // rendered as a broken/empty comparison card here.
-      if (entry.a.length === 0 || entry.b.length === 0) continue
-      const reviewDetails = [
-        ...buildPseudoReviews(entry.a, 'First'),
-        ...buildPseudoReviews(entry.b, 'Second'),
-      ]
-      rows.push(computeInterraterAgreementForMediaFile({
-        mediaName: entry.mediaName,
-        encounterName: entry.encounterName,
-        reviewDetails,
-      }))
-    }
-    rows.sort((a, b) => (b.overallAgreement ?? -1) - (a.overallAgreement ?? -1))
-    return rows
-  }, [sourceAId, sourceBId, sameSourcePicked, sourceARows, sourceBRows])
-
-  const scoredAgreementRows = agreementRows.filter(row => row.overallAgreement != null)
-  const averageAgreement = scoredAgreementRows.length > 0
-    ? scoredAgreementRows.reduce((sum, row) => sum + row.overallAgreement, 0) / scoredAgreementRows.length
-    : null
-
-  if (loading) return <div className="empty-state"><p>Loading…</p></div>
-
-  return (
-    <div style={{ maxWidth: 860 }}>
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Agreement Between Results</h1>
-        <p className="text-secondary text-sm" style={{ margin: 0 }}>
-          Compare any two result sets against each other — your own results and an imported file, or two
-          different imported files directly. Neither set of coding is modified.
-        </p>
-      </div>
-
-      {allSources.length === 0 ? (
-        <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
-          <GitCompare size={38} style={{ margin: '0 auto 14px', opacity: 0.35 }} />
-          <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>No results to compare yet</p>
-          <p style={{ fontSize: 13 }}>Use "Import Results" above to load another coder's exported results file.</p>
-        </div>
-      ) : allSources.length < 2 ? (
-        <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
-          <GitCompare size={38} style={{ margin: '0 auto 14px', opacity: 0.35 }} />
-          <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>Need a second result set to compare</p>
-          <p style={{ fontSize: 13 }}>Import at least one more results file to compare against {allSources[0]?.label}.</p>
-        </div>
-      ) : (
-        <>
-          <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginBottom: 16, display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
-            <div className="form-field" style={{ margin: 0, flex: 1, minWidth: 200 }}>
-              <label>Compare</label>
-              <select value={sourceAId} onChange={e => setSourceAId(e.target.value)} style={{ height: 34, fontSize: 13, width: '100%' }}>
-                {allSources.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-              </select>
-            </div>
-            <div style={{ fontSize: 13, color: 'var(--text-muted)', paddingBottom: 7 }}>against</div>
-            <div className="form-field" style={{ margin: 0, flex: 1, minWidth: 200 }}>
-              <select value={sourceBId} onChange={e => setSourceBId(e.target.value)} style={{ height: 34, fontSize: 13, width: '100%' }}>
-                {allSources.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-              </select>
-            </div>
-            {sourceBId && sourceBId !== 'mine' && (
-              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDeleteSource(sourceBId)}>
-                Remove this import
-              </button>
-            )}
-            {sourceAId && sourceAId !== 'mine' && sourceAId !== sourceBId && (
-              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDeleteSource(sourceAId)}>
-                Remove this import
-              </button>
-            )}
-          </div>
-
-          {sameSourcePicked ? (
-            <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
-              <p style={{ fontSize: 14, fontWeight: 500 }}>Pick two different result sets to compare.</p>
-            </div>
-          ) : (
-            <>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
-                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Files Compared</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{agreementRows.length}</div>
-                </div>
-                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Overall Agreement</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{averageAgreement == null ? '—' : `${Math.round(averageAgreement * 100)}%`}</div>
-                </div>
-              </div>
-
-              {agreementRows.length === 0 ? (
-                <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
-                  <p style={{ fontSize: 14, fontWeight: 500 }}>No overlapping media files found between these two result sets.</p>
-                </div>
-              ) : (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Order questions by:</span>
-                    <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-                      <button
-                        className="btn btn-sm"
-                        style={{ borderRadius: 0, background: questionSortMode === 'form_order' ? 'var(--accent)' : 'transparent', color: questionSortMode === 'form_order' ? '#fff' : 'var(--text)' }}
-                        onClick={() => setQuestionSortMode('form_order')}
-                      >
-                        Form order
-                      </button>
-                      <button
-                        className="btn btn-sm"
-                        style={{ borderRadius: 0, background: questionSortMode === 'agreement_desc' ? 'var(--accent)' : 'transparent', color: questionSortMode === 'agreement_desc' ? '#fff' : 'var(--text)' }}
-                        onClick={() => setQuestionSortMode('agreement_desc')}
-                      >
-                        Agreement, highest first
-                      </button>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {agreementRows.map(row => {
-                      const orderedQuestions = questionSortMode === 'agreement_desc'
-                        ? [...row.questions].sort((a, b) => (b.agreement || 0) - (a.agreement || 0))
-                        : row.questions
-                      return (
-                      <div key={`${row.encounterName}-${row.mediaName}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
-                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
-                          <div>
-                            <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mediaName}</div>
-                            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{row.encounterName}</div>
-                          </div>
-                          <div style={{ fontSize: 20, fontWeight: 700, color: row.overallAgreement >= 0.8 ? 'var(--success)' : row.overallAgreement >= 0.6 ? 'var(--accent)' : 'var(--danger)' }}>
-                            {row.overallAgreement == null ? '—' : `${Math.round(row.overallAgreement * 100)}%`}
-                          </div>
-                        </div>
-                        {orderedQuestions.length > 0 ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                            {orderedQuestions.map(question => (
-                              <QuestionAgreementRow
-                                key={`${row.mediaName}-${question.label}`}
-                                rowKey={`${row.mediaName}-${question.label}`}
-                                question={question}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No comparable questions found for this file.</div>
-                        )}
-                      </div>
-                      )
-                    })}
-                  </div>
-                </>
-              )}
-            </>
-          )}
-        </>
-      )}
-    </div>
-  )
-}
 // ── Agreement View (formerly "Question Reliability") ──────────────────────────
 // Pools every submitted review's answer to each opted-in question ACROSS THE
 // WHOLE PROJECT (not per media file) and computes one real ICC / Fleiss' kappa /
 // weighted kappa per question — separate from the per-file percent agreement
-// in DataVizView/AgreementResultsView above, which is untouched by this.
-const RELIABILITY_METHODS = new Set(['icc', 'cohen_kappa', 'weighted_kappa', 'percent', 'weighted_fleiss_kappa'])
+// in DataVizView above, which is untouched by this.
+const RELIABILITY_METHODS = new Set(['icc', 'cohen_kappa', 'weighted_kappa', 'percent', 'weighted_fleiss_kappa', 'numeric'])
 // `table` questions nest a value per (row, column) — out of scope here.
 // `likert_group` questions nest one scalar value per row (per item.id), which
 // IS supported: each row is unpacked into its own pooled question below,
 // since that's exactly how UCAT's per-dimension ICCs (Table 2 in the paper)
 // are structured — one row per dimension inside a single likert_group.
 const ROW_UNPACK_TYPES = new Set(['likert_group'])
+// dial/vertical_slider with count > 1 (e.g. SDMo's "Evidence of Distinction
+// Dials", count: 2) store one array of scalars per response, not an object
+// keyed by row id — same "one pooled question per sub-item" idea as
+// ROW_UNPACK_TYPES above, but indexed by array position instead of a row id.
+const ARRAY_UNPACK_TYPES = new Set(['dial', 'vertical_slider'])
 const UNSUPPORTED_COMPOSITE_TYPES = new Set(['table'])
 
 const QUESTION_RELIABILITY_METHOD_LABELS = {
@@ -2993,6 +2765,26 @@ function QuestionReliabilityView({ projectId }) {
           continue
         }
 
+        if (ARRAY_UNPACK_TYPES.has(element?.type)) {
+          // One pooled question PER SUB-DIAL (e.g. SDMo's "Evidence of
+          // Distinction Dials", count: 2, becomes 2 separate numeric/ICC
+          // pooled questions) — array position is the only identifier
+          // available, since unlike ROW_UNPACK_TYPES there's no row id to
+          // key by. control_labels (if present) name each position; falls
+          // back to a generic "Dial N" label otherwise.
+          const arrayResponses = Array.isArray(responses?.[element.id]) ? responses[element.id] : []
+          const count = Math.min(5, Math.max(1, Number(element.count || 1)))
+          const dialMeta = { min: Number(element.min ?? 0), max: Number(element.max ?? 100) }
+          for (let idx = 0; idx < count; idx++) {
+            const key = `${formName}:${element.id}:${idx}${instanceKeySuffix}`
+            const value = arrayResponses[idx]
+            const subLabel = element.control_labels?.[idx] || `Dial ${idx + 1}`
+            const label = (element.label ? `${element.label} — ${subLabel}` : subLabel) + instanceLabelSuffix
+            record(key, label, method, dialMeta, subjectKey, value)
+          }
+          continue
+        }
+
         const key = `${formName}:${element.id}${instanceKeySuffix}`
         const value = responses?.[element.id]
         record(key, (element.label || element.id) + instanceLabelSuffix, method, element, subjectKey, value)
@@ -3052,7 +2844,16 @@ function QuestionReliabilityView({ projectId }) {
       results.push({
         key: entry.key,
         label: entry.label,
-        method: entry.method,
+        // Prefer the computed result's own method label over the originally
+        // dispatched one — 'numeric' dispatches to computeICC, which
+        // self-labels its output 'icc'. Using entry.method here would
+        // display "numeric" (not a real label), skip ICC's interpretation
+        // bands, and use the wrong subjects-needed threshold below.
+        // computeICC returns plain null (not an object) when there isn't
+        // enough data, so stat?.method alone wouldn't cover that case —
+        // 'numeric' always deterministically means ICC was attempted,
+        // whether or not it actually produced a value.
+        method: stat?.method || (entry.method === 'numeric' ? 'icc' : entry.method),
         stat,
         subjectsSeen: subjectGroups.length,
         subjectsUsable: subjectGroups.filter(g => g.length >= 2).length,
