@@ -17,7 +17,7 @@ const {
 const structureService = require('../services/structure')
 const snapshotService = require('../services/snapshots')
 const { seedSampleProject } = require('../services/sampleProject')
-const { listDefaultProjects, seedDefaultProject } = require('../services/defaultProjects')
+const { listDefaultProjects, seedDefaultProject, createCustomTemplate, getCustomTemplateFormForExport } = require('../services/defaultProjects')
 
 // In-memory unlock sessions — cleared on app restart. A project is "unlocked"
 // when its password has been entered this session (or it has no password).
@@ -109,11 +109,69 @@ module.exports = function (ipcMain) {
   })
 
   ipcMain.handle('projects:listDefaults', () => {
-    return listDefaultProjects()
+    return listDefaultProjects(getDb())
   })
 
   ipcMain.handle('projects:createDefault', (_, templateId) => {
     return seedDefaultProject(getDb(), templateId)
+  })
+
+  // Standalone form creation ("Make Form"), independent of any project —
+  // saves the form as a new custom template, immediately usable from
+  // Template Projects like any built-in one.
+  ipcMain.handle('templates:create', (_, { name, description, formSchema }) => {
+    return createCustomTemplate(getDb(), { name, description, formSchema })
+  })
+
+  // "Share" on a template project's form — writes just that form's schema
+  // to a portable file, distinct from Share Project (which shares an
+  // entire project). Reuses the same file-type filter naming convention
+  // fixed earlier for the SDMo->EnIAC rename.
+  ipcMain.handle('templates:exportForm', async (_, templateId) => {
+    const rowId = String(templateId).startsWith('custom_') ? String(templateId).slice('custom_'.length) : templateId
+    const form = getCustomTemplateFormForExport(getDb(), rowId)
+    if (!form) return null
+    const safeName = String(form.name || 'form').replace(/[^a-zA-Z0-9_-]/g, '_')
+    const { filePath } = await dialog.showSaveDialog({
+      defaultPath: `${safeName}.json`,
+      filters: [{ name: 'EnIAC Form', extensions: ['json'] }],
+    })
+    if (!filePath) return null
+    const payload = {
+      eniac_form_export: 1,
+      name: form.name,
+      description: form.description,
+      schema: form.schema,
+      exported_at: new Date().toISOString(),
+    }
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8')
+    return filePath
+  })
+
+  // "Import Form" — reads a file made by templates:exportForm above and
+  // saves it as a new custom template in this install's own Template
+  // Projects list, so the exact same form is immediately reusable here too.
+  ipcMain.handle('templates:importForm', async () => {
+    const { filePaths } = await dialog.showOpenDialog({
+      filters: [{ name: 'EnIAC Form', extensions: ['json'] }],
+      properties: ['openFile'],
+    })
+    if (!filePaths?.[0]) return null
+    let parsed
+    try {
+      parsed = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'))
+    } catch {
+      return { error: 'This file could not be read as a form export.' }
+    }
+    if (parsed?.eniac_form_export !== 1 || !parsed?.schema) {
+      return { error: 'This file is not a valid EnIAC form export.' }
+    }
+    const created = createCustomTemplate(getDb(), {
+      name: parsed.name || 'Imported Form',
+      description: parsed.description || '',
+      formSchema: parsed.schema,
+    })
+    return { ok: true, ...created }
   })
 
   ipcMain.handle('projects:update', (_, id, data) => {

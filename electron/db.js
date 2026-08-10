@@ -254,6 +254,20 @@ function migrate(db) {
     "ALTER TABLE form_responses ADD COLUMN instance_role TEXT",
     "ALTER TABLE form_responses ADD COLUMN instance_order INTEGER NOT NULL DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS idx_form_responses_instance ON form_responses(review_id, form_id, instance_key)",
+    // Standalone, project-independent forms saved from the "Make Form" /
+    // "Import Form" flows — each becomes its own entry in the Template
+    // Projects list, alongside the built-in SDMo/UCAT templates. Unlike
+    // those two (bundled JSON, fixed at build time), these persist here so
+    // they survive restarts and can be created/imported entirely without
+    // ever creating a project first. form_schema stores the same shape a
+    // project's own `forms.schema` column does.
+    `CREATE TABLE IF NOT EXISTS custom_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      form_schema TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) {}

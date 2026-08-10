@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Upload, HelpCircle, GraduationCap, ClipboardList } from 'lucide-react'
+import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Upload, HelpCircle, GraduationCap, ClipboardList, FilePlus, FileDown, Share2 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
@@ -79,6 +79,28 @@ export default function HomePage() {
     setShowTemplates(false)
     setShowTemplateDropdown(false)
     if (result?.id) navigate(`/project/${result.id}`)
+  }
+
+  function handleMakeForm() {
+    navigate('/form-builder')
+  }
+
+  async function handleImportForm() {
+    const result = await api.importTemplateForm()
+    if (result?.error) {
+      window.alert(result.error)
+      return
+    }
+    if (result?.ok) {
+      // The imported form is now a new custom template — refresh the list
+      // so it shows up immediately without needing a restart.
+      api.listDefaultProjects?.().then(setDefaultProjects).catch(() => {})
+    }
+  }
+
+  async function handleShareTemplateForm(templateId, e) {
+    e?.stopPropagation()
+    await api.exportTemplateForm(templateId)
   }
 
   async function handleSaveName() {
@@ -171,6 +193,12 @@ export default function HomePage() {
           </button>
           <button className="btn btn-secondary btn-sm" onClick={handleTrySample} title="Open a ready-made tutorial project with a guided walkthrough">
             <GraduationCap size={14} /> Tutorial Project
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={handleMakeForm} title="Create a new form, independent of any project — becomes a Template Project once saved">
+            <FilePlus size={14} /> Make Form
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={handleImportForm} title="Import a form someone else shared, to use the exact same one">
+            <FileDown size={14} /> Import Form
           </button>
           {defaultProjects.length > 0 && (
             <div
@@ -350,20 +378,34 @@ export default function HomePage() {
             Start from a built-in project template with forms and media types already configured.
           </p>
           {defaultProjects.map(template => (
-            <button
-              key={template.id}
-              className="btn btn-secondary"
-              onClick={() => handleCreateDefault(template.id)}
-              style={{ justifyContent: 'flex-start', gap: 12, padding: '14px 16px', height: 'auto', textAlign: 'left' }}
-            >
-              <ClipboardList size={18} style={{ flexShrink: 0 }} />
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>{template.name}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {template.description || 'Default forms and media types'}
+            <div key={template.id} style={{ display: 'flex', alignItems: 'stretch', gap: 6 }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => handleCreateDefault(template.id)}
+                style={{ flex: 1, justifyContent: 'flex-start', gap: 12, padding: '14px 16px', height: 'auto', textAlign: 'left' }}
+              >
+                <ClipboardList size={18} style={{ flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{template.name}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                    {template.description || 'Default forms and media types'}
+                  </div>
                 </div>
-              </div>
-            </button>
+              </button>
+              {/* Only custom (single-form) templates are shareable this way — the
+                  built-in SDMo/UCAT templates are full multi-form projects, not
+                  a single form the backend can export through this path. */}
+              {template.custom && (
+                <button
+                  className="btn btn-ghost btn-icon"
+                  onClick={(e) => handleShareTemplateForm(template.id, e)}
+                  title="Share this form as a file"
+                  style={{ flexShrink: 0 }}
+                >
+                  <Share2 size={15} />
+                </button>
+              )}
+            </div>
           ))}
         </div>
       </Modal>

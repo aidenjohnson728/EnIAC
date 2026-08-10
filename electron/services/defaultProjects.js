@@ -65,14 +65,52 @@ function materializeInstructionFile(instruction) {
   return filePath
 }
 
-function listDefaultProjects() {
-  return DEFAULT_PROJECTS
+function listDefaultProjects(db) {
+  const builtIn = DEFAULT_PROJECTS
     .filter(project => project.id !== 'ucat_sdmo')
-    .map(({ id, name, description }) => ({ id, name, description }))
+    .map(({ id, name, description }) => ({ id, name, description, custom: false }))
+  // Custom templates (from "Make Form" / "Import Form") are DB-backed, not
+  // bundled JSON — persist across restarts, unlike the two built-in ones.
+  // Prefixed ids avoid ever colliding with a built-in template's plain
+  // string id ('sdmo', 'ucat').
+  const customRows = db ? db.prepare('SELECT id, name, description FROM custom_templates ORDER BY created_at DESC').all() : []
+  const custom = customRows.map(row => ({ id: `custom_${row.id}`, name: row.name, description: row.description || '', custom: true }))
+  return [...builtIn, ...custom]
+}
+
+// A custom template is just one form, not a full built-in template's
+// {forms, instructions, mediaTypes} — but a project seeded from it still
+// needs to actually be usable, the same way SDMo/UCAT are immediately
+// ready to review media in. Synthesizes a single default media type with a
+// workspace tab pointing at the form, named after the form itself, so the
+// resulting project isn't a form with nothing to attach it to.
+function customTemplateAsSeedable(db, rowId) {
+  const row = db.prepare('SELECT id, name, description, form_schema FROM custom_templates WHERE id=?').get(rowId)
+  if (!row) return null
+  const formName = row.name
+  return {
+    id: `custom_${row.id}`,
+    name: row.name,
+    description: row.description || '',
+    forms: [{ name: formName, schema: JSON.parse(row.form_schema) }],
+    instructions: [],
+    mediaTypes: [{
+      name: formName,
+      reviews_required: 1,
+      allow_custom_tags: 1,
+      color: '#6366f1',
+      tags: [],
+      workspace_tabs: [{ tab_type: 'form', label: formName, ref_name: formName }],
+    }],
+  }
 }
 
 function seedDefaultProject(db, templateId) {
-  const template = DEFAULT_PROJECTS.find(project => project.id === templateId)
+  let template = DEFAULT_PROJECTS.find(project => project.id === templateId)
+  if (!template && String(templateId).startsWith('custom_')) {
+    const rowId = String(templateId).slice('custom_'.length)
+    template = customTemplateAsSeedable(db, rowId)
+  }
   if (!template) throw new Error('Default project template not found')
 
   const name = uniqueProjectName(db, template.name)
@@ -116,4 +154,21 @@ function seedDefaultProject(db, templateId) {
   return { id: projectId, name, templateId }
 }
 
-module.exports = { listDefaultProjects, seedDefaultProject }
+// Saves a standalone form (from "Make Form" or "Import Form") as a new
+// custom template. Same shape both callers need: a name, optional
+// description, and the form's own schema object (not yet stringified).
+function createCustomTemplate(db, { name, description, formSchema }) {
+  const result = db.prepare('INSERT INTO custom_templates (name, description, form_schema) VALUES (?,?,?)')
+    .run(name, description || '', JSON.stringify(formSchema))
+  return { id: `custom_${result.lastInsertRowid}`, name }
+}
+
+// Returns exactly what "Share" needs to write to a portable file — the IPC
+// handler owns the actual dialog.showSaveDialog/fs.writeFileSync calls.
+function getCustomTemplateFormForExport(db, rowId) {
+  const row = db.prepare('SELECT name, description, form_schema FROM custom_templates WHERE id=?').get(rowId)
+  if (!row) return null
+  return { name: row.name, description: row.description || '', schema: JSON.parse(row.form_schema) }
+}
+
+module.exports = { listDefaultProjects, seedDefaultProject, createCustomTemplate, getCustomTemplateFormForExport }

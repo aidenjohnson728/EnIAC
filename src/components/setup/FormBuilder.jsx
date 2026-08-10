@@ -113,7 +113,7 @@ function shortenMarkdownImageDataUrls(markdown, assets = []) {
   return { content: next, addedAssets }
 }
 
-export default function FormBuilder({ projectId, form, onSave, onCancel, onLocked }) {
+export default function FormBuilder({ projectId, form, onSave, onCancel, onLocked, saveOverride }) {
   const [name, setName] = useState(form.name || '')
   const [sections, setSections] = useState(form.schema?.sections || [])
   const [completionMode, setCompletionMode] = useState(form.schema?.completion_mode || 'all_required')
@@ -192,11 +192,20 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
     setSaving(true)
     setSaveError('')
     try {
-      if (!(await ensureUnlocked())) return
       const roles = multiInstanceEnabled
         ? multiInstanceRolesText.split(',').map(s => s.trim()).filter(Boolean)
         : undefined
-      const savedId = await api.saveForm(projectId, { id: form.id || undefined, name: name.trim(), schema: { sections, completion_mode: completionMode, multi_instance_roles: roles } })
+      const schema = { sections, completion_mode: completionMode, multi_instance_roles: roles }
+      if (saveOverride) {
+        // Standalone form creation ("Make Form") — no project to lock-check
+        // or save into; the caller (e.g. FormBuilderPage) owns what
+        // actually happens with the finished schema.
+        await saveOverride({ name: name.trim(), schema })
+        onSave()
+        return
+      }
+      if (!(await ensureUnlocked())) return
+      const savedId = await api.saveForm(projectId, { id: form.id || undefined, name: name.trim(), schema })
       onSave()
     } catch (e) {
       console.error('[FormBuilder] save failed:', e)
