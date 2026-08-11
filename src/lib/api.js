@@ -11,9 +11,8 @@ const mock = {
 export const api = isElectron ? window.api : {
   listProjects: async () => mock.projects,
   createProject: async (d) => { const p = { id: Date.now(), ...d, created_at: new Date().toISOString() }; mock.projects.push(p); return p },
-  createSampleProject: async () => { const p = { id: Date.now(), name: '📘 Tutorial Project', created_at: new Date().toISOString() }; mock.projects.push(p); return { id: p.id, tutorialReviewId: null, alreadyExisted: false } },
   listDefaultProjects: async () => [{ id: 'ucat', name: 'UCAT/SDMo', description: '' }],
-  createDefaultProject: async (templateId) => { const p = { id: Date.now(), name: templateId === 'ucat' ? 'UCAT/SDMo' : 'Default Project', created_at: new Date().toISOString() }; mock.projects.push(p); return { id: p.id, name: p.name, templateId } },
+  createDefaultProject: async (templateId, overrides) => { const p = { id: Date.now(), name: overrides?.name || (templateId === 'ucat' ? 'UCAT/SDMo' : 'Default Project'), created_at: new Date().toISOString() }; mock.projects.push(p); return { id: p.id, name: p.name, templateId } },
   createCustomTemplate: async () => null,
   exportTemplateForm: async () => null,
   importTemplateForm: async () => null,
@@ -110,6 +109,7 @@ export const api = isElectron ? window.api : {
   getSyncStatus: async () => ({ syncFolder: null, syncMode: 'none', syncFolderExists: false, cloudProvider: null, cloudFolderId: null, tokenExpired: false, lastSyncAt: null, hasPassword: false, isUnlocked: true }),
   selectSyncFolder: async () => null,
   saveProjectFile: async () => null,
+  previewImportProjectFile: async () => null,
   loadProjectFile: async () => null,
   importProjectAsNew: async () => ({ ok: true, projectId: null, syncHint: { mode: 'none', provider: null } }),
   joinFromLocalFolder: async () => ({ error: 'Not in Electron' }),

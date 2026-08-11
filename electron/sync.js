@@ -3,7 +3,7 @@ const path = require('path')
 const { app, net } = require('electron')
 const crypto = require('crypto')
 const { getDb, backupDb } = require('./db')
-const { getSettings, getProjectName, getOrCreateUUID } = require('./settings')
+const { getSettings, getProjectName, getOrCreateUUID, setProjectName } = require('./settings')
 const { localizeWorkspaceSnapshot, parseJson } = require('./services/snapshots')
 
 const SYNC_PROTOCOL_VERSION = 3
@@ -2946,7 +2946,7 @@ function buildReviewsWorkbook(db, projectId) {
 
 // ─── Legacy monolithic export/import (kept for Export/Import file flow) ───────
 
-function buildExport(db, projectId, { clearReviews = false } = {}) {
+function buildExport(db, projectId, { clearReviews = false, roster = [] } = {}) {
   const project = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId)
   const keybinds = enrichKeybinds(db, safeJsonParse(project.keybinds, []))
 
@@ -3042,20 +3042,39 @@ function buildExport(db, projectId, { clearReviews = false } = {}) {
     exported_by_name: getProjectName(projectId) || null,
     exported_at: new Date().toISOString(),
     sync_hint: syncHint,
+    // Role-based sharing: one file goes to everyone, carrying the full
+    // name -> role roster. On import, the person picks their own name from
+    // this list rather than typing it (avoiding spelling/nickname drift),
+    // and their role comes from whichever entry they picked. An empty
+    // roster means an older export, or the sender didn't assign any —
+    // createFromImport falls back to 'leader' and a free-text name prompt
+    // in that case, never silently downgrading anyone.
+    roster: Array.isArray(roster) ? roster
+      .map(r => ({ name: String(r?.name || '').trim(), role: r?.role === 'leader' ? 'leader' : 'reviewer' }))
+      .filter(r => r.name) : [],
     project: { name: project.name, description: project.description, owner_password_hash: project.owner_password_hash || null, keybinds },
     forms, instructions, media_types: mediaTypes, encounters,
     deleted_reviews: deletedReviews,
   }
 }
 
-function createFromImport(db, data) {
+// chosenName: which roster entry this person picked on import (via the
+// "pick your name" prompt) — null/omitted when the file has no roster
+// (older export, or the sender didn't assign one), in which case this
+// machine gets 'leader' and no per-project name is set here (the existing
+// free-text "Your Name" flow on HomePage handles that case instead).
+function createFromImport(db, data, chosenName = null) {
   if (!data?.sdmo) throw new Error('Not a valid SDMo project file')
-  const r = db.prepare('INSERT INTO projects (name, description, owner_password_hash) VALUES (?,?,?)')
-    .run(data.project?.name || 'Imported Project', data.project?.description || '', data.project?.owner_password_hash || null)
+  const roster = Array.isArray(data.roster) ? data.roster : []
+  const match = chosenName ? roster.find(r => r.name === chosenName) : null
+  const localRole = match?.role === 'reviewer' ? 'reviewer' : (match?.role === 'leader' ? 'leader' : 'leader')
+  const r = db.prepare('INSERT INTO projects (name, description, owner_password_hash, local_role) VALUES (?,?,?,?)')
+    .run(data.project?.name || 'Imported Project', data.project?.description || '', data.project?.owner_password_hash || null, localRole)
   const projectId = r.lastInsertRowid
   if (data.project?.keybinds) {
     db.prepare('UPDATE projects SET keybinds=? WHERE id=?').run(JSON.stringify(data.project.keybinds), projectId)
   }
+  if (match) setProjectName(projectId, match.name)
   mergeImport(db, projectId, data)
   return projectId
 }

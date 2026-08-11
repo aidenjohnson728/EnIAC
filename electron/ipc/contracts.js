@@ -42,9 +42,8 @@ function assertArgs(channel, args, rules) {
 
 const contracts = {
   'projects:get': [isIntLike],
-  'projects:createSample': [],
   'projects:listDefaults': [],
-  'projects:createDefault': [isString],
+  'projects:createDefault': [isString, isOptionalObject],
   'templates:create': [isObject],
   'templates:exportForm': [isString],
   'templates:importForm': [],
@@ -142,6 +141,8 @@ const contracts = {
   'sync:now': [isIntLike],
   'sync:getStatus': [isIntLike],
   'sync:saveFile': [isIntLike, isOptionalObject],
+  'sync:previewImportFile': [],
+  'sync:importAsNew': [isObject, isOptionalString],
   'sync:loadFile': [isIntLike],
   'sync:acceptConfigUpdate': [isIntLike, isObject],
   'sync:joinFromLocalFolder': [isString],

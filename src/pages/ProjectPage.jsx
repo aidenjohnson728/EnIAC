@@ -51,7 +51,7 @@ const PROJECT_TOUR_STEPS = [
     targetId: 'tut-proj-health',
     placement: 'bottom',
     title: 'Unlinked Files',
-    body: "This warning is local to this machine. The sample links the first video so you can try reviewing right away; the other sample slots stay unlinked so you can practice Auto-link or manual Link without changing teammates' file paths.",
+    body: "This warning is local to this machine. Use Auto-link to scan a folder for matching files, or Link to locate one manually.",
   },
   {
     targetId: 'tut-proj-autolink',
@@ -70,13 +70,18 @@ const MEDIA_ICONS = { video: Video, document: FileText, other: File }
 
 const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316']
 function colorFor(name) { let h = 0; for (const c of (name || '')) h = (h * 31 + c.charCodeAt(0)) & 0xffff; return COLORS[h % COLORS.length] }
-function sampleProjectTourKey(projectId) { return `sdmo_sample_project_tour_started_v1:${projectId}` }
 
 export default function ProjectPage() {
   const { projectId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
   const [project, setProject] = useState(null)
+  // Role-based access (Share Project's Leader/Reviewer assignment). Reviewers
+  // don't see Settings, Agreement/Alignment, or Import Results — see
+  // sync.js's buildExport/createFromImport for how local_role gets set.
+  // Note: this only hides the UI entry points here — SetupPage itself isn't
+  // gated against someone navigating to /project/:id/setup directly by URL.
+  const isReviewer = project?.local_role === 'reviewer'
   const [encounters, setEncounters] = useState([])
   const [mediaTypes, setMediaTypes] = useState([])
   const [expanded, setExpanded] = useState({})
@@ -111,6 +116,7 @@ export default function ProjectPage() {
   const [showExportMenu, setShowExportMenu] = useState(false)
   const exportMenuRef = useRef(null)
   const [shareClearReviews, setShareClearReviews] = useState(false)
+  const [shareRecipients, setShareRecipients] = useState([{ name: '', role: 'reviewer' }])
   const [sharing, setSharing] = useState(false)
   const [newMediaTarget, setNewMediaTarget] = useState(null)
   const [isDraggingNewMedia, setIsDraggingNewMedia] = useState(false)
@@ -130,19 +136,12 @@ export default function ProjectPage() {
   const [grantingGoogleDriveAccess, setGrantingGoogleDriveAccess] = useState(false)
   const [googleDriveMetadataMissing, setGoogleDriveMetadataMissing] = useState(null)
   const [resolvingGoogleDriveMetadata, setResolvingGoogleDriveMetadata] = useState(false)
-  const [sampleTourStarted, setSampleTourStarted] = useState(false)
-  const query = new URLSearchParams(location.search)
-  const isSampleTour = query.get('sampleTour') === '1'
-  const sampleReviewId = query.get('sampleReviewId')
   const tour = useTour(PROJECT_TOUR_STEPS, 'sdmo_tour_project_v1', {
     ready: !loading && encounters.length > 0,
     onStart: useCallback(() => {
       // Expand the first encounter so media-type and add-review anchors are in the DOM.
       if (encounters[0]) setExpanded(e => ({ ...e, [encounters[0].id]: true }))
     }, [encounters]),
-    onComplete: () => {
-      if (isSampleTour && sampleReviewId) navigate(`/review/${sampleReviewId}?sampleTour=1`)
-    },
   })
 
   useEffect(() => { load() }, [projectId, location.pathname])
@@ -157,18 +156,6 @@ export default function ProjectPage() {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showExportMenu])
-
-  useEffect(() => {
-    if (!isSampleTour || sampleTourStarted || loading || encounters.length === 0) return
-    const key = sampleProjectTourKey(projectId)
-    if (localStorage.getItem(key)) {
-      setSampleTourStarted(true)
-      return
-    }
-    localStorage.setItem(key, '1')
-    setSampleTourStarted(true)
-    tour.start()
-  }, [isSampleTour, sampleTourStarted, loading, encounters.length, projectId, tour])
 
   // Periodic refresh every 15s — checks manifest.json first (tiny file),
   // only downloads full config if version changed
@@ -704,16 +691,39 @@ export default function ProjectPage() {
     }
   }
 
+  function addShareRecipient() {
+    setShareRecipients(list => [...list, { name: '', role: 'reviewer' }])
+  }
+
+  function removeShareRecipient(index) {
+    setShareRecipients(list => list.length <= 1 ? list : list.filter((_, i) => i !== index))
+  }
+
+  function updateShareRecipient(index, changes) {
+    setShareRecipients(list => list.map((r, i) => i === index ? { ...r, ...changes } : r))
+  }
+
+  function resetShareModal() {
+    setShowShareModal(false)
+    setShareClearReviews(false)
+    setShareRecipients([{ name: '', role: 'reviewer' }])
+  }
+
   async function handleSaveFile() {
+    const roster = shareRecipients
+      .map(r => ({ name: r.name.trim(), role: r.role }))
+      .filter(r => r.name)
+    if (roster.length === 0) return
     setSharing(true)
     try {
-      const p = await api.saveProjectFile(projectId, { clearReviews: shareClearReviews })
+      const p = await api.saveProjectFile(projectId, {
+        clearReviews: shareClearReviews,
+        roster,
+      })
       if (p) {
-        showToast(shareClearReviews
-          ? 'File saved — reviews cleared from this copy, your own stay intact.'
-          : 'File saved — share it with teammates.')
-        setShowShareModal(false)
-        setShareClearReviews(false)
+        const clearedNote = shareClearReviews ? ' Reviews cleared from this copy, your own stay intact.' : ''
+        showToast(`File saved — share it with everyone on the list; each person picks their own name on import.${clearedNote}`)
+        resetShareModal()
       }
     } finally {
       setSharing(false)
@@ -740,19 +750,6 @@ export default function ProjectPage() {
     } else if (result.skipped?.length) {
       showToast(`Could not import: ${result.skipped.join(', ')}`, true)
     }
-  }
-
-  async function handleLoadFile() {
-    const result = await api.loadProjectFile(projectId)
-    if (!result) return
-    if (result.error) { showToast(`Import failed: ${result.error}`, true); return }
-    const parts = []
-    if (result.reviewsImported) parts.push(`${result.reviewsImported} new review${result.reviewsImported !== 1 ? 's' : ''}`)
-    if (result.reviewsUpdated) parts.push(`${result.reviewsUpdated} updated`)
-    if (result.formsAdded) parts.push(`${result.formsAdded} new form${result.formsAdded !== 1 ? 's' : ''}`)
-    if (result.typesAdded) parts.push(`${result.typesAdded} new media type${result.typesAdded !== 1 ? 's' : ''}`)
-    showToast(parts.length ? `Imported: ${parts.join(', ')}` : 'Nothing new to import.')
-    load()
   }
 
   if (loading) return <div className="empty-state" style={{ height: '100vh' }}><div className="spinner" /></div>
@@ -805,9 +802,6 @@ export default function ProjectPage() {
               )}
             </button>
           )}
-          <button className="btn btn-ghost btn-sm" onClick={handleLoadFile} title="Import project file (from email or shared folder)">
-            <FolderDown size={13} /> Import Project
-          </button>
           <button className="btn btn-ghost btn-sm" onClick={() => setShowShareModal(true)} title="Save project file to share with teammates">
             <Share2 size={13} /> Share Project
           </button>
@@ -854,9 +848,11 @@ export default function ProjectPage() {
               </div>
             )}
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={handleImportResults} title="Import another coder's exported results for comparison">
-            <Download size={13} /> Import Results
-          </button>
+          {!isReviewer && (
+            <button className="btn btn-ghost btn-sm" onClick={handleImportResults} title="Import another coder's exported results for comparison">
+              <Download size={13} /> Import Results
+            </button>
+          )}
           <button className="btn btn-ghost btn-icon btn-sm" onClick={tour.start} title="Show tutorial">
             <HelpCircle size={15} />
           </button>
@@ -1028,39 +1024,46 @@ export default function ProjectPage() {
             {/* Agreement and Alignment — previously nested as parent/subtab
                 since there were two related subtabs to group; now flat,
                 independent nav items since Agreement Between Results was
-                removed and only one would remain nested. */}
-            <button onClick={() => setActivePage('reliability')}
-              className="btn btn-ghost btn-sm"
-              style={{
-                justifyContent: 'flex-start', width: '100%',
-                fontWeight: activePage === 'reliability' ? 600 : 400,
-                color: activePage === 'reliability' ? 'var(--text)' : 'var(--text-secondary)',
-                background: activePage === 'reliability' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
-              }}>
-              <Gauge size={13} />
-              Agreement
-            </button>
-            <button onClick={() => setActivePage('dataviz')}
-              className="btn btn-ghost btn-sm"
-              style={{
-                justifyContent: 'flex-start', width: '100%',
-                fontWeight: activePage === 'dataviz' ? 600 : 400,
-                color: activePage === 'dataviz' ? 'var(--text)' : 'var(--text-secondary)',
-                background: activePage === 'dataviz' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
-              }}>
-              <LineChart size={13} />
-              Alignment
-            </button>
+                removed and only one would remain nested. Hidden entirely
+                for Reviewers. */}
+            {!isReviewer && (
+              <>
+                <button onClick={() => setActivePage('reliability')}
+                  className="btn btn-ghost btn-sm"
+                  style={{
+                    justifyContent: 'flex-start', width: '100%',
+                    fontWeight: activePage === 'reliability' ? 600 : 400,
+                    color: activePage === 'reliability' ? 'var(--text)' : 'var(--text-secondary)',
+                    background: activePage === 'reliability' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
+                  }}>
+                  <Gauge size={13} />
+                  Agreement
+                </button>
+                <button onClick={() => setActivePage('dataviz')}
+                  className="btn btn-ghost btn-sm"
+                  style={{
+                    justifyContent: 'flex-start', width: '100%',
+                    fontWeight: activePage === 'dataviz' ? 600 : 400,
+                    color: activePage === 'dataviz' ? 'var(--text)' : 'var(--text-secondary)',
+                    background: activePage === 'dataviz' ? 'var(--bg-hover, rgba(0,0,0,0.06))' : 'transparent',
+                  }}>
+                  <LineChart size={13} />
+                  Alignment
+                </button>
+              </>
+            )}
           </div>
 
-          {/* Bottom: Settings */}
+          {/* Bottom: Settings — hidden for Reviewers */}
           <div style={{ marginTop: 'auto', padding: '8px 6px', borderTop: '1px solid var(--border)' }}>
-            <button onClick={() => navigate(`/project/${projectId}/setup`)}
-              className="btn btn-ghost btn-sm"
-              style={{ justifyContent: 'flex-start', width: '100%' }}>
-              <Settings size={13} />
-              Settings
-            </button>
+            {!isReviewer && (
+              <button onClick={() => navigate(`/project/${projectId}/setup`)}
+                className="btn btn-ghost btn-sm"
+                style={{ justifyContent: 'flex-start', width: '100%' }}>
+                <Settings size={13} />
+                Settings
+              </button>
+            )}
           </div>
         </div>
 
@@ -1147,8 +1150,8 @@ export default function ProjectPage() {
           {activePage === 'activity' && <ActivityView encounters={encounters} />}
 
           {/* ── DATA VISUALIZATION ── */}
-          {activePage === 'dataviz' && <DataVizView projectId={projectId} mediaTypes={mediaTypes} />}
-          {activePage === 'reliability' && <QuestionReliabilityView projectId={projectId} />}
+          {!isReviewer && activePage === 'dataviz' && <DataVizView projectId={projectId} mediaTypes={mediaTypes} />}
+          {!isReviewer && activePage === 'reliability' && <QuestionReliabilityView projectId={projectId} />}
 
         </div>
       </div>
@@ -1197,18 +1200,62 @@ export default function ProjectPage() {
 
       <Modal
         open={showShareModal}
-        onClose={() => { setShowShareModal(false); setShareClearReviews(false) }}
+        onClose={resetShareModal}
         title="Share Project"
         footer={
           <>
-            <button className="btn btn-secondary" onClick={() => { setShowShareModal(false); setShareClearReviews(false) }}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleSaveFile} disabled={sharing}>
+            <button className="btn btn-secondary" onClick={resetShareModal}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              onClick={handleSaveFile}
+              disabled={sharing || shareRecipients.every(r => !r.name.trim())}
+            >
               {sharing ? 'Saving…' : 'Save File'}
             </button>
           </>
         }
       >
-        <p style={{ marginTop: 0 }}>This saves a copy of the project's encounters, media files, forms, and media types to a file you can send to someone else.</p>
+        <p style={{ marginTop: 0 }}>
+          This saves the project to a single file you can send to everyone on your list — each
+          person picks their own name from it when they import, which sets their role automatically.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
+          {shareRecipients.map((recipient, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+              <div className="form-field" style={{ flex: 1, marginBottom: 0 }}>
+                {i === 0 && <label>Name</label>}
+                <input
+                  placeholder="e.g. Alice Chen"
+                  value={recipient.name}
+                  onChange={e => updateShareRecipient(i, { name: e.target.value })}
+                />
+              </div>
+              <div className="form-field" style={{ width: 130, marginBottom: 0 }}>
+                {i === 0 && <label>Role</label>}
+                <select value={recipient.role} onChange={e => updateShareRecipient(i, { role: e.target.value })}>
+                  <option value="reviewer">Reviewer</option>
+                  <option value="leader">Leader</option>
+                </select>
+              </div>
+              <button
+                className="btn btn-ghost btn-icon"
+                onClick={() => removeShareRecipient(i)}
+                disabled={shareRecipients.length <= 1}
+                title="Remove"
+                style={{ flexShrink: 0 }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button className="btn btn-secondary btn-sm" onClick={addShareRecipient} style={{ marginBottom: 14 }}>
+          <Plus size={13} /> Add Person
+        </button>
+        <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: -8, marginBottom: 14 }}>
+          Reviewers won't see Settings, Agreement/Alignment, or Import Results on their copy of this project.
+          Leaders have full access, same as you.
+        </p>
         <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', marginBottom: 0 }}>
           <input
             type="checkbox"

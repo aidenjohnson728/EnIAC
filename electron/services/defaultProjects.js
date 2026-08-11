@@ -105,7 +105,7 @@ function customTemplateAsSeedable(db, rowId) {
   }
 }
 
-function seedDefaultProject(db, templateId) {
+function seedDefaultProject(db, templateId, overrides = {}) {
   let template = DEFAULT_PROJECTS.find(project => project.id === templateId)
   if (!template && String(templateId).startsWith('custom_')) {
     const rowId = String(templateId).slice('custom_'.length)
@@ -113,9 +113,15 @@ function seedDefaultProject(db, templateId) {
   }
   if (!template) throw new Error('Default project template not found')
 
-  const name = uniqueProjectName(db, template.name)
+  // overrides.name/description come from the New Project modal, where the
+  // person types their own project name regardless of which form/template
+  // they picked — falls back to the template's own name only when no
+  // override is given (e.g. the old Template Projects quick-create path).
+  const requestedName = overrides.name?.trim() || template.name
+  const name = uniqueProjectName(db, requestedName)
+  const description = overrides.description != null ? overrides.description : (template.description || '')
   const result = db.prepare('INSERT INTO projects (name, description) VALUES (?,?)')
-    .run(name, template.description || '')
+    .run(name, description)
   const projectId = result.lastInsertRowid
 
   const formIdsByName = new Map()

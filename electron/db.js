@@ -268,6 +268,14 @@ function migrate(db) {
       form_schema TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now'))
     )`,
+    // Role-based sharing ("Share Project" with a Leader/Reviewer assignment).
+    // Deliberately local-only, not synced — mirrors owner_password_hash and
+    // other per-machine fields already on this table. Every project defaults
+    // to 'leader': the person who creates a project (directly, from a
+    // template, or the sample) is automatically its Leader, and imported
+    // projects get the role that was assigned when the file was shared —
+    // see sync.js's buildExport/createFromImport.
+    "ALTER TABLE projects ADD COLUMN local_role TEXT NOT NULL DEFAULT 'leader'",
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) {}

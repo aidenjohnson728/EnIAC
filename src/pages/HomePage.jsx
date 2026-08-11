@@ -1,12 +1,17 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Upload, HelpCircle, GraduationCap, ClipboardList, FilePlus, FileDown, Share2 } from 'lucide-react'
+import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, HelpCircle, ClipboardList, FilePlus, FileDown, Share2 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
 import appIcon from '../assets/app-icon-transparent.png'
 
 const TUTORIAL_KEY = 'sdmo_tutorial_v1'
+// Bridges the New Project modal across the navigation to /form-builder and
+// back — sessionStorage (not localStorage) because this should only ever
+// survive within the current app session, not persist indefinitely.
+const PENDING_NEW_PROJECT_KEY = 'eniac_pending_new_project'
+const JUST_CREATED_TEMPLATE_KEY = 'eniac_just_created_template_id'
 
 const TUTORIAL_STEPS = [
   {
@@ -30,24 +35,11 @@ const TUTORIAL_STEPS = [
 ]
 
 export default function HomePage() {
-  const [showTemplateDropdown, setShowTemplateDropdown] = useState(false)
-  const templateDropdownRef = useRef(null)
-
-  useEffect(() => {
-    if (!showTemplateDropdown) return
-    function handleClickOutside(e) {
-      if (templateDropdownRef.current && !templateDropdownRef.current.contains(e.target)) {
-        setShowTemplateDropdown(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showTemplateDropdown])
   const [projects, setProjects] = useState([])
   const [defaultProjects, setDefaultProjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
-  const [showTemplates, setShowTemplates] = useState(false)
+  const [selectedTemplateId, setSelectedTemplateId] = useState(null)
   const [form, setForm] = useState({ name: '', description: '' })
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [reviewerName, setReviewerName] = useState(null)
@@ -55,6 +47,10 @@ export default function HomePage() {
   const [nameInput, setNameInput] = useState('')
   const [importedProject, setImportedProject] = useState(null) // { id, name, syncHint }
   const [importMediaFolder, setImportMediaFolder] = useState('')
+  const [importReviewerName, setImportReviewerName] = useState('')
+  const [pendingImportData, setPendingImportData] = useState(null)
+  const [pendingImportRoster, setPendingImportRoster] = useState([])
+  const [chosenImportName, setChosenImportName] = useState('')
   const [importSyncFolder, setImportSyncFolder] = useState('')
   const tour = useTour(TUTORIAL_STEPS, TUTORIAL_KEY)
   const navigate = useNavigate()
@@ -66,35 +62,44 @@ export default function HomePage() {
       setReviewerName(s.reviewer_name || null)
       if (!s.reviewer_name) setShowIdentity(true)
     })
+    // "Make Form" navigates away to a whole separate page (form building
+    // doesn't fit in this modal), so the in-progress name/description would
+    // otherwise be lost. FormBuilderPage stashes both, plus the newly
+    // created template's id, in sessionStorage right before navigating
+    // back here — pick that back up and re-open New Project exactly where
+    // the person left off, with the new form already selected.
+    const pending = sessionStorage.getItem(PENDING_NEW_PROJECT_KEY)
+    if (pending) {
+      try {
+        const { name, description } = JSON.parse(pending)
+        setForm({ name: name || '', description: description || '' })
+      } catch { /* ignore malformed value */ }
+      sessionStorage.removeItem(PENDING_NEW_PROJECT_KEY)
+      const newTemplateId = sessionStorage.getItem(JUST_CREATED_TEMPLATE_KEY)
+      if (newTemplateId) {
+        setSelectedTemplateId(newTemplateId)
+        sessionStorage.removeItem(JUST_CREATED_TEMPLATE_KEY)
+      }
+      setShowCreate(true)
+    }
   }, [])
 
-  async function handleTrySample() {
-    const result = await api.createSampleProject()
-    if (result?.id && result?.tutorialReviewId) navigate(`/project/${result.id}?sampleTour=1&sampleReviewId=${result.tutorialReviewId}`)
-    else if (result?.id) navigate(`/project/${result.id}`)
-  }
-
-  async function handleCreateDefault(templateId) {
-    const result = await api.createDefaultProject(templateId)
-    setShowTemplates(false)
-    setShowTemplateDropdown(false)
-    if (result?.id) navigate(`/project/${result.id}`)
-  }
-
   function handleMakeForm() {
+    // Save what's already been typed so New Project can resume with it
+    // once the person is done building the form and comes back here.
+    sessionStorage.setItem(PENDING_NEW_PROJECT_KEY, JSON.stringify({ name: form.name, description: form.description }))
     navigate('/form-builder')
   }
 
-  async function handleImportForm() {
+  async function handleImportFormForNewProject() {
     const result = await api.importTemplateForm()
     if (result?.error) {
       window.alert(result.error)
       return
     }
     if (result?.ok) {
-      // The imported form is now a new custom template — refresh the list
-      // so it shows up immediately without needing a restart.
       api.listDefaultProjects?.().then(setDefaultProjects).catch(() => {})
+      setSelectedTemplateId(result.id)
     }
   }
 
@@ -112,19 +117,55 @@ export default function HomePage() {
 
 
   async function handleImportProject() {
-    const result = await api.importProjectAsNew()
-    if (result?.ok) {
-      await load()
-      const projects = await api.listProjects()
-      const proj = projects.find(p => p.id === result.projectId)
-      setImportMediaFolder('')
-      setImportSyncFolder('')
-      setImportedProject({
-        id: result.projectId,
-        name: proj?.name || 'Imported Project',
-        syncHint: result.syncHint || { mode: 'none', provider: null },
-      })
+    const preview = await api.previewImportProjectFile()
+    if (!preview) return
+    if (preview.error) {
+      window.alert(preview.error)
+      return
     }
+    if (preview.roster?.length > 0) {
+      // Multiple names to choose from — hold the parsed data until they
+      // pick which one is them; nothing is created yet.
+      setPendingImportData(preview.data)
+      setPendingImportRoster(preview.roster)
+      setChosenImportName('')
+      return
+    }
+    // No roster in this file (older export, or shared without one) —
+    // create the project now with no assigned role (defaults to 'leader'),
+    // and fall through to the existing free-text "Your Name" step.
+    await finalizeImport(preview.data, null)
+  }
+
+  async function handleChooseImportName() {
+    if (!chosenImportName) return
+    const data = pendingImportData
+    setPendingImportData(null)
+    setPendingImportRoster([])
+    await finalizeImport(data, chosenImportName)
+  }
+
+  async function finalizeImport(data, chosenName) {
+    const result = await api.importProjectAsNew(data, chosenName)
+    if (!result?.ok) return
+    await load()
+    if (chosenName) {
+      // Roster pick already determined name + role — nothing essential
+      // left to collect, so skip straight to the project instead of the
+      // media-folder setup step (still available later via Setup).
+      navigate(`/project/${result.projectId}`)
+      return
+    }
+    const projects = await api.listProjects()
+    const proj = projects.find(p => p.id === result.projectId)
+    setImportMediaFolder('')
+    setImportSyncFolder('')
+    setImportReviewerName('')
+    setImportedProject({
+      id: result.projectId,
+      name: proj?.name || 'Imported Project',
+      syncHint: result.syncHint || { mode: 'none', provider: null },
+    })
   }
 
   async function handleFinishImport() {
@@ -138,7 +179,17 @@ export default function HomePage() {
     if (importMediaFolder) {
       await api.scanMediaFolder(importMediaFolder, importedProject.id)
     }
+    // Explicit per-project name, set here rather than left to silently fall
+    // back to the global reviewer_name — someone opening a shared project
+    // may have used a slightly different spelling/nickname elsewhere, and
+    // that inconsistency would otherwise go unnoticed. This function only
+    // ever runs for the no-roster fallback case now — a roster pick skips
+    // straight to the project, name already set by createFromImport.
+    if (importReviewerName.trim()) {
+      await api.setProjectName(importedProject.id, importReviewerName.trim())
+    }
     setImportedProject(null)
+    setImportReviewerName('')
     navigate(`/project/${importedProject.id}`)
   }
 
@@ -151,11 +202,15 @@ export default function HomePage() {
 
   async function handleCreate(e) {
     e.preventDefault()
-    if (!form.name.trim()) return
-    const project = await api.createProject({ name: form.name.trim(), description: form.description.trim() })
+    if (!form.name.trim() || !selectedTemplateId) return
+    const project = await api.createDefaultProject(selectedTemplateId, {
+      name: form.name.trim(),
+      description: form.description.trim(),
+    })
     setShowCreate(false)
     setForm({ name: '', description: '' })
-    navigate(`/project/${project.id}/setup`)
+    setSelectedTemplateId(null)
+    if (project?.id) navigate(`/project/${project.id}`)
   }
 
   async function handleDelete() {
@@ -189,87 +244,8 @@ export default function HomePage() {
             </span>
           </button>
           <button className="btn btn-secondary btn-sm" onClick={handleImportProject} title="Import a project from a .json export file">
-            <Upload size={14} /> Import Project
+            <FileDown size={14} /> Import Project
           </button>
-          <button className="btn btn-secondary btn-sm" onClick={handleTrySample} title="Open a ready-made tutorial project with a guided walkthrough">
-            <GraduationCap size={14} /> Tutorial Project
-          </button>
-          <button className="btn btn-secondary btn-sm" onClick={handleMakeForm} title="Create a new form, independent of any project — becomes a Template Project once saved">
-            <FilePlus size={14} /> Make Form
-          </button>
-          <button className="btn btn-secondary btn-sm" onClick={handleImportForm} title="Import a form someone else shared, to use the exact same one">
-            <FileDown size={14} /> Import Form
-          </button>
-          {defaultProjects.length > 0 && (
-            <div
-              ref={templateDropdownRef}
-              style={{ position: 'relative' }}
-            >
-              <button
-                className="btn btn-secondary btn-sm"
-                title="Create a project from a built-in template"
-                onClick={() => setShowTemplateDropdown(s => !s)}
-              >
-                <ClipboardList size={14} /> Template Projects
-              </button>
-
-              {showTemplateDropdown && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: '100%',
-                    right: 0,
-                    marginTop: 4,
-                    width: 220,
-                    background: 'var(--bg)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 8,
-                    boxShadow: 'var(--shadow-md)',
-                    padding: 6,
-                    zIndex: 1000,
-                  }}
-                >
-                  {defaultProjects.map(template => (
-                    <button
-                      key={template.id}
-                      onClick={() => handleCreateDefault(template.id)}
-                      style={{
-                        width: '100%',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'flex-start',
-                        gap: 3,
-                        padding: '10px 12px',
-                        border: 'none',
-                        background: 'transparent',
-                        borderRadius: 6,
-                        cursor: 'pointer',
-                        textAlign: 'left',
-                        fontFamily: 'var(--font)',
-                      }}
-                      onMouseEnter={e => {
-                        e.currentTarget.style.background = 'var(--bg-secondary)'
-                      }}
-                      onMouseLeave={e => {
-                        e.currentTarget.style.background = 'transparent'
-                      }}
-                    >
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>
-                        {template.name}
-                      </span>
-
-                      <span style={{ 
-                        fontSize: 12, 
-                        color: 'var(--text-muted)' 
-                      }}>
-                        {template.description || 'Default project template'}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
           <button id="tut-new" className="btn btn-primary btn-sm" onClick={() => setShowCreate(true)}>
             <Plus size={14} /> New Project
           </button>
@@ -297,22 +273,9 @@ export default function HomePage() {
               <p style={{ fontWeight: 500, color: 'var(--text-secondary)' }}>No projects yet</p>
               <p className="text-sm" style={{ marginTop: 4 }}>Create a project to get started</p>
             </div>
-            <p className="text-sm" style={{ marginTop: -2, color: 'var(--text-muted)' }}>
-              New to EnIAC? Open the tutorial project for a guided walkthrough.
-            </p>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-secondary" onClick={handleTrySample}>
-                <GraduationCap size={14} /> Try Tutorial Project
-              </button>
-              {defaultProjects.length > 0 && (
-                <button className="btn btn-secondary" onClick={() => setShowTemplates(true)}>
-                  <ClipboardList size={14} /> Template Projects
-                </button>
-              )}
-              <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-                <Plus size={14} /> Create Project
-              </button>
-            </div>
+            <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
+              <Plus size={14} /> Create Project
+            </button>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -366,59 +329,15 @@ export default function HomePage() {
         )}
       </div>
 
-      {/* Template Modal */}
-      <Modal
-        open={showTemplates}
-        onClose={() => setShowTemplates(false)}
-        title="Template Project"
-        footer={<button className="btn btn-secondary" onClick={() => setShowTemplates(false)}>Cancel</button>}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
-            Start from a built-in project template with forms and media types already configured.
-          </p>
-          {defaultProjects.map(template => (
-            <div key={template.id} style={{ display: 'flex', alignItems: 'stretch', gap: 6 }}>
-              <button
-                className="btn btn-secondary"
-                onClick={() => handleCreateDefault(template.id)}
-                style={{ flex: 1, justifyContent: 'flex-start', gap: 12, padding: '14px 16px', height: 'auto', textAlign: 'left' }}
-              >
-                <ClipboardList size={18} style={{ flexShrink: 0 }} />
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>{template.name}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                    {template.description || 'Default forms and media types'}
-                  </div>
-                </div>
-              </button>
-              {/* Only custom (single-form) templates are shareable this way — the
-                  built-in SDMo/UCAT templates are full multi-form projects, not
-                  a single form the backend can export through this path. */}
-              {template.custom && (
-                <button
-                  className="btn btn-ghost btn-icon"
-                  onClick={(e) => handleShareTemplateForm(template.id, e)}
-                  title="Share this form as a file"
-                  style={{ flexShrink: 0 }}
-                >
-                  <Share2 size={15} />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      </Modal>
-
       {/* Create Modal */}
       <Modal
         open={showCreate}
-        onClose={() => { setShowCreate(false); setForm({ name: '', description: '' }) }}
+        onClose={() => { setShowCreate(false); setForm({ name: '', description: '' }); setSelectedTemplateId(null) }}
         title="New Project"
         footer={
           <>
             <button className="btn btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleCreate} disabled={!form.name.trim()}>Create & Configure</button>
+            <button className="btn btn-primary" onClick={handleCreate} disabled={!form.name.trim() || !selectedTemplateId}>Create & Configure</button>
           </>
         }
       >
@@ -432,6 +351,83 @@ export default function HomePage() {
               onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
             />
           </div>
+
+          <div className="form-field">
+            <label>Form *</label>
+            <div style={{
+              display: 'flex', flexDirection: 'column', gap: 6,
+              maxHeight: 260, overflowY: 'auto',
+              border: '1px solid var(--border)', borderRadius: 8, padding: 6,
+            }}>
+              {defaultProjects.map(template => {
+                const selected = selectedTemplateId === template.id
+                return (
+                  <div key={template.id} style={{ display: 'flex', alignItems: 'stretch', gap: 6 }}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedTemplateId(template.id)}
+                      style={{
+                        flex: 1, display: 'flex', alignItems: 'center', gap: 12,
+                        padding: '10px 12px', height: 'auto', textAlign: 'left',
+                        border: selected ? '1px solid var(--accent)' : '1px solid transparent',
+                        background: selected ? 'var(--accent-light)' : 'var(--bg-secondary)',
+                        borderRadius: 6, cursor: 'pointer', fontFamily: 'var(--font)',
+                      }}
+                    >
+                      <ClipboardList size={16} style={{ flexShrink: 0 }} />
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>{template.name}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                          {template.description || 'Default forms and media types'}
+                        </div>
+                      </div>
+                    </button>
+                    {/* Only custom (single-form) templates are shareable this way —
+                        the built-in SDMo/UCAT templates are full multi-form projects,
+                        not a single form the backend can export through this path. */}
+                    {template.custom && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-icon"
+                        onClick={(e) => handleShareTemplateForm(template.id, e)}
+                        title="Share this form as a file"
+                        style={{ flexShrink: 0 }}
+                      >
+                        <Share2 size={15} />
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+              <button
+                type="button"
+                onClick={handleMakeForm}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '10px 12px', height: 'auto', textAlign: 'left',
+                  border: '1px dashed var(--border)', background: 'transparent',
+                  borderRadius: 6, cursor: 'pointer', fontFamily: 'var(--font)',
+                }}
+              >
+                <FilePlus size={16} style={{ flexShrink: 0 }} />
+                <div style={{ fontWeight: 600, fontSize: 13 }}>Make Form</div>
+              </button>
+              <button
+                type="button"
+                onClick={handleImportFormForNewProject}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '10px 12px', height: 'auto', textAlign: 'left',
+                  border: '1px dashed var(--border)', background: 'transparent',
+                  borderRadius: 6, cursor: 'pointer', fontFamily: 'var(--font)',
+                }}
+              >
+                <FileDown size={16} style={{ flexShrink: 0 }} />
+                <div style={{ fontWeight: 600, fontSize: 13 }}>Import Form</div>
+              </button>
+            </div>
+          </div>
+
           <div className="form-field">
             <label>Description</label>
             <textarea
@@ -489,6 +485,46 @@ export default function HomePage() {
       {/* Tutorial */}
       {tour.node}
 
+      {/* Pick-your-name step — shown when the imported file has a roster
+          (Share Project's Name/Role list). Nothing has been created yet;
+          this choice determines the new project's role. */}
+      {pendingImportRoster.length > 0 && (
+        <Modal
+          open
+          onClose={() => { setPendingImportData(null); setPendingImportRoster([]); setChosenImportName('') }}
+          title="Which name is you?"
+          footer={
+            <button className="btn btn-primary" onClick={handleChooseImportName} disabled={!chosenImportName}>
+              Continue
+            </button>
+          }
+        >
+          <p style={{ marginTop: 0, color: 'var(--text-secondary)', fontSize: 13 }}>
+            This project was shared with a list of people. Pick your name below — it sets your role automatically.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {pendingImportRoster.map((entry, i) => {
+              const selected = chosenImportName === entry.name
+              return (
+                <button
+                  key={i}
+                  onClick={() => setChosenImportName(entry.name)}
+                  style={{
+                    display: 'flex', alignItems: 'center',
+                    padding: '10px 12px', textAlign: 'left', cursor: 'pointer', fontFamily: 'var(--font)',
+                    border: selected ? '1px solid var(--accent)' : '1px solid var(--border)',
+                    background: selected ? 'var(--accent-light)' : 'transparent',
+                    borderRadius: 6,
+                  }}
+                >
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>{entry.name}</span>
+                </button>
+              )
+            })}
+          </div>
+        </Modal>
+      )}
+
       {/* Post-import folder setup */}
       {importedProject && (() => {
         const hint = importedProject.syncHint || { mode: 'none', provider: null }
@@ -499,9 +535,32 @@ export default function HomePage() {
             open
             onClose={null}
             title={`Set up "${importedProject.name}" on this computer`}
-            footer={<button className="btn btn-primary" onClick={handleFinishImport}>Open Project</button>}
+            footer={
+              <button className="btn btn-primary" onClick={handleFinishImport} disabled={!importReviewerName.trim()}>
+                Open Project
+              </button>
+            }
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+
+              {/* Your name — explicit per-project choice, not inherited from
+                  the app-wide identity, since spelling/nicknames can drift
+                  between projects and that drift should never happen silently.
+                  This modal only shows for the no-roster fallback case now —
+                  a roster pick skips straight to the project instead. */}
+              <div className="form-field">
+                <label>Your Name *</label>
+                <input
+                  autoFocus
+                  placeholder="e.g. Alice Chen"
+                  value={importReviewerName}
+                  onChange={e => setImportReviewerName(e.target.value)}
+                />
+                <span className="text-muted text-sm" style={{ marginTop: 4 }}>
+                  Used to attribute your reviews on this project specifically — worth typing it exactly
+                  the way the project owner expects, even if it differs slightly from your name elsewhere.
+                </span>
+              </div>
 
               {/* Media folder — always shown */}
               <div className="form-field">

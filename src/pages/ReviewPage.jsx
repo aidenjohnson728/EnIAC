@@ -41,15 +41,6 @@ const REVIEW_TOUR_STEPS = [
   },
 ]
 
-const SYNC_BASICS_TOUR_STEPS = [
-  {
-    targetId: 'tut-rev-sync-basics',
-    placement: 'top',
-    title: 'Sync Basics',
-    body: 'This page explains what EnIAC sync shares with teammates, what stays local on each computer, and the habits that prevent duplicate or missing review data.',
-  },
-]
-
 function normalizeKeybindKey(key) {
   if (!key) return ''
   if (key === ' ') return 'space'
@@ -183,7 +174,6 @@ function findTimestampTag(tags, ts) {
   return ts?.tag_label ? tags.find(t => t.label === ts.tag_label) || null : null
 }
 
-function sampleReviewTourKey(reviewId) { return `sdmo_sample_review_tour_started_v1:${reviewId}` }
 
 function reopenedReasonLabel(reason) {
   if (reason === 'form_version_changed') return 'Reopened after form update'
@@ -234,19 +224,12 @@ export default function ReviewPage() {
   const [videoUrl, setVideoUrl] = useState(null)
   const [videoError, setVideoError] = useState('')
   const [showSubmit, setShowSubmit] = useState(false)
-  const [sampleTourStarted, setSampleTourStarted] = useState(false)
-  const [pendingSyncBasicsTour, setPendingSyncBasicsTour] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [loading, setLoading] = useState(true)
   const [validationErrors, setValidationErrors] = useState([])
-  const isSampleTour = new URLSearchParams(location.search).get('sampleTour') === '1'
   const tour = useTour(REVIEW_TOUR_STEPS, 'sdmo_tour_review_v1', {
     ready: !loading && !!videoUrl,
-    onComplete: () => {
-      if (isSampleTour) setPendingSyncBasicsTour(true)
-    },
   })
-  const syncBasicsTour = useTour(SYNC_BASICS_TOUR_STEPS, null, { ready: !loading && !!videoUrl })
   const [linkModal, setLinkModal] = useState(null) // null | 'not_linked' | 'missing'
   const [linkSaving, setLinkSaving] = useState(false)
   const [isDraggingFile, setIsDraggingFile] = useState(false)
@@ -276,32 +259,6 @@ export default function ReviewPage() {
     setLayoutMode('horizontal')
     setTimestampsPosition('bottom')
   }, [mediaTypeName])
-
-  useEffect(() => {
-    if (!isSampleTour || sampleTourStarted || loading || !videoUrl) return
-    const key = sampleReviewTourKey(reviewId)
-    if (localStorage.getItem(key)) {
-      setSampleTourStarted(true)
-      return
-    }
-    localStorage.setItem(key, '1')
-    setSampleTourStarted(true)
-    tour.start()
-  }, [isSampleTour, sampleTourStarted, loading, videoUrl, reviewId, tour])
-
-  useEffect(() => {
-    if (!pendingSyncBasicsTour || loading || workspaceTabs.length === 0) return
-    const idx = workspaceTabs.findIndex(tab => tab.tab_type === 'instruction' && tab.label === 'Sync Basics')
-    if (idx < 0) {
-      setPendingSyncBasicsTour(false)
-      return
-    }
-    setWorkspaceExpanded(false)
-    setWorkspaceMinimized(false)
-    setActiveTab(idx)
-    setPendingSyncBasicsTour(false)
-    setTimeout(() => syncBasicsTour.start(), 100)
-  }, [pendingSyncBasicsTour, loading, workspaceTabs, syncBasicsTour])
 
   function refreshReviewData(id) {
     api.getReview(id).then(rev => {
@@ -1572,7 +1529,6 @@ export default function ReviewPage() {
       )}
 
       {tour.node}
-      {syncBasicsTour.node}
     </div>
   )
 }

@@ -16,7 +16,6 @@ const {
 } = require('../sync')
 const structureService = require('../services/structure')
 const snapshotService = require('../services/snapshots')
-const { seedSampleProject } = require('../services/sampleProject')
 const { listDefaultProjects, seedDefaultProject, createCustomTemplate, getCustomTemplateFormForExport } = require('../services/defaultProjects')
 
 // In-memory unlock sessions — cleared on app restart. A project is "unlocked"
@@ -104,16 +103,12 @@ module.exports = function (ipcMain) {
     return { id: projectId, ...data }
   })
 
-  ipcMain.handle('projects:createSample', () => {
-    return seedSampleProject(getDb())
-  })
-
   ipcMain.handle('projects:listDefaults', () => {
     return listDefaultProjects(getDb())
   })
 
-  ipcMain.handle('projects:createDefault', (_, templateId) => {
-    return seedDefaultProject(getDb(), templateId)
+  ipcMain.handle('projects:createDefault', (_, templateId, overrides) => {
+    return seedDefaultProject(getDb(), templateId, overrides || {})
   })
 
   // Standalone form creation ("Make Form"), independent of any project —
@@ -270,20 +265,39 @@ module.exports = function (ipcMain) {
       filters: [{ name: 'EnIAC Project', extensions: ['json'] }],
     })
     if (!filePath) return null
-    const data = buildExport(db, projectId, { clearReviews: !!options?.clearReviews })
+    const data = buildExport(db, projectId, {
+      clearReviews: !!options?.clearReviews,
+      roster: Array.isArray(options?.roster) ? options.roster : [],
+    })
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2))
     return filePath
   })
 
-  ipcMain.handle('sync:importAsNew', async () => {
+  // Step 1 of import: pick the file, parse it, hand the roster back to the
+  // renderer WITHOUT creating anything yet — the person needs to pick their
+  // own name from that roster before the project (and their role) is final.
+  ipcMain.handle('sync:previewImportFile', async () => {
     const { filePaths } = await dialog.showOpenDialog({
       filters: [{ name: 'EnIAC Project', extensions: ['json'] }],
       properties: ['openFile'],
     })
     if (!filePaths?.[0]) return null
+    let data
+    try {
+      data = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'))
+    } catch {
+      return { error: 'This file could not be read as a project export.' }
+    }
+    if (!data?.sdmo) return { error: 'This file is not a valid EnIAC project export.' }
+    return { ok: true, data, roster: Array.isArray(data.roster) ? data.roster : [] }
+  })
+
+  // Step 2: create the project from the data step 1 already parsed, now
+  // that the person has picked which roster entry (or typed a name, if the
+  // file had no roster) they are.
+  ipcMain.handle('sync:importAsNew', async (_, data, chosenName) => {
     const db = getDb()
-    const data = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'))
-    const projectId = createFromImport(db, data)
+    const projectId = createFromImport(db, data, chosenName || null)
     return { ok: true, projectId, syncHint: data.sync_hint || { mode: 'none', provider: null } }
   })
 

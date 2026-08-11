@@ -252,7 +252,13 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
             value={name}
             onChange={e => setName(e.target.value)}
             placeholder="Form name"
-            style={{ fontWeight: 600, fontSize: 14, border: 'none', background: 'transparent', outline: 'none', width: 240, padding: 0 }}
+            style={{
+              fontWeight: 600, fontSize: 14, width: 240, padding: '5px 8px',
+              border: `1px solid ${name.trim() ? 'transparent' : 'var(--accent)'}`,
+              borderRadius: 6, background: 'var(--bg-secondary)', outline: 'none',
+            }}
+            onFocus={e => { e.target.style.border = '1px solid var(--accent)' }}
+            onBlur={e => { e.target.style.border = `1px solid ${name.trim() ? 'transparent' : 'var(--accent)'}` }}
           />
         </div>
         <div style={{ display: 'flex', gap: 6, WebkitAppRegion: 'no-drag' }}>
