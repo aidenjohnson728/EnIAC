@@ -51,7 +51,7 @@ const PROJECT_TOUR_STEPS = [
     targetId: 'tut-proj-health',
     placement: 'bottom',
     title: 'Unlinked Files',
-    body: "This warning is local to this machine. Use Auto-link to scan a folder for matching files, or Link to locate one manually.",
+    body: "This warning is local to this machine. Use Auto-link to scan a folder for matching files, or Link to relink one manually.",
   },
   {
     targetId: 'tut-proj-autolink',
@@ -464,15 +464,51 @@ export default function ProjectPage() {
     setMediaHealth(health)
   }
 
+  // Shared by both manual browse and drag-and-drop relinking below — decides
+  // whether to rename the media file (and its encounter, if it's the only
+  // media file in it) to match the newly-linked file's name. Automatic when
+  // safe (no existing submitted reviews to orphan); otherwise asks first,
+  // since media_name is the exact key Agreement/Alignment/Progress use to
+  // match reviews across reviewers and installs — renaming it out from under
+  // existing reviews would silently stop them matching anything recorded
+  // after the rename.
+  async function maybeRenameAfterRelink(mediaFileId, linkResult) {
+    if (!linkResult?.nameChanged) return
+    if (linkResult.hasReviews) {
+      const proceed = window.confirm(
+        `This file already has submitted reviews recorded under the name "${linkResult.currentName}". ` +
+        `Renaming it to "${linkResult.newName}" means those existing reviews won't automatically match ` +
+        `new ones or imported results going forward. Rename anyway?`
+      )
+      if (!proceed) return
+    }
+    await api.applyRelinkRename(projectId, mediaFileId, linkResult.newName)
+  }
+
   async function handleManualLink(mediaFileId) {
     setLinkSaving(mediaFileId)
     const filePath = await api.browseMediaFile(mediaFileId)
     if (filePath) {
-      await api.setMediaLink(mediaFileId, projectId, filePath)
+      const result = await api.setMediaLink(mediaFileId, projectId, filePath)
+      await maybeRenameAfterRelink(mediaFileId, result)
       const [encs, health] = await Promise.all([api.listEncounters(projectId), api.mediaHealthCheck(projectId)])
       setEncounters(encs)
       setMediaHealth(health)
     }
+    setLinkSaving(null)
+  }
+
+  // Drag-and-drop relinking — the dropped file already gives us an absolute
+  // local path (Electron exposes this via the dropped File object's .path,
+  // a non-standard extension the browser File API doesn't have), so this
+  // skips straight to setMediaLink instead of opening the native picker.
+  async function handleDropLink(mediaFileId, filePath) {
+    setLinkSaving(mediaFileId)
+    const result = await api.setMediaLink(mediaFileId, projectId, filePath)
+    await maybeRenameAfterRelink(mediaFileId, result)
+    const [encs, health] = await Promise.all([api.listEncounters(projectId), api.mediaHealthCheck(projectId)])
+    setEncounters(encs)
+    setMediaHealth(health)
     setLinkSaving(null)
   }
 
@@ -1076,7 +1112,7 @@ export default function ProjectPage() {
               <AlertTriangle size={15} style={{ color: 'var(--warning)', flexShrink: 0 }} />
               <span style={{ color: 'var(--warning)', flex: 1 }}>
                 {mediaHealth.unlinked + mediaHealth.broken} of {mediaHealth.total} media file{mediaHealth.total !== 1 ? 's' : ''} {mediaHealth.broken > 0 && mediaHealth.unlinked > 0 ? 'are not linked or missing' : mediaHealth.broken > 0 ? 'cannot be found on disk' : 'are not linked on this machine'}.
-                {!mediaHealth.hasBaseFolder ? ' Set a base folder in Settings → Media Folder.' : ' Go to Settings → Media Folder to auto-link or manually locate files.'}
+                {!mediaHealth.hasBaseFolder ? ' Set a base folder in Settings → Media Folder.' : ' Go to Settings → Media Folder to auto-link or manually relink files.'}
               </span>
               <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => navigate(`/project/${projectId}/setup?section=${SETUP_SECTIONS.FILES}`)}>Fix</button>
             </div>
@@ -1134,7 +1170,7 @@ export default function ProjectPage() {
                 <>
                   <div id="tut-proj-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE).map(enc => (
-                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onRenameEncounter={() => { setRenameEncounterTarget(enc); setRenameInput(enc.name || '') }} onDeleteEncounter={() => setDeleteEncounterTarget(enc)} onRenameMedia={(mf) => { setRenameMediaTarget(mf); setRenameInput(mf.name || '') }} onAddMedia={() => setNewMediaTarget(enc)} onChangeMediaType={handleChangeMediaType} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onDeleteMedia={(mf) => setDeleteMediaTarget(mf)} onManualLink={handleManualLink} onClearLink={handleClearLink} linkSaving={linkSaving} />
+                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onRenameEncounter={() => { setRenameEncounterTarget(enc); setRenameInput(enc.name || '') }} onDeleteEncounter={() => setDeleteEncounterTarget(enc)} onRenameMedia={(mf) => { setRenameMediaTarget(mf); setRenameInput(mf.name || '') }} onAddMedia={() => setNewMediaTarget(enc)} onChangeMediaType={handleChangeMediaType} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onDeleteMedia={(mf) => setDeleteMediaTarget(mf)} onManualLink={handleManualLink} onDropLink={handleDropLink} onClearLink={handleClearLink} linkSaving={linkSaving} />
                     ))}
                   </div>
                   <Pagination currentPage={currentPage} totalPages={Math.ceil(filtered.length / PAGE_SIZE)} total={filtered.length} pageSize={PAGE_SIZE} onPageChange={setCurrentPage} />
@@ -1144,14 +1180,14 @@ export default function ProjectPage() {
           )}
 
           {/* ── PROGRESS ── */}
-          {activePage === 'progress' && <ProgressView encounters={encounters} mediaTypes={mediaTypes} />}
+          {activePage === 'progress' && <ProgressView encounters={encounters} mediaTypes={mediaTypes} projectId={projectId} />}
 
           {/* ── ACTIVITY ── */}
           {activePage === 'activity' && <ActivityView encounters={encounters} />}
 
           {/* ── DATA VISUALIZATION ── */}
           {!isReviewer && activePage === 'dataviz' && <DataVizView projectId={projectId} mediaTypes={mediaTypes} />}
-          {!isReviewer && activePage === 'reliability' && <QuestionReliabilityView projectId={projectId} />}
+          {!isReviewer && activePage === 'reliability' && <QuestionReliabilityView projectId={projectId} showToast={showToast} />}
 
         </div>
       </div>
@@ -1644,7 +1680,7 @@ function Pagination({ currentPage, totalPages, total, pageSize, onPageChange }) 
   )
 }
 
-function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncounter, onDeleteEncounter, onRenameMedia, onAddMedia, onChangeMediaType, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onClearLink, linkSaving }) {
+function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncounter, onDeleteEncounter, onRenameMedia, onAddMedia, onChangeMediaType, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onDropLink, onClearLink, linkSaving }) {
   const completedMedia = encounter.media?.filter(m => {
     if (!m.reviews_required) return m.reviews?.some(r => r.status === 'submitted')
     return m.reviews_completed >= m.reviews_required
@@ -1717,6 +1753,7 @@ function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncou
               onDeleteReview={onDeleteReview}
               onDeleteMedia={onDeleteMedia}
               onManualLink={onManualLink}
+              onDropLink={onDropLink}
               onClearLink={onClearLink}
               onChangeMediaType={onChangeMediaType}
               onRename={() => onRenameMedia(mf)}
@@ -1747,20 +1784,53 @@ function reopenedReasonLabel(reason) {
   return 'Reopened'
 }
 
-function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onClearLink, onChangeMediaType, onRename, linkSaving, isFirst, canDelete }) {
+function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onDropLink, onClearLink, onChangeMediaType, onRename, linkSaving, isFirst, canDelete }) {
   const Icon = MEDIA_ICONS[mediaFile.file_type] || File
   const required = mediaFile.reviews_required
   const completed = mediaFile.reviews_completed || 0
   const mediaType = mediaTypes.find(t => t.id === mediaFile.media_type_id)
   const status = mediaFile.link_status
   const busy = linkSaving === mediaFile.id
+  const [isDragOver, setIsDragOver] = useState(false)
+  // Only rows where a link action is already available accept drops —
+  // matches which rows show a Link/Relink button in the first place.
+  const acceptsDrop = status !== 'not_applicable'
+
+  function handleDragOver(e) {
+    if (!acceptsDrop) return
+    e.preventDefault()
+    setIsDragOver(true)
+  }
+  function handleDragLeave() {
+    setIsDragOver(false)
+  }
+  function handleDrop(e) {
+    if (!acceptsDrop) return
+    e.preventDefault()
+    setIsDragOver(false)
+    // Electron extends the standard File object with a real absolute local
+    // path — the regular web File API has no equivalent, so this only works
+    // because we're in Electron's renderer, not a plain browser.
+    const filePath = e.dataTransfer.files?.[0]?.path
+    if (filePath) onDropLink(mediaFile.id, filePath)
+  }
 
   return (
-    <div id={isFirst ? 'tut-proj-mediarow' : undefined} style={{
-      padding: '12px 20px 12px 40px',
-      borderBottom: '1px solid var(--border)',
-      display: 'flex', flexDirection: 'column', gap: 8,
-    }}>
+    <div
+      id={isFirst ? 'tut-proj-mediarow' : undefined}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      style={{
+        padding: '12px 20px 12px 40px',
+        borderBottom: '1px solid var(--border)',
+        display: 'flex', flexDirection: 'column', gap: 8,
+        background: isDragOver ? 'var(--accent-light)' : 'transparent',
+        outline: isDragOver ? '2px dashed var(--accent)' : 'none',
+        outlineOffset: -2,
+        transition: 'background 0.1s, outline 0.1s',
+      }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <Icon size={14} color="var(--text-secondary)" style={{ flexShrink: 0 }} />
@@ -1774,16 +1844,24 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
             <Pencil size={11} />
           </button>
           {linkStatusBadge(status)}
-          {status !== 'linked' && status !== 'not_applicable' && (
-            <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
-              onClick={() => onManualLink(mediaFile.id)} disabled={busy}>
-              {busy ? '…' : status === 'missing' ? 'Locate' : 'Link'}
-            </button>
+          {isDragOver && (
+            <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>Drop to relink</span>
           )}
-          {status === 'linked' && (
+          {/* 'linked' and 'missing' both show "Relink" — re-establishing a
+              link either proactively or because it broke is the same action
+              from here, so there's no separate "Locate" label anymore. Only
+              a never-linked file still says "Link", a genuinely different
+              first-time action. */}
+          {(status === 'linked' || status === 'missing') && (
             <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
               onClick={() => onManualLink(mediaFile.id)} disabled={busy}>
               {busy ? '…' : 'Relink'}
+            </button>
+          )}
+          {status !== 'linked' && status !== 'missing' && status !== 'not_applicable' && (
+            <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
+              onClick={() => onManualLink(mediaFile.id)} disabled={busy}>
+              {busy ? '…' : 'Link'}
             </button>
           )}
           {status === 'not_applicable' && (
@@ -1877,20 +1955,79 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
 }
 
 // ── Progress View ─────────────────────────────────────────────────────────────
-function ProgressView({ encounters, mediaTypes }) {
+function ProgressView({ encounters, mediaTypes, projectId }) {
+  const [importedSources, setImportedSources] = useState([])
+
+  useEffect(() => {
+    if (!projectId) return
+    let active = true
+    api.getResultsComparisonData(projectId).then(data => {
+      if (active) setImportedSources(Array.isArray(data?.imported) ? data.imported : [])
+    }).catch(() => { if (active) setImportedSources([]) })
+    return () => { active = false }
+  }, [projectId])
+
   const allMedia = encounters.flatMap(e => (e.media || []))
   const allReviews = allMedia.flatMap(m => (m.reviews || []))
   const submitted = allReviews.filter(r => r.status === 'submitted')
   const totalEnc = encounters.length
   const completeEnc = encounters.filter(e => e.completed).length
 
-  // Per-reviewer stats
+  // Unified "who finished which media file" picture, combining this
+  // project's own submitted reviews with everyone's imported results —
+  // e.g. Eva's imported file shows she finished 2 of 3 videos even though
+  // she has no review row in this project's own database at all. Keyed by
+  // reviewer name + media name (not media file id, since imported rows only
+  // ever carry a name — matches how every other cross-install matching in
+  // this app already works) and deduplicated, so someone who shows up in
+  // BOTH this project's reviews and an imported file for the same media
+  // file is counted once, not twice.
+  const completionSet = new Map() // `${reviewerName}::${mediaName}` -> true
+  for (const media of allMedia) {
+    for (const review of (media.reviews || [])) {
+      if (review.status !== 'submitted') continue
+      completionSet.set(`${review.reviewer_name || 'Unknown'}::${media.name}`, true)
+    }
+  }
+  for (const source of importedSources) {
+    for (const row of (source.responses_long || [])) {
+      const reviewerName = row.reviewer_name || source.reviewer_name || 'Unknown'
+      completionSet.set(`${reviewerName}::${row.media_name}`, true)
+    }
+  }
+  // Precomputed once here rather than re-scanning the full completionSet for
+  // every media file in the per-encounter render loop below.
+  const completionCountByMediaName = new Map()
+  for (const key of completionSet.keys()) {
+    const mediaName = key.slice(key.indexOf('::') + 2)
+    completionCountByMediaName.set(mediaName, (completionCountByMediaName.get(mediaName) || 0) + 1)
+  }
+
+  // Per-reviewer stats — imported completions have no "in progress" concept
+  // (an imported results file only ever contains finished, submitted work),
+  // so they only ever add to `submitted`, never inflate `total` beyond what
+  // was actually completed.
   const reviewerMap = {}
   for (const r of allReviews) {
     const name = r.reviewer_name || 'Unknown'
     if (!reviewerMap[name]) reviewerMap[name] = { total: 0, submitted: 0 }
     reviewerMap[name].total++
     if (r.status === 'submitted') reviewerMap[name].submitted++
+  }
+  for (const source of importedSources) {
+    const seenMediaForSource = new Set()
+    for (const row of (source.responses_long || [])) {
+      const reviewerName = row.reviewer_name || source.reviewer_name || 'Unknown'
+      if (!reviewerMap[reviewerName]) reviewerMap[reviewerName] = { total: 0, submitted: 0 }
+      // One imported source can have multiple form_responses rows for the
+      // same media file (multi-form or multi-instance) — count each
+      // completed media file once per reviewer, not once per row.
+      const key = `${reviewerName}::${row.media_name}`
+      if (seenMediaForSource.has(key)) continue
+      seenMediaForSource.add(key)
+      reviewerMap[reviewerName].total++
+      reviewerMap[reviewerName].submitted++
+    }
   }
   const reviewers = Object.entries(reviewerMap).sort((a, b) => b[1].submitted - a[1].submitted)
   const maxSubmitted = Math.max(1, ...reviewers.map(([, v]) => v.submitted))
@@ -1914,16 +2051,32 @@ function ProgressView({ encounters, mediaTypes }) {
     </div>
   )
 
+  // Total distinct (reviewer, media file) completions across BOTH sources,
+  // deduplicated — this is the number that actually reflects imported
+  // progress; allReviews/submitted above stay as this project's own
+  // well-defined metric, so the two aren't conflated into one number that
+  // means something different depending on whether imports exist.
+  const totalCompletedIncludingImported = completionSet.size
+
   return (
     <div style={{ maxWidth: 720 }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Progress</h1>
-      <p className="text-secondary text-sm" style={{ marginBottom: 28 }}>Completion overview across all encounters and reviewers.</p>
+      <p className="text-secondary text-sm" style={{ marginBottom: 28 }}>
+        Completion overview across all encounters and reviewers, including anyone whose results were imported.
+      </p>
 
       {/* Top stats */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 32, flexWrap: 'wrap' }}>
         <Stat label="Encounters Complete" value={`${completeEnc}/${totalEnc}`} sub={totalEnc > 0 ? `${Math.round(completeEnc / totalEnc * 100)}%` : '—'} />
         <Stat label="Reviews Submitted" value={submitted.length} sub={`of ${allReviews.length} total`} />
         <Stat label="Active Reviewers" value={reviewers.length} />
+        {importedSources.length > 0 && (
+          <Stat
+            label="Total Completed (incl. imported)"
+            value={totalCompletedIncludingImported}
+            sub={`${importedSources.length} imported file${importedSources.length === 1 ? '' : 's'}`}
+          />
+        )}
       </div>
 
       {/* Overall progress bar */}
@@ -1965,8 +2118,16 @@ function ProgressView({ encounters, mediaTypes }) {
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>By Encounter</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {encounters.map(enc => {
+              // done/total now come from the unified completionSet rather
+              // than each media file's own reviews_completed field, which
+              // only ever reflects this project's own reviews table — this
+              // is what actually pulls imported completions into the
+              // per-encounter bars below, not just the top-level stats.
               const total = (enc.media || []).reduce((s, m) => s + (m.reviews_required || 1), 0)
-              const done = (enc.media || []).reduce((s, m) => s + Math.min(m.reviews_completed || 0, m.reviews_required || 1), 0)
+              const done = (enc.media || []).reduce((s, m) => {
+                const completedFor = completionCountByMediaName.get(m.name) || 0
+                return s + Math.min(completedFor, m.reviews_required || 1)
+              }, 0)
               const pct = total > 0 ? done / total * 100 : 0
               return (
                 <div key={enc.id} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -2259,16 +2420,25 @@ function AgreementMultiSelect({ label, options, selectedIds, onChange, emptyText
 // question types (dial/vertical_slider arrays, likert_group objects,
 // multiselect arrays, plain scalars) without needing per-type branching at
 // every call site.
-function formatRawAnswerValue(value, rowLabelById = null) {
+function formatRawAnswerValue(value, rowLabelById = null, arrayLabels = null) {
   if (value === null || value === undefined || value === '') return '—'
   if (Array.isArray(value)) {
     if (value.length === 0) return '—'
-    return value.map(v => formatRawAnswerValue(v, rowLabelById)).join(', ')
+    // Label each position when the question provides one (e.g. a dial's
+    // control_labels) — otherwise a multi-value answer like [1, 2] is
+    // meaningless without knowing which number is which distinction.
+    // Mirrors how the object branch below already labels sub-items via
+    // rowLabelById; arrays previously had no equivalent at all.
+    return value.map((v, i) => {
+      const label = Array.isArray(arrayLabels) ? arrayLabels[i] : null
+      const formatted = formatRawAnswerValue(v, rowLabelById, arrayLabels)
+      return label ? `${label}: ${formatted}` : formatted
+    }).join(arrayLabels ? '\n' : ', ')
   }
   if (typeof value === 'object') {
     const entries = Object.entries(value).filter(([k]) => k !== '__na')
     if (entries.length === 0) return '—'
-    return entries.map(([k, v]) => `${(rowLabelById && rowLabelById.get(k)) || k}: ${formatRawAnswerValue(v, rowLabelById)}`).join(', ')
+    return entries.map(([k, v]) => `${(rowLabelById && rowLabelById.get(k)) || k}: ${formatRawAnswerValue(v, rowLabelById, arrayLabels)}`).join(', ')
   }
   if (value === true) return 'Yes'
   if (value === false) return 'No'
@@ -2288,6 +2458,13 @@ function QuestionAgreementRow({ question, rowKey, methodExtra }) {
     if (!Array.isArray(items)) return null
     return new Map(items.map(item => [String(item.id), item.label || item.id]))
   }, [question.meta])
+  // Dial/vertical_slider answers are arrays with no inherent labels of their
+  // own — SDMo's distinction dials, for example, are [1, 2] with no way to
+  // tell which number is "Problematic Situations" vs "Endeavor to Improve"
+  // without this. control_labels is the schema field that names each
+  // position; falls back to null (unlabeled) when a question has no such
+  // field, e.g. non-dial arrays like multiselect.
+  const arrayLabels = Array.isArray(question.meta?.control_labels) ? question.meta.control_labels : null
   return (
     <div style={{ background: 'var(--bg-secondary)', borderRadius: 8, overflow: 'hidden' }}>
       <button
@@ -2318,7 +2495,7 @@ function QuestionAgreementRow({ question, rowKey, methodExtra }) {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr>
-                  <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)', minWidth: 160 }}>Item</th>
+                  <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)', minWidth: 160, maxWidth: 280 }}>Item</th>
                   {question.rawAnswers.map((a, i) => (
                     <th key={`${rowKey}-head-${a.reviewerName}-${i}`} style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
                       {a.reviewerName}
@@ -2328,11 +2505,10 @@ function QuestionAgreementRow({ question, rowKey, methodExtra }) {
               </thead>
               <tbody>
                 {Array.from(rowLabelById.entries()).map(([itemId, itemLabel]) => {
-                  const short = itemLabel.length > 60 ? `${itemLabel.slice(0, 57)}…` : itemLabel
                   const disagreement = new Set(question.rawAnswers.map(a => JSON.stringify((a.value || {})[itemId] ?? null))).size > 1
                   return (
                     <tr key={`${rowKey}-item-${itemId}`}>
-                      <td title={itemLabel} style={{ padding: '4px 6px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>{short}</td>
+                      <td style={{ padding: '4px 6px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)', maxWidth: 280, overflowWrap: 'break-word' }}>{itemLabel}</td>
                       {question.rawAnswers.map((a, i) => (
                         <td key={`${rowKey}-cell-${itemId}-${i}`} style={{
                           padding: '4px 6px', borderBottom: '1px solid var(--border)',
@@ -2361,7 +2537,7 @@ function QuestionAgreementRow({ question, rowKey, methodExtra }) {
                 {question.rawAnswers.map((a, i) => (
                   <tr key={`${rowKey}-${a.reviewerName}-${i}`}>
                     <td style={{ padding: '4px 6px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>{a.reviewerName}</td>
-                    <td style={{ padding: '4px 6px', color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>{formatRawAnswerValue(a.value)}</td>
+                    <td style={{ padding: '4px 6px', color: 'var(--text)', borderBottom: '1px solid var(--border)', whiteSpace: 'pre-line' }}>{formatRawAnswerValue(a.value, rowLabelById, arrayLabels)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2387,6 +2563,31 @@ function DataVizView({ projectId, mediaTypes = [] }) {
   // form itself; 'agreement_desc' shows the lowest-agreement questions last,
   // highest first — useful for scanning straight to the weakest questions.
   const [questionSortMode, setQuestionSortMode] = useState('form_order')
+
+  // Sections and Questions are two independent multi-selects that combine
+  // by union (see the effectiveQuestionIds effect below) — by design, so you
+  // can build up e.g. "all of Section 3, plus this one question from Section
+  // 5". But picking an individual question that belongs to an ALREADY
+  // selected section is a different intent: narrowing from "the whole
+  // section" down to "just this one question" — the union would otherwise
+  // silently keep showing every question in that section, since the section
+  // selection already covers it and there's no way to subtract from within
+  // a section any other way. So: whenever a question is newly checked,
+  // drop its parent section from the section filter if it was selected.
+  function handleQuestionIdsChange(nextQuestionIds) {
+    const newlyAdded = nextQuestionIds.filter(id => !selectedQuestionIds.includes(id))
+    if (newlyAdded.length > 0) {
+      const sectionIdsToRemove = new Set(
+        newlyAdded
+          .map(id => questionOptions.questions.find(q => q.id === id)?.sectionId)
+          .filter(Boolean)
+      )
+      if (sectionIdsToRemove.size > 0) {
+        setSelectedSectionIds(ids => ids.filter(id => !sectionIdsToRemove.has(id)))
+      }
+    }
+    setSelectedQuestionIds(nextQuestionIds)
+  }
 
   useEffect(() => {
     if (!projectId) return
@@ -2583,7 +2784,7 @@ function DataVizView({ projectId, mediaTypes = [] }) {
                 label: question.label,
               }))}
               selectedIds={selectedQuestionIds}
-              onChange={setSelectedQuestionIds}
+              onChange={handleQuestionIdsChange}
               emptyText="No questions found"
               align="right"
             />
@@ -2722,11 +2923,14 @@ function questionReliabilitySchemaSections(formSnapshot) {
   return []
 }
 
-function QuestionReliabilityView({ projectId }) {
+function QuestionReliabilityView({ projectId, showToast }) {
   const [loading, setLoading] = useState(true)
   const [rawReviews, setRawReviews] = useState([])
   const [currentForms, setCurrentForms] = useState([])
   const [importedSources, setImportedSources] = useState([])
+  const [expandedKey, setExpandedKey] = useState(null)
+  const [mismatchDismissed, setMismatchDismissed] = useState(false)
+  const [removingId, setRemovingId] = useState(null)
 
   const load = useCallback(async () => {
     if (!projectId) return
@@ -2751,6 +2955,20 @@ function QuestionReliabilityView({ projectId }) {
 
   useEffect(() => { load() }, [load])
 
+  async function handleRemoveImportedSource(source) {
+    if (!window.confirm(`Remove "${source.reviewer_name || source.source_name}"? This deletes the imported file from this project — the original .json is untouched on whoever produced it, so it can be re-imported later if needed.`)) return
+    setRemovingId(source.id)
+    try {
+      await api.deleteImportedResult(source.id)
+      showToast?.(`Removed "${source.reviewer_name || source.source_name}".`)
+      await load()
+    } catch {
+      showToast?.('Could not remove that import.', true)
+    } finally {
+      setRemovingId(null)
+    }
+  }
+
   const { results: questions, mismatchWarnings } = useMemo(() => {
     // Only submitted reviews count toward reliability statistics — a
     // still-in-progress review isn't a completed rating yet.
@@ -2769,15 +2987,23 @@ function QuestionReliabilityView({ projectId }) {
     // from this project's own database or an imported results file from a
     // completely different install. `meta` carries whatever a
     // reliabilityStats function needs (min/max/options).
-    function record(key, label, method, meta, subjectKey, value) {
+    function record(key, label, method, meta, subjectKey, value, reviewerName, sourceLabel) {
       if (value == null || value === '') return
       if (!questionMap.has(key)) {
-        questionMap.set(key, { key, label, method, meta, subjects: new Map() })
+        questionMap.set(key, { key, label, method, meta, subjects: new Map(), cells: new Map() })
       }
       const entry = questionMap.get(key)
       const bucket = entry.subjects.get(subjectKey) || []
       bucket.push(value)
       entry.subjects.set(subjectKey, bucket)
+      // Parallel to `subjects` above (which stays a plain value array — don't
+      // touch it, computeQuestionReliability consumes it exactly as-is).
+      // This tracks who gave each value, purely for the answer-table UI —
+      // click a question to see exactly what each reviewer answered per
+      // encounter, not just the pooled statistic.
+      const cellBucket = entry.cells.get(subjectKey) || []
+      cellBucket.push({ reviewerName: reviewerName || 'Unknown', sourceLabel: sourceLabel || '', value })
+      entry.cells.set(subjectKey, cellBucket)
     }
 
     // Shared by both own-project reviews and imported rows below — keys
@@ -2786,7 +3012,7 @@ function QuestionReliabilityView({ projectId }) {
     // form of that name exists in this project (so turning on ICC applies
     // retroactively to all data, own or imported); falls back to the row's
     // own frozen snapshot only if no such form exists here.
-    function processFormResponse(formName, formIdForFallback, formSnapshot, responses, instanceRole, instanceOrder, subjectKey) {
+    function processFormResponse(formName, formIdForFallback, formSnapshot, responses, instanceRole, instanceOrder, subjectKey, reviewerName, sourceLabel) {
       const liveForm = currentFormsByName.get(formName) || currentFormsById.get(String(formIdForFallback))
       const schemaSource = liveForm?.schema || formSnapshot
       const sections = questionReliabilitySchemaSections(schemaSource)
@@ -2807,7 +3033,7 @@ function QuestionReliabilityView({ projectId }) {
             const key = `${formName}:${element.id}:${item.id}${instanceKeySuffix}`
             const value = groupResponses?.[item.id]
             const label = (element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)) + instanceLabelSuffix
-            record(key, label, method, rowMeta, subjectKey, value)
+            record(key, label, method, rowMeta, subjectKey, value, reviewerName, sourceLabel)
           }
           continue
         }
@@ -2827,14 +3053,14 @@ function QuestionReliabilityView({ projectId }) {
             const value = arrayResponses[idx]
             const subLabel = element.control_labels?.[idx] || `Dial ${idx + 1}`
             const label = (element.label ? `${element.label} — ${subLabel}` : subLabel) + instanceLabelSuffix
-            record(key, label, method, dialMeta, subjectKey, value)
+            record(key, label, method, dialMeta, subjectKey, value, reviewerName, sourceLabel)
           }
           continue
         }
 
         const key = `${formName}:${element.id}${instanceKeySuffix}`
         const value = responses?.[element.id]
-        record(key, (element.label || element.id) + instanceLabelSuffix, method, element, subjectKey, value)
+        record(key, (element.label || element.id) + instanceLabelSuffix, method, element, subjectKey, value, reviewerName, sourceLabel)
       }
     }
 
@@ -2846,7 +3072,7 @@ function QuestionReliabilityView({ projectId }) {
         processFormResponse(
           formName, formResponse.form_id, formResponse.form_snapshot, formResponse.responses,
           formResponse.instance_role || null, formResponse.instance_order || 0,
-          review.media_name
+          review.media_name, review.reviewer_name, 'Project'
         )
       }
     }
@@ -2878,7 +3104,7 @@ function QuestionReliabilityView({ projectId }) {
           processFormResponse(
             formName, row.form_id, row.form_snapshot, row.responses,
             row.instance_role || null, row.instance_order || 0,
-            row.media_name
+            row.media_name, row.reviewer_name || source.reviewer_name, source.source_name || 'Imported'
           )
         }
       }
@@ -2904,6 +3130,10 @@ function QuestionReliabilityView({ projectId }) {
         stat,
         subjectsSeen: subjectGroups.length,
         subjectsUsable: subjectGroups.filter(g => g.length >= 2).length,
+        // subjectKey -> [{ reviewerName, sourceLabel, value }] — every
+        // individual answer behind this pooled statistic, for the
+        // click-to-expand answer table. Not consumed by any stats math.
+        cells: entry.cells,
       })
     }
     results.sort((a, b) => a.label.localeCompare(b.label))
@@ -2913,7 +3143,7 @@ function QuestionReliabilityView({ projectId }) {
   if (loading) return <div className="empty-state"><p>Loading…</p></div>
 
   return (
-    <div style={{ maxWidth: 860 }}>
+    <div style={{ maxWidth: 1100 }}>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Agreement</h1>
         <p className="text-secondary text-sm" style={{ margin: 0 }}>
@@ -2924,9 +3154,66 @@ function QuestionReliabilityView({ projectId }) {
         </p>
       </div>
 
-      {mismatchWarnings.length > 0 && (
+      {(rawReviews.some(r => r.status === 'submitted') || importedSources.length > 0) && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: '12px 14px', marginBottom: 16, background: 'var(--bg-secondary)' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <User size={13} /> Contributing to these numbers
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {/* This project's own reviewers — read-only context, not removable
+                here. Deleting a real review is a separate action on the
+                encounter itself, with its own confirm and soft-delete
+                consequences — not something to fold into this list. */}
+            {Array.from(new Set(rawReviews.filter(r => r.status === 'submitted').map(r => r.reviewer_name).filter(Boolean))).map(name => (
+              <span key={`own-${name}`} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '4px 9px', borderRadius: 999, fontSize: 12,
+                background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
+              }}>
+                {name}
+              </span>
+            ))}
+            {/* Imported files — each one removable. A hard delete, not a hide
+                flag: removing one drops it from every consumer of
+                imported_results at once (this page, Alignment, the CSV
+                export), with no separate "excluded but present" state to
+                keep in sync. The source .json still exists wherever it was
+                exported, so this isn't destructive to the underlying data —
+                just to this project's copy of it. */}
+            {importedSources.map(source => (
+              <span key={`imported-${source.id}`} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '4px 6px 4px 9px', borderRadius: 999, fontSize: 12,
+                background: 'var(--accent-light)', border: '1px solid var(--accent)', color: 'var(--accent)',
+              }}>
+                {source.reviewer_name || source.source_name}
+                <button
+                  onClick={() => handleRemoveImportedSource(source)}
+                  disabled={removingId === source.id}
+                  title="Remove this imported file"
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: 16, height: 16, borderRadius: '50%', border: 'none',
+                    background: 'transparent', color: 'inherit', cursor: 'pointer', padding: 0,
+                    opacity: removingId === source.id ? 0.4 : 0.7,
+                  }}
+                >
+                  <X size={11} strokeWidth={2.5} />
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {mismatchWarnings.length > 0 && !mismatchDismissed && (
         <div style={{ border: '1px solid var(--warning)', background: 'var(--warning-light)', borderRadius: 10, padding: 14, marginBottom: 16 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--warning)' }}>Import form mismatch — some imported data was not included</div>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--warning)' }}>Import form mismatch — some imported data was not included</div>
+            <button className="btn btn-ghost btn-sm" style={{ flexShrink: 0, color: 'var(--warning)' }} onClick={() => setMismatchDismissed(true)}>
+              <X size={12} />
+            </button>
+          </div>
           {mismatchWarnings.map((w, i) => (
             <div key={i} style={{ fontSize: 12, color: 'var(--warning)', marginTop: 6 }}>
               "{w.sourceName}"{w.reviewerName ? ` (${w.reviewerName})` : ''} was recorded against form
@@ -2958,11 +3245,44 @@ function QuestionReliabilityView({ projectId }) {
                 ? null
                 : kappaInterpretation(value)
             const displayValue = value == null ? '—' : q.method === 'percent' ? `${Math.round(value * 100)}%` : value.toFixed(2)
+            const isExpanded = expandedKey === q.key
+
+            // Built only when expanded — no point recomputing this for every
+            // collapsed card on every render. Rows are subjects (encounters);
+            // columns are every distinct reviewer identity who answered THIS
+            // question anywhere. Keyed by reviewerName+sourceLabel together
+            // (not name alone) so your own review and an imported file you
+            // exported yourself, which could share a display name, land in
+            // separate columns instead of silently merging and hiding a real
+            // disagreement.
+            let tableSubjects = []
+            let tableColumns = []
+            if (isExpanded) {
+              const columnMap = new Map()
+              for (const cells of q.cells.values()) {
+                for (const cell of cells) {
+                  const colKey = `${cell.reviewerName}::${cell.sourceLabel}`
+                  if (!columnMap.has(colKey)) columnMap.set(colKey, { key: colKey, reviewerName: cell.reviewerName, sourceLabel: cell.sourceLabel })
+                }
+              }
+              tableColumns = Array.from(columnMap.values()).sort((a, b) => a.reviewerName.localeCompare(b.reviewerName))
+              tableSubjects = Array.from(q.cells.entries()).map(([subjectKey, cells]) => {
+                const byColumn = new Map(cells.map(c => [`${c.reviewerName}::${c.sourceLabel}`, c.value]))
+                return { subjectKey, byColumn }
+              }).sort((a, b) => a.subjectKey.localeCompare(b.subjectKey))
+            }
+
             return (
               <div key={q.key} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                <div
+                  onClick={() => setExpandedKey(isExpanded ? null : q.key)}
+                  style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, cursor: 'pointer' }}
+                >
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>{q.label}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {q.label}
+                      <ChevronDown size={13} style={{ color: 'var(--text-muted)', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+                    </div>
                     <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{QUESTION_RELIABILITY_METHOD_LABELS[q.method] || q.method}</div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
@@ -2984,8 +3304,40 @@ function QuestionReliabilityView({ projectId }) {
                       they're computed from pooled ratings rather than variance across
                       subjects. */}
                   {!noVariance && q.subjectsUsable < (q.method === 'icc' ? 2 : 1) && ' Not enough data yet for a reliable estimate.'}
-                  {noVariance && ' Every rating agreed exactly, with no variation at all — kappa is mathematically undefined in this case, not simply low. This isn\u2019t a data shortage; it will resolve once ratings include some disagreement or a wider mix of values.'}
+                  {noVariance && ` Every rating agreed exactly, with no variation at all — ${q.method === 'icc' ? 'ICC' : 'kappa'} is mathematically undefined in this case, not simply low. This isn\u2019t a data shortage; it will resolve once ratings include some disagreement or a wider mix of values.`}
                 </div>
+
+                {isExpanded && (
+                  <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+                    <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%', tableLayout: 'fixed' }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: 'left', padding: '4px 8px 4px 0', color: 'var(--text-muted)', fontWeight: 600, overflowWrap: 'break-word' }}>Encounter</th>
+                          {tableColumns.map(col => (
+                            <th key={col.key} style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--text-muted)', fontWeight: 600, overflowWrap: 'break-word' }}>
+                              {col.reviewerName}
+                              {col.sourceLabel && col.sourceLabel !== 'Project' && (
+                                <span style={{ display: 'block', fontWeight: 400, opacity: 0.7 }}>{col.sourceLabel}</span>
+                              )}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tableSubjects.map(row => (
+                          <tr key={row.subjectKey} style={{ borderTop: '1px solid var(--border)' }}>
+                            <td style={{ padding: '6px 8px 6px 0', fontWeight: 500, overflowWrap: 'break-word' }}>{row.subjectKey}</td>
+                            {tableColumns.map(col => (
+                              <td key={col.key} style={{ padding: '6px 8px', overflowWrap: 'break-word' }}>
+                                {formatRawAnswerValue(row.byColumn.get(col.key))}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )
           })}

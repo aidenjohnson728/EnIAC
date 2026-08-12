@@ -47,7 +47,7 @@ const FILES_TOUR_STEPS = [
     targetId: 'tut-files-status',
     placement: 'top',
     title: 'Manual Linking',
-    body: "See every media file and its link status on this machine. If Auto-link missed a file, use Link / Locate to browse to it manually. These links do not sync, which keeps teammates' different folder paths from overwriting each other.",
+    body: "See every media file and its link status on this machine. If Auto-link missed a file, use Link / Relink to browse to it manually. These links do not sync, which keeps teammates' different folder paths from overwriting each other.",
   },
 ]
 
@@ -108,6 +108,7 @@ export default function SetupPage() {
   const [autolinkResult, setAutolinkResult] = useState(null)
   const [autolinking, setAutolinking] = useState(false)
   const [linkSaving, setLinkSaving] = useState(null) // mediaFileId being linked
+  const [dragOverMediaId, setDragOverMediaId] = useState(null)
   const [appInfo, setAppInfo] = useState(null)
   const [updateStatus, setUpdateStatus] = useState(null)
   const [aboutBusy, setAboutBusy] = useState(false)
@@ -499,13 +500,39 @@ export default function SetupPage() {
     load()
   }
 
+  // Same rename-decision logic as ProjectPage.jsx — see the comment there
+  // for the full reasoning on why this isn't automatic when reviews exist.
+  async function maybeRenameAfterRelink(mediaFileId, linkResult) {
+    if (!linkResult?.nameChanged) return
+    if (linkResult.hasReviews) {
+      const proceed = window.confirm(
+        `This file already has submitted reviews recorded under the name "${linkResult.currentName}". ` +
+        `Renaming it to "${linkResult.newName}" means those existing reviews won't automatically match ` +
+        `new ones or imported results going forward. Rename anyway?`
+      )
+      if (!proceed) return
+    }
+    await api.applyRelinkRename(Number(projectId), mediaFileId, linkResult.newName)
+  }
+
   async function handleManualLink(mediaFileId) {
     setLinkSaving(mediaFileId)
     const filePath = await api.browseMediaFile(mediaFileId)
     if (filePath) {
-      await api.setMediaLink(mediaFileId, Number(projectId), filePath)
+      const result = await api.setMediaLink(mediaFileId, Number(projectId), filePath)
+      await maybeRenameAfterRelink(mediaFileId, result)
       load()
     }
+    setLinkSaving(null)
+  }
+
+  // Drag-and-drop relinking — skips the native browse dialog since the
+  // dropped file's path is already known.
+  async function handleDropLink(mediaFileId, filePath) {
+    setLinkSaving(mediaFileId)
+    const result = await api.setMediaLink(mediaFileId, Number(projectId), filePath)
+    await maybeRenameAfterRelink(mediaFileId, result)
+    load()
     setLinkSaving(null)
   }
 
@@ -914,18 +941,41 @@ export default function SetupPage() {
                       {(enc.media || []).map(mf => {
                         const status = mf.link_status || 'not_linked'
                         const busy = linkSaving === mf.id
+                        const acceptsDrop = status !== 'not_applicable'
+                        const isDragOver = dragOverMediaId === mf.id
                         return (
-                          <div key={mf.id} style={{ padding: '8px 14px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div
+                            key={mf.id}
+                            onDragOver={e => { if (acceptsDrop) { e.preventDefault(); setDragOverMediaId(mf.id) } }}
+                            onDragLeave={() => setDragOverMediaId(null)}
+                            onDrop={e => {
+                              if (!acceptsDrop) return
+                              e.preventDefault()
+                              setDragOverMediaId(null)
+                              const filePath = e.dataTransfer.files?.[0]?.path
+                              if (filePath) handleDropLink(mf.id, filePath)
+                            }}
+                            style={{
+                              padding: '8px 14px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10,
+                              background: isDragOver ? 'var(--accent-light)' : 'transparent',
+                              outline: isDragOver ? '2px dashed var(--accent)' : 'none', outlineOffset: -2,
+                              transition: 'background 0.1s, outline 0.1s',
+                            }}
+                          >
                             <LinkStatusDot status={status} />
                             <span style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mf.name}</span>
-                            <span style={{ fontSize: 11, color: statusColor(status), flexShrink: 0 }}>
-                              {status === 'linked' ? 'Linked' : status === 'missing' ? 'File missing' : status === 'not_applicable' ? 'N/A' : 'Not linked'}
-                            </span>
+                            {isDragOver ? (
+                              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, flexShrink: 0 }}>Drop to relink</span>
+                            ) : (
+                              <span style={{ fontSize: 11, color: statusColor(status), flexShrink: 0 }}>
+                                {status === 'linked' ? 'Linked' : status === 'missing' ? 'File missing' : status === 'not_applicable' ? 'N/A' : 'Not linked'}
+                              </span>
+                            )}
                             <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                               {status !== 'not_applicable' && (
                                 <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22 }}
                                   onClick={() => handleManualLink(mf.id)} disabled={busy}>
-                                  {busy ? '…' : status === 'linked' ? 'Relink' : status === 'missing' ? 'Locate' : 'Link'}
+                                  {busy ? '…' : (status === 'linked' || status === 'missing') ? 'Relink' : 'Link'}
                                 </button>
                               )}
                               {status !== 'not_applicable' && (
@@ -2163,7 +2213,7 @@ function OverviewSection() {
         {block('📄', '2 · Instructions', 'Write guidance pages in Markdown, or attach a PDF. These appear as tabs in the reviewer workspace so coders can reference them while watching a video.')}
         {block('🎬', '3 · Media Types', 'Define categories of media — e.g. "Consultation Video" or "Debrief Audio". Each type sets which forms and instructions appear in the workspace, what timestamp tags are available, how many reviews are required per file, and the review layout.')}
         {block('📁', '4 · Encounters', 'Create and manage encounters and their media file slots. Add encounters manually, scan a folder to import structure automatically, or batch-add many at once. Assign media types to each file slot here.')}
-        {block('🔗', '5 · Files', 'Link your local copies of media files to this project. Set a base folder and auto-link, or locate individual files manually. Everyone must do this on their own machine since file paths are device-specific.')}
+        {block('🔗', '5 · Files', 'Link your local copies of media files to this project. Set a base folder and auto-link, or relink individual files manually. Everyone must do this on their own machine since file paths are device-specific.')}
         {block('🔄', '6 · Sync', 'Connect to a shared folder (OneDrive, Dropbox, Google Drive, or a network share). Each reviewer\'s data is saved as a separate file — no conflicts. Sync also distributes any changes you make here in Settings to all teammates.')}
         {block('⌨️', '7 · Keybinds', 'Optional keyboard shortcuts for adding timestamps while a video plays. Useful for frequently used tags.')}
         {block('🔒', '8 · Access', 'Set an owner password to prevent coders from accidentally changing project settings. Anyone with the password can unlock.')}
@@ -2896,7 +2946,7 @@ function ScanResultSummary({ scanResult }) {
       {stillMissing > 0 && (
         <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 8 }}>
           <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-          <div><strong>{stillMissing} file{stillMissing !== 1 ? 's' : ''} not found in this folder.</strong> They may have been renamed or moved. Use "Link" in the file status list on the Files tab to manually locate them.</div>
+          <div><strong>{stillMissing} file{stillMissing !== 1 ? 's' : ''} not found in this folder.</strong> They may have been renamed or moved. Use "Relink" in the file status list on the Files tab to manually relink them.</div>
         </div>
       )}
     </div>

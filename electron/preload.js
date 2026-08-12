@@ -198,6 +198,7 @@ contextBridge.exposeInMainWorld('api', {
   setBaseFolder: (projectId, folderPath) => ipcRenderer.invoke('media:setBaseFolder', projectId, folderPath),
   autolink: (projectId) => ipcRenderer.invoke('media:autolink', projectId),
   setMediaLink: (mediaFileId, projectId, localPath) => ipcRenderer.invoke('media:setLink', mediaFileId, projectId, localPath),
+  applyRelinkRename: (projectId, mediaFileId, newName) => ipcRenderer.invoke('media:applyRelinkRename', projectId, mediaFileId, newName),
   markMediaNotApplicable: (mediaFileId) => ipcRenderer.invoke('media:markNotApplicable', mediaFileId),
   clearMediaLink: (mediaFileId) => ipcRenderer.invoke('media:clearLink', mediaFileId),
   browseMediaFile: (mediaFileId) => ipcRenderer.invoke('media:browseFile', mediaFileId),

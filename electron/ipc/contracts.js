@@ -80,6 +80,7 @@ const contracts = {
   'media:setBaseFolder': [isIntLike, isOptionalString],
   'media:autolink': [isIntLike],
   'media:setLink': [isIntLike, isIntLike, isString],
+  'media:applyRelinkRename': [isIntLike, isIntLike, isString],
   'media:markNotApplicable': [isIntLike],
   'media:clearLink': [isIntLike],
   'media:browseFile': [isIntLike],
@@ -101,6 +102,14 @@ const contracts = {
   'reviews:saveFormResponse': [isIntLike, isObject],
   'reviews:addFormInstance': [isIntLike, isIntLike, isString],
   'reviews:removeFormInstance': [isIntLike, isIntLike, isOptionalString],
+  // The results export/import family had no validators at all — these are the
+  // channels behind Export Results / Import Results.
+  'reviews:exportResults': [isIntLike],
+  'reviews:exportResultsCsv': [isIntLike],
+  'reviews:importResultsFiles': [isIntLike],
+  'reviews:listImportedResults': [isIntLike],
+  'reviews:deleteImportedResult': [isIntLike],
+  'reviews:getResultsComparisonData': [isIntLike],
 
   'setup:saveMediaType': [isIntLike, isObject],
   'setup:listMediaTypes': [isIntLike],

@@ -1,6 +1,6 @@
 const { getDb } = require('../db')
 const { scheduleSyncForReview } = require('../sync')
-const { getOrCreateUUID } = require('../settings')
+const { getOrCreateUUID, getProjectName } = require('../settings')
 const { buildWorkspaceSnapshot, getFormSnapshotFromReview, currentFormSnapshot } = require('../services/snapshots')
 const { dialog } = require('electron')
 const fs = require('fs')
@@ -445,17 +445,28 @@ module.exports = function (ipcMain) {
     const db = getDb()
     const project = db.prepare('SELECT name FROM projects WHERE id=?').get(projectId)
     const rows = getMyResponsesLong(db, projectId)
+    // Per-project name — the same one set by the roster picker on import
+    // ("Which name is you?"), or by the "Your Name" field, rather than
+    // whatever the reviews table itself happened to record at submission
+    // time. Someone invited into the project as "Eva" but whose app-wide
+    // display name is "Evalyn" should export as Eva, matching what the
+    // project owner actually recognizes — not fall back to a name that may
+    // have drifted. Falls back to the reviews table's own value only if
+    // no per-project name was ever set at all (getProjectName already
+    // chains through the global reviewer_name before reaching that point).
+    const reviewerName = getProjectName(projectId) || rows[0]?.reviewer_name || null
     const payload = {
       sdmo_results_export: 1,
       project_name: project?.name || 'Project',
-      reviewer_name: rows[0]?.reviewer_name || null,
+      reviewer_name: reviewerName,
       exported_at: new Date().toISOString(),
       responses_long: rows,
     }
     const stamp = new Date().toISOString().slice(0, 10)
+    const safeReviewerName = reviewerName ? `_${reviewerName.replace(/[^\w.-]+/g, '_')}` : ''
     const { canceled, filePath } = await dialog.showSaveDialog({
       title: 'Export Results',
-      defaultPath: `${(project?.name || 'project').replace(/[^\w.-]+/g, '_')}-results-${stamp}.json`,
+      defaultPath: `${(project?.name || 'project').replace(/[^\w.-]+/g, '_')}-results-${stamp}${safeReviewerName}.json`,
       filters: [{ name: 'SDMo Results', extensions: ['json'] }],
     })
     if (canceled || !filePath) return null

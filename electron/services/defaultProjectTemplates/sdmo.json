@@ -66,7 +66,7 @@
                   "Issues",
                   "Inquiry"
                 ],
-                "description": "Using the SDMo distinctions, identify the elements of the conversation as they appear by marking the knobs below. Distinctions are available in the other page\n",
+                "description": "Watch the entire video and reflect on the distinctions, then answer the question below. Find the distinctions description in SDMo Info.\n",
                 "control_low_descriptions": [
                   "General topics about medical conditions and options. \"for patients like you\".",
                   "Relatively linear and straightforward. Series of chores to be completed during the conversation. Exchange of turns, information, opinions, questions, preferences, etc. Work to complete the ecounter."
@@ -87,7 +87,7 @@
               {
                 "id": "el_1785858871149_71dc",
                 "type": "multiple_choice",
-                "label": "Did SDM likely occur?",
+                "label": "Based on what you observed in the conversation, Did SDM likely occur?",
                 "options": [
                   "Yes",
                   "No"
@@ -213,7 +213,7 @@
                 "id": "el_1783640597151_sjeo",
                 "type": "slider",
                 "label": "SDM Occurrence",
-                "description": "Using your annotations, answer the following question: Did Shared Decision Making occur in this conversation? Please choose a number below.\n",
+                "description": "Based on your findings from previous steps, please answer the following question: Did Shared Decision Making occur in this conversation? Please choose a number below.\n",
                 "required": true,
                 "has_na": false,
                 "agreement_enabled": true,

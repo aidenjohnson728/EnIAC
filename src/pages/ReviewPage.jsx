@@ -429,19 +429,26 @@ export default function ReviewPage() {
     setLoading(false)
   }
 
-  function basenameFromPath(filePath) {
-    const parts = String(filePath).split(/[\\/]/)
-    return parts[parts.length - 1] || filePath
-  }
-
   async function linkFileByPath(filePath) {
     if (!mediaFile || !filePath) return
     setLinkSaving(true)
     try {
-      await api.setMediaLink(mediaFile.id, encProjectId, filePath)
-      const linkedName = basenameFromPath(filePath)
-      if (linkedName && linkedName !== mediaFile.name) {
-        await api.renameMediaFile(encProjectId, mediaFile.id, linkedName)
+      const result = await api.setMediaLink(mediaFile.id, encProjectId, filePath)
+      // Same rename-decision logic as ProjectPage.jsx/SetupPage.jsx — only
+      // automatic when safe (no existing submitted reviews to orphan from
+      // future matching), otherwise asks first. This used to rename
+      // unconditionally via renameMediaFile (media only, no encounter
+      // rename either) — replaced with applyRelinkRename for both reasons.
+      if (result?.nameChanged) {
+        let proceed = true
+        if (result.hasReviews) {
+          proceed = window.confirm(
+            `This file already has submitted reviews recorded under the name "${result.currentName}". ` +
+            `Renaming it to "${result.newName}" means those existing reviews won't automatically match ` +
+            `new ones or imported results going forward. Rename anyway?`
+          )
+        }
+        if (proceed) await api.applyRelinkRename(encProjectId, mediaFile.id, result.newName)
       }
       setLinkModal(null)
       load()
@@ -915,7 +922,7 @@ export default function ReviewPage() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <button className="btn btn-primary" onClick={handleLinkFile} disabled={linkSaving}>
-              {linkSaving ? 'Opening…' : isMissing ? 'Locate file…' : 'Browse to file…'}
+              {linkSaving ? 'Opening…' : isMissing ? 'Relink file…' : 'Browse to file…'}
             </button>
             <button className="btn btn-secondary" onClick={() => setLinkModal(null)}>
               Open without video

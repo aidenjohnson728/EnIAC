@@ -157,7 +157,19 @@ export function computeICC(subjectGroups, meta = {}) {
   if (!Number.isFinite(n0) || n0 <= 0) return null
 
   const denominator = bms + (n0 - 1) * wms
-  if (denominator === 0) return null
+  // Only hits when there's essentially no variance in the data at all —
+  // every rating agrees, both within and between subjects — making the
+  // ICC ratio 0/0, not simply "not enough data" (that's the n < 2 and
+  // dfWithin <= 0 guards above, which correctly stay plain null). Mirrors
+  // the reason: 'no_variance' pattern the kappa functions already use for
+  // their own zero-denominator case, so the UI's existing noVariance check
+  // (q.stat?.reason === 'no_variance') can distinguish the two here too —
+  // without this, both cases returned bare null and were indistinguishable,
+  // silently showing "—" with no explanation even when subjectsUsable
+  // already met the threshold.
+  if (denominator === 0) {
+    return { method: 'icc', value: null, reason: 'no_variance', subjectCount: n, ratingCount: sumK }
+  }
   const icc = (bms - wms) / denominator
 
   return {

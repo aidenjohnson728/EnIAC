@@ -384,6 +384,14 @@ module.exports = function (ipcMain) {
     return { linked, skipped, ambiguous, notFound }
   })
 
+  // Always applies the link/path fix immediately — that part is safe
+  // regardless. Renaming media_files.name to match is a SEPARATE, optional
+  // step (media:applyRelinkRename below) because media_name is the exact key
+  // Agreement/Alignment/Progress use to match reviews across reviewers and
+  // installs — silently renaming a file that already has submitted reviews
+  // would orphan all of that existing data from anything recorded after the
+  // rename. So this reports whether a rename is available and whether it's
+  // risky, and lets the caller decide rather than doing it automatically.
   ipcMain.handle('media:setLink', (_, mediaFileId, projectId, localPath) => {
     const db = getDb()
     const baseFolder = getBaseFolder(projectId)
@@ -402,7 +410,38 @@ module.exports = function (ipcMain) {
     upsertLink(db, mediaFileId, storedPath, isRelative)
     db.prepare("UPDATE media_files SET file_path=?, file_type=?, updated_at=datetime('now') WHERE id=?")
       .run(localPath, getFileType(path.extname(localPath).toLowerCase()), mediaFileId)
-    return true
+
+    const mf = db.prepare('SELECT name, encounter_id FROM media_files WHERE id=?').get(mediaFileId)
+    const newName = path.basename(localPath)
+    const nameChanged = !!mf && mf.name !== newName
+    const hasReviews = nameChanged
+      ? db.prepare("SELECT 1 FROM reviews WHERE media_file_id=? AND status='submitted' AND deleted_at IS NULL").get(mediaFileId) != null
+      : false
+
+    return { linked: true, nameChanged, hasReviews, currentName: mf?.name || null, newName, encounterId: mf?.encounter_id || null }
+  })
+
+  // Separate step, called only once the caller has decided to proceed
+  // (automatically when hasReviews was false, or after an explicit confirm
+  // when it was true). Also renames the encounter, but only when it has
+  // exactly one media file — renaming a multi-file encounter to match just
+  // one of its files would be misleading for the others.
+  ipcMain.handle('media:applyRelinkRename', (_, projectId, mediaFileId, newName) => {
+    const db = getDb()
+    const mf = db.prepare('SELECT encounter_id FROM media_files WHERE id=?').get(mediaFileId)
+    if (!mf) return { renamedMedia: false, renamedEncounter: false }
+    db.prepare("UPDATE media_files SET name=?, updated_at=datetime('now') WHERE id=?").run(newName, mediaFileId)
+
+    let renamedEncounter = false
+    const siblingCount = db.prepare('SELECT COUNT(*) as n FROM media_files WHERE encounter_id=?').get(mf.encounter_id).n
+    if (siblingCount === 1) {
+      const encounterName = path.basename(newName, path.extname(newName))
+      db.prepare("UPDATE encounters SET name=?, updated_at=datetime('now') WHERE id=?").run(encounterName, mf.encounter_id)
+      renamedEncounter = true
+    }
+
+    bumpAndSync(db, projectId)
+    return { renamedMedia: true, renamedEncounter }
   })
 
   ipcMain.handle('media:markNotApplicable', (_, mediaFileId) => {
@@ -425,7 +464,7 @@ module.exports = function (ipcMain) {
     const db = getDb()
     const mf = db.prepare('SELECT name FROM media_files WHERE id=?').get(mediaFileId)
     const result = await dialog.showOpenDialog({
-      title: `Locate: ${mf?.name || 'media file'}`,
+      title: `Relink: ${mf?.name || 'media file'}`,
       properties: ['openFile'],
       filters: [
         { name: 'Media Files', extensions: ALL_EXTS.map(e => e.slice(1)) },
