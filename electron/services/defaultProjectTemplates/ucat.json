@@ -11,13 +11,13 @@
         "sections": [
           {
             "id": "el_1783368967705_c97k",
-            "title": "Section 1",
+            "title": "Overall Conversation",
             "description": "",
             "elements": [
               {
                 "id": "el_1783368976626_apjw",
                 "type": "likert_group",
-                "label": "Category 1a",
+                "label": "Pace",
                 "description": "",
                 "scale": 5,
                 "low_label": "Strongly Disagree",
@@ -41,7 +41,7 @@
               {
                 "id": "el_1783370480860_jbz3",
                 "type": "likert_group",
-                "label": "Category 1b",
+                "label": "Questions",
                 "description": "",
                 "scale": 5,
                 "low_label": "Strongly Disagree",
@@ -65,7 +65,7 @@
               {
                 "id": "el_1783370609150_cg4o",
                 "type": "likert_group",
-                "label": "Category 1c",
+                "label": "Turn-taking",
                 "description": "",
                 "scale": 5,
                 "low_label": "Strongly Disagree",
@@ -89,7 +89,7 @@
               {
                 "id": "el_1783371261565_8svy",
                 "type": "likert_group",
-                "label": "Category 1d",
+                "label": "Interruptions",
                 "description": "",
                 "scale": 5,
                 "low_label": "Strongly Disagree",
@@ -118,13 +118,13 @@
           },
           {
             "id": "el_1783371420738_c3n9",
-            "title": "Section 2",
+            "title": "Pauses",
             "description": "",
             "elements": [
               {
                 "id": "el_1783371833481_olsl",
                 "type": "likert_group",
-                "label": "Category 2",
+                "label": "Pauses",
                 "description": "",
                 "scale": 5,
                 "low_label": "Strongly Disagree",
@@ -149,13 +149,13 @@
           },
           {
             "id": "el_1783371917601_mh6j",
-            "title": "Section 3",
+            "title": "Emotions",
             "description": "",
             "elements": [
               {
                 "id": "el_1783371927708_c12n",
                 "type": "likert_group",
-                "label": "Category 3",
+                "label": "Emotions",
                 "description": "",
                 "scale": 5,
                 "low_label": "Strongly Disagree",
@@ -184,13 +184,13 @@
           },
           {
             "id": "el_1783372023292_and8",
-            "title": "Section 4",
+            "title": "External Factor",
             "description": "",
             "elements": [
               {
                 "id": "el_1783372032475_ttyl",
                 "type": "likert_group",
-                "label": "Category 4",
+                "label": "External Factor",
                 "description": "",
                 "scale": 5,
                 "low_label": "Strongly Disagree",
@@ -219,13 +219,13 @@
           },
           {
             "id": "el_1783372152356_dtfa",
-            "title": "Section 5",
+            "title": "Body Language",
             "description": "",
             "elements": [
               {
                 "id": "el_1783372161095_01ev",
                 "type": "likert_group",
-                "label": "Category 5",
+                "label": "Body Language",
                 "description": "",
                 "scale": 5,
                 "low_label": "Strongly Disagree",
@@ -254,13 +254,13 @@
           },
           {
             "id": "el_1783372245675_g6rd",
-            "title": "Section 6",
+            "title": "Personal Topics",
             "description": "",
             "elements": [
               {
                 "id": "el_1783372268676_bnxd",
                 "type": "likert_group",
-                "label": "Category 6",
+                "label": "Personal Topics",
                 "description": "",
                 "scale": 5,
                 "low_label": "Strongly Disagree",
@@ -289,13 +289,13 @@
           },
           {
             "id": "el_1783372360930_dqp1",
-            "title": "Section 7",
+            "title": "Future Topics",
             "description": "",
             "elements": [
               {
                 "id": "el_1783372391677_9iez",
                 "type": "likert_group",
-                "label": "Category 7",
+                "label": "Future Topics",
                 "description": "",
                 "scale": 5,
                 "low_label": "",
@@ -369,7 +369,7 @@
                   },
                   {
                     "id": "el_1784148186702_6roq",
-                    "label": "4. External interruptions disrupted the conversation.",
+                    "label": "No external interruptions disrupted the conversation.",
                     "guide_source_id": "el_1783372032475_ttyl"
                   },
                   {

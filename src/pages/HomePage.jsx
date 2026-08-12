@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, HelpCircle, ClipboardList, FilePlus, FileDown, Share2 } from 'lucide-react'
+import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, HelpCircle, ClipboardList, FilePlus, FileDown, Share2, Sun, Moon } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
 import appIcon from '../assets/app-icon-transparent.png'
+import { useTheme } from '../App'
 
 const TUTORIAL_KEY = 'sdmo_tutorial_v1'
 // Bridges the New Project modal across the navigation to /form-builder and
@@ -35,6 +36,7 @@ const TUTORIAL_STEPS = [
 ]
 
 export default function HomePage() {
+  const { theme, toggleTheme } = useTheme()
   const [projects, setProjects] = useState([])
   const [defaultProjects, setDefaultProjects] = useState([])
   const [loading, setLoading] = useState(true)
@@ -252,6 +254,13 @@ export default function HomePage() {
           <button id="tut-help" className="btn btn-ghost btn-icon btn-sm" onClick={tour.start} title="Show tutorial">
             <HelpCircle size={15} />
           </button>
+          <button
+            className="btn btn-ghost btn-icon btn-sm"
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
         </div>
       </div>
 
@@ -371,7 +380,7 @@ export default function HomePage() {
                         padding: '10px 12px', height: 'auto', textAlign: 'left',
                         border: selected ? '1px solid var(--accent)' : '1px solid transparent',
                         background: selected ? 'var(--accent-light)' : 'var(--bg-secondary)',
-                        borderRadius: 6, cursor: 'pointer', fontFamily: 'var(--font)',
+                        borderRadius: 6, cursor: 'pointer', fontFamily: 'var(--font)', color: 'var(--text)',
                       }}
                     >
                       <ClipboardList size={16} style={{ flexShrink: 0 }} />
@@ -406,7 +415,7 @@ export default function HomePage() {
                   display: 'flex', alignItems: 'center', gap: 12,
                   padding: '10px 12px', height: 'auto', textAlign: 'left',
                   border: '1px dashed var(--border)', background: 'transparent',
-                  borderRadius: 6, cursor: 'pointer', fontFamily: 'var(--font)',
+                  borderRadius: 6, cursor: 'pointer', fontFamily: 'var(--font)', color: 'var(--text)',
                 }}
               >
                 <FilePlus size={16} style={{ flexShrink: 0 }} />
@@ -419,7 +428,7 @@ export default function HomePage() {
                   display: 'flex', alignItems: 'center', gap: 12,
                   padding: '10px 12px', height: 'auto', textAlign: 'left',
                   border: '1px dashed var(--border)', background: 'transparent',
-                  borderRadius: 6, cursor: 'pointer', fontFamily: 'var(--font)',
+                  borderRadius: 6, cursor: 'pointer', fontFamily: 'var(--font)', color: 'var(--text)',
                 }}
               >
                 <FileDown size={16} style={{ flexShrink: 0 }} />
@@ -514,7 +523,7 @@ export default function HomePage() {
                     padding: '10px 12px', textAlign: 'left', cursor: 'pointer', fontFamily: 'var(--font)',
                     border: selected ? '1px solid var(--accent)' : '1px solid var(--border)',
                     background: selected ? 'var(--accent-light)' : 'transparent',
-                    borderRadius: 6,
+                    borderRadius: 6, color: 'var(--text)',
                   }}
                 >
                   <span style={{ fontWeight: 600, fontSize: 13 }}>{entry.name}</span>
@@ -584,7 +593,7 @@ export default function HomePage() {
               </div>
 
               {hint.mode === 'cloud' && (
-                <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: '#1d4ed8' }}>
+                <div style={{ background: 'var(--accent-light)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: 'var(--accent)' }}>
                   <strong>This project syncs via {providerLabel}.</strong>
                   <br /><br />
                   After opening the project, go to <strong>Setup → Sync</strong> and sign in to {providerLabel} to connect to the shared folder.

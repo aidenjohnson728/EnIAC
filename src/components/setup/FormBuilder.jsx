@@ -326,7 +326,7 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
             )}
           </div>
           {saveError && !migrationPreview && (
-            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px', color: '#991b1b', fontSize: 13 }}>
+            <div style={{ background: 'var(--danger-light)', border: '1px solid var(--danger)', borderRadius: 8, padding: '10px 12px', color: 'var(--danger)', fontSize: 13 }}>
               {saveError}
             </div>
           )}
@@ -367,7 +367,7 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
         {migrationPreview && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13, lineHeight: 1.5 }}>
             {saveError && (
-              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 10, color: '#991b1b' }}>
+              <div style={{ background: 'var(--danger-light)', border: '1px solid var(--danger)', borderRadius: 8, padding: 10, color: 'var(--danger)' }}>
                 {saveError}
               </div>
             )}
@@ -380,7 +380,7 @@ export default function FormBuilder({ projectId, form, onSave, onCancel, onLocke
               <div><strong>{migrationPreview.submitted}</strong> submitted review{migrationPreview.submitted !== 1 ? 's' : ''}</div>
             </div>
             {(migrationPreview.submitted || 0) > 0 ? (
-              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 12, color: '#991b1b' }}>
+              <div style={{ background: 'var(--danger-light)', border: '1px solid var(--danger)', borderRadius: 8, padding: 12, color: 'var(--danger)' }}>
                 Submitted reviews will be reopened as drafts. Existing answers are preserved by question ID where possible.
               </div>
             ) : (
@@ -881,7 +881,7 @@ function AgreementSettingsEditor({ el, onChange }) {
         </label>
       )}
       {warning && (
-        <div style={{ fontSize: 11, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 5, padding: '6px 8px', lineHeight: 1.4 }}>
+        <div style={{ fontSize: 11, color: 'var(--warning)', background: 'var(--warning-light)', border: '1px solid var(--warning)', borderRadius: 5, padding: '6px 8px', lineHeight: 1.4 }}>
           {warning}
         </div>
       )}

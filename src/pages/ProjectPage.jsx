@@ -824,7 +824,7 @@ export default function ProjectPage() {
                   style={{
                     width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
                     padding: '8px 10px', border: 'none', background: 'transparent', borderRadius: 6,
-                    cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font)',
+                    cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font)', color: 'var(--text)',
                   }}
                   onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-secondary)' }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
@@ -837,7 +837,7 @@ export default function ProjectPage() {
                   style={{
                     width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
                     padding: '8px 10px', border: 'none', background: 'transparent', borderRadius: 6,
-                    cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font)',
+                    cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font)', color: 'var(--text)',
                   }}
                   onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-secondary)' }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
@@ -874,34 +874,34 @@ export default function ProjectPage() {
 
       {/* Warning banners */}
       {syncOffline && syncStatus.syncMode === 'cloud' && (
-        <div style={{ background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#92400e' }}>
+        <div style={{ background: 'var(--warning-light)', borderBottom: '1px solid var(--warning)', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--warning)' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
           No internet — working in local mode. Retrying every 5 minutes.
         </div>
       )}
       {syncError && (
-        <div style={{ background: '#fef2f2', borderBottom: '1px solid #fecaca', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#b91c1c' }}>
+        <div style={{ background: 'var(--danger-light)', borderBottom: '1px solid var(--danger)', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--danger)' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
           Sync failed: {syncError}
-          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto', color: '#b91c1c' }} onClick={() => setSyncError(null)}>
+          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto', color: 'var(--danger)' }} onClick={() => setSyncError(null)}>
             <X size={12} />
           </button>
         </div>
       )}
       {syncStatus.syncMode === 'local' && syncStatus.syncFolderExists === false && (
-        <div style={{ background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#92400e' }}>
+        <div style={{ background: 'var(--warning-light)', borderBottom: '1px solid var(--warning)', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--warning)' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
-          Sync folder not found — check the path in <button className="btn btn-ghost btn-sm" style={{ color: '#92400e', textDecoration: 'underline', padding: '0 4px' }} onClick={() => navigate(`/project/${projectId}/setup?section=${SETUP_SECTIONS.SYNC}`)}>Setup → Sync</button>
+          Sync folder not found — check the path in <button className="btn btn-ghost btn-sm" style={{ color: 'var(--warning)', textDecoration: 'underline', padding: '0 4px' }} onClick={() => navigate(`/project/${projectId}/setup?section=${SETUP_SECTIONS.SYNC}`)}>Setup → Sync</button>
         </div>
       )}
       {syncStatus.syncMode === 'cloud' && syncStatus.tokenExpired && (
-        <div style={{ background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#92400e' }}>
+        <div style={{ background: 'var(--warning-light)', borderBottom: '1px solid var(--warning)', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--warning)' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
-          Cloud connection expired — reconnect in <button className="btn btn-ghost btn-sm" style={{ color: '#92400e', textDecoration: 'underline', padding: '0 4px' }} onClick={() => navigate(`/project/${projectId}/setup?section=${SETUP_SECTIONS.SYNC}`)}>Setup → Sync</button>
+          Cloud connection expired — reconnect in <button className="btn btn-ghost btn-sm" style={{ color: 'var(--warning)', textDecoration: 'underline', padding: '0 4px' }} onClick={() => navigate(`/project/${projectId}/setup?section=${SETUP_SECTIONS.SYNC}`)}>Setup → Sync</button>
         </div>
       )}
       {googleDriveAccessIds.length > 0 && (
-        <div style={{ background: '#eff6ff', borderBottom: '1px solid #bfdbfe', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#1d4ed8' }}>
+        <div style={{ background: 'var(--accent-light)', borderBottom: '1px solid var(--accent)', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--accent)' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
           <span>New Google Drive review files need access before EnIAC can import them.</span>
           <button
@@ -915,7 +915,7 @@ export default function ProjectPage() {
         </div>
       )}
       {googleDriveMetadataMissing && (
-        <div style={{ background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#92400e', flexWrap: 'wrap' }}>
+        <div style={{ background: 'var(--warning-light)', borderBottom: '1px solid var(--warning)', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--warning)', flexWrap: 'wrap' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
           <span>
             Google Drive cannot see {googleDriveMetadataMissing.join(' and ')}. Select the existing files from this project sync folder, or create new metadata if this folder is intentionally empty.
@@ -938,7 +938,7 @@ export default function ProjectPage() {
         </div>
       )}
       {pendingConfigData && (
-        <div style={{ background: '#eff6ff', borderBottom: '1px solid #bfdbfe', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#1d4ed8' }}>
+        <div style={{ background: 'var(--accent-light)', borderBottom: '1px solid var(--accent)', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--accent)' }}>
           <RefreshCw size={14} style={{ flexShrink: 0 }} />
           <span>Project settings were updated by the project owner.</span>
           <button
@@ -1072,9 +1072,9 @@ export default function ProjectPage() {
 
           {/* Media health warning — shown on all views */}
           {mediaHealth && (mediaHealth.unlinked + mediaHealth.broken) > 0 && (
-            <div id="tut-proj-health" style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 14px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
-              <AlertTriangle size={15} style={{ color: '#d97706', flexShrink: 0 }} />
-              <span style={{ color: '#92400e', flex: 1 }}>
+            <div id="tut-proj-health" style={{ background: 'var(--warning-light)', border: '1px solid var(--warning)', borderRadius: 8, padding: '10px 14px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+              <AlertTriangle size={15} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+              <span style={{ color: 'var(--warning)', flex: 1 }}>
                 {mediaHealth.unlinked + mediaHealth.broken} of {mediaHealth.total} media file{mediaHealth.total !== 1 ? 's' : ''} {mediaHealth.broken > 0 && mediaHealth.unlinked > 0 ? 'are not linked or missing' : mediaHealth.broken > 0 ? 'cannot be found on disk' : 'are not linked on this machine'}.
                 {!mediaHealth.hasBaseFolder ? ' Set a base folder in Settings → Media Folder.' : ' Go to Settings → Media Folder to auto-link or manually locate files.'}
               </span>
@@ -1397,7 +1397,7 @@ export default function ProjectPage() {
             </div>
           </div>
         ) : scanResult.error ? (
-          <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b91c1c' }}>
+          <div style={{ background: 'var(--danger-light)', border: '1px solid var(--danger)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--danger)' }}>
             {scanResult.error}
           </div>
         ) : (
@@ -1407,7 +1407,7 @@ export default function ProjectPage() {
             <span><strong>{scanResult.filesAdded || 0}</strong> media file{scanResult.filesAdded === 1 ? '' : 's'} added</span>
             <span><strong>{scanResult.filesLinked || 0}</strong> existing media file{scanResult.filesLinked === 1 ? '' : 's'} linked</span>
             {scanResult.directMediaFiles > 0 && (
-              <span style={{ color: '#d97706' }}>{scanResult.directMediaFiles} media file{scanResult.directMediaFiles === 1 ? '' : 's'} were in the top folder. Put files inside encounter subfolders to import them.</span>
+              <span style={{ color: 'var(--warning)' }}>{scanResult.directMediaFiles} media file{scanResult.directMediaFiles === 1 ? '' : 's'} were in the top folder. Put files inside encounter subfolders to import them.</span>
             )}
             {(scanResult.stillUnlinked > 0 || scanResult.stillBroken > 0) && (
               <span style={{ color: 'var(--text-muted)' }}>{scanResult.stillUnlinked || 0} still unlinked · {scanResult.stillBroken || 0} missing</span>
@@ -1430,9 +1430,9 @@ export default function ProjectPage() {
         }
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ display: 'flex', gap: 10, padding: '10px 12px', border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 8 }}>
-            <AlertTriangle size={18} color="#b45309" style={{ flexShrink: 0, marginTop: 1 }} />
-            <div style={{ fontSize: 13, color: '#92400e', lineHeight: 1.55 }}>
+          <div style={{ display: 'flex', gap: 10, padding: '10px 12px', border: '1px solid var(--warning)', background: 'var(--warning-light)', borderRadius: 8 }}>
+            <AlertTriangle size={18} color="var(--warning)" style={{ flexShrink: 0, marginTop: 1 }} />
+            <div style={{ fontSize: 13, color: 'var(--warning)', lineHeight: 1.55 }}>
               <strong>{mediaTypeConfirmTarget?.mediaFile?.name}</strong> already has {mediaTypeConfirmReviewCount} review{mediaTypeConfirmReviewCount === 1 ? '' : 's'}.
               {mediaTypeConfirmSubmittedCount > 0 && (
                 <> {mediaTypeConfirmSubmittedCount} submitted review{mediaTypeConfirmSubmittedCount === 1 ? '' : 's'} will be reopened and marked in progress.</>
@@ -1531,7 +1531,7 @@ export default function ProjectPage() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {autolinkResult.error ? (
-                <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b91c1c' }}>
+                <div style={{ background: 'var(--danger-light)', border: '1px solid var(--danger)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--danger)' }}>
                   {autolinkResult.error}
                 </div>
               ) : (
@@ -1540,7 +1540,7 @@ export default function ProjectPage() {
                     ? <span style={{ color: 'var(--success)', fontWeight: 600 }}>✓ {autolinkResult.linked} file{autolinkResult.linked !== 1 ? 's' : ''} linked</span>
                     : <span style={{ color: 'var(--text-muted)' }}>No new files linked</span>}
                   {autolinkResult.skipped > 0 && <span style={{ color: 'var(--text-muted)' }}>· {autolinkResult.skipped} already linked (skipped)</span>}
-                  {autolinkResult.ambiguous > 0 && <span style={{ color: '#d97706' }}>· {autolinkResult.ambiguous} ambiguous — multiple files matched the same name, link manually using the button on each file</span>}
+                  {autolinkResult.ambiguous > 0 && <span style={{ color: 'var(--warning)' }}>· {autolinkResult.ambiguous} ambiguous — multiple files matched the same name, link manually using the button on each file</span>}
                   {autolinkResult.notFound > 0 && <span style={{ color: 'var(--text-muted)' }}>· {autolinkResult.notFound} not found in folder</span>}
                 </div>
               )}
@@ -1736,9 +1736,9 @@ function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncou
 
 function linkStatusBadge(status) {
   if (!status || status === 'linked') return null
-  if (status === 'missing') return <span style={{ fontSize: 10, fontWeight: 600, color: '#ef4444', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 3, padding: '1px 5px' }}>File missing</span>
+  if (status === 'missing') return <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--danger)', background: 'var(--danger-light)', border: '1px solid var(--danger)', borderRadius: 3, padding: '1px 5px' }}>File missing</span>
   if (status === 'not_applicable') return <span style={{ fontSize: 10, color: 'var(--text-muted)', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 5px' }}>N/A</span>
-  return <span style={{ fontSize: 10, fontWeight: 600, color: '#d97706', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 3, padding: '1px 5px' }}>Not linked</span>
+  return <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--warning)', background: 'var(--warning-light)', border: '1px solid var(--warning)', borderRadius: 3, padding: '1px 5px' }}>Not linked</span>
 }
 
 function reopenedReasonLabel(reason) {
@@ -1842,7 +1842,7 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
               {r.reviewer_name}
               {r.status === 'submitted' && <CheckCircle2 size={9} color="var(--success)" />}
               {r.status !== 'submitted' && r.reopened_at && (
-                <span title={reopenedReasonLabel(r.reopened_reason)} style={{ fontSize: 9, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 3, padding: '0 4px' }}>
+                <span title={reopenedReasonLabel(r.reopened_reason)} style={{ fontSize: 9, fontWeight: 700, color: 'var(--warning)', background: 'var(--warning-light)', border: '1px solid var(--warning)', borderRadius: 3, padding: '0 4px' }}>
                   Reopened
                 </span>
               )}
@@ -2594,7 +2594,7 @@ function DataVizView({ projectId, mediaTypes = [] }) {
             </div>
           </div>
         ) : (
-          <div style={{ fontSize: 12, color: finalQuestionCount > 0 ? 'var(--text-secondary)' : '#92400e', background: finalQuestionCount > 0 ? 'var(--bg-secondary)' : '#fffbeb', border: `1px solid ${finalQuestionCount > 0 ? 'var(--border)' : '#fde68a'}`, borderRadius: 8, padding: '8px 10px' }}>
+          <div style={{ fontSize: 12, color: finalQuestionCount > 0 ? 'var(--text-secondary)' : 'var(--warning)', background: finalQuestionCount > 0 ? 'var(--bg-secondary)' : 'var(--warning-light)', border: `1px solid ${finalQuestionCount > 0 ? 'var(--border)' : 'var(--warning)'}`, borderRadius: 8, padding: '8px 10px' }}>
             {finalQuestionCount > 0
               ? `${finalQuestionCount} final evaluation question${finalQuestionCount === 1 ? '' : 's'} found for ${selectedMediaType?.name || 'this media type'}.`
               : 'No final evaluation question is set for this media type. Mark one question in form settings to use this mode.'}
@@ -2925,10 +2925,10 @@ function QuestionReliabilityView({ projectId }) {
       </div>
 
       {mismatchWarnings.length > 0 && (
-        <div style={{ border: '1px solid #f5c542', background: '#fef8e7', borderRadius: 10, padding: 14, marginBottom: 16 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: '#7a5c00' }}>Import form mismatch — some imported data was not included</div>
+        <div style={{ border: '1px solid var(--warning)', background: 'var(--warning-light)', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--warning)' }}>Import form mismatch — some imported data was not included</div>
           {mismatchWarnings.map((w, i) => (
-            <div key={i} style={{ fontSize: 12, color: '#7a5c00', marginTop: 6 }}>
+            <div key={i} style={{ fontSize: 12, color: 'var(--warning)', marginTop: 6 }}>
               "{w.sourceName}"{w.reviewerName ? ` (${w.reviewerName})` : ''} was recorded against form
               "<strong>{w.importedFormName}</strong>", which doesn't match this project's form
               {w.expectedFormNames.length === 1 ? '' : 's'} ({w.expectedFormNames.join(', ') || 'none'}).

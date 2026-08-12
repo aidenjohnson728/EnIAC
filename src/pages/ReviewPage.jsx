@@ -983,7 +983,7 @@ export default function ReviewPage() {
             </span>
             {submitted && <span className="badge badge-success"><CheckCircle2 size={10} /> Submitted</span>}
             {!submitted && review?.reopened_at && (
-              <span className="badge badge-muted" title={reopenedReasonLabel(review.reopened_reason)} style={{ color: '#b45309', background: '#fffbeb', borderColor: '#fde68a' }}>
+              <span className="badge badge-muted" title={reopenedReasonLabel(review.reopened_reason)} style={{ color: 'var(--warning)', background: 'var(--warning-light)', borderColor: 'var(--warning)' }}>
                 <AlertCircle size={10} /> Reopened
               </span>
             )}
@@ -1609,11 +1609,34 @@ function VideoControls({
   const trackRef = useRef(null)
   const progressPct = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0
 
-  function seekFromPointer(e) {
+  function pctFromClientX(clientX) {
     const rect = trackRef.current?.getBoundingClientRect()
-    if (!rect || rect.width <= 0) return
-    const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
+    if (!rect || rect.width <= 0) return null
+    return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+  }
+
+  function seekFromPointer(e) {
+    const pct = pctFromClientX(e.clientX)
+    if (pct == null) return
     onSeek(pct * duration)
+  }
+
+  // Real dragging (not just click-to-jump): mousedown seeks immediately
+  // (same as before) and starts tracking, then document-level listeners keep
+  // seeking as the mouse moves anywhere on screen — not just while still over
+  // the thin track — and clean up on mouseup, wherever that happens.
+  function startDrag(e) {
+    seekFromPointer(e)
+    function handleMove(moveEvent) {
+      const pct = pctFromClientX(moveEvent.clientX)
+      if (pct != null) onSeek(pct * duration)
+    }
+    function handleUp() {
+      document.removeEventListener('mousemove', handleMove)
+      document.removeEventListener('mouseup', handleUp)
+    }
+    document.addEventListener('mousemove', handleMove)
+    document.addEventListener('mouseup', handleUp)
   }
 
   return (
@@ -1662,7 +1685,7 @@ function VideoControls({
         aria-valuemax={Math.floor(duration)}
         aria-valuenow={Math.floor(currentTime)}
         tabIndex={0}
-        onMouseDown={seekFromPointer}
+        onMouseDown={startDrag}
         onKeyDown={e => {
           if (e.key === 'ArrowLeft') { e.preventDefault(); onSeek(Math.max(0, currentTime - 5)) }
           if (e.key === 'ArrowRight') { e.preventDefault(); onSeek(Math.min(duration, currentTime + 5)) }

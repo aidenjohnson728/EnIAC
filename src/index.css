@@ -2,31 +2,72 @@
 
 :root {
   --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  --bg: #ffffff;
-  --bg-secondary: #f7f7f5;
-  --bg-hover: #f1f1ef;
-  --bg-active: #ebebea;
-  --border: #e5e5e3;
-  --border-strong: #d0d0cd;
-  --text: #1a1a1a;
-  --text-secondary: #787774;
-  --text-muted: #a8a8a4;
-  --accent: #2383e2;
-  --accent-light: #e8f1fb;
-  --accent-hover: #1a6dbf;
-  --danger: #e03e3e;
-  --danger-light: #fde8e8;
-  --success: #0f7b0f;
-  --success-light: #e6f4e6;
-  --warning: #c47d00;
-  --warning-light: #fef3e2;
+  /* Warm palette: ivory/cream backgrounds instead of stark white, mossy
+     green as the primary accent/button color, orange for warnings —
+     replacing the earlier cooler, more clinical blue/gray palette. */
+  --bg: #fdfaf5;
+  --bg-secondary: #f5efe3;
+  --bg-hover: #efe6d4;
+  --bg-active: #e8dcc4;
+  --border: #e3d9c4;
+  --border-strong: #cbbb9c;
+  --text: #2e2a22;
+  --text-secondary: #77705f;
+  --text-muted: #a89d87;
+  --accent: #6b7c52;
+  --accent-light: #e6ecd9;
+  --accent-hover: #566343;
+  --danger: #c9502f;
+  --danger-light: #f7e3da;
+  --danger-hover: #f0cbb8;
+  --success: #3f8f5f;
+  --success-light: #dcf0e2;
+  --warning: #d9822b;
+  --warning-light: #faecd9;
   --radius-sm: 4px;
   --radius: 6px;
   --radius-lg: 10px;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow: 0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,0.12), 0 4px 8px rgba(0,0,0,0.06);
+  --shadow-sm: 0 1px 3px rgba(46,38,23,0.08), 0 1px 2px rgba(46,38,23,0.05);
+  --shadow: 0 4px 12px rgba(46,38,23,0.10), 0 2px 4px rgba(46,38,23,0.05);
+  --shadow-lg: 0 8px 24px rgba(46,38,23,0.14), 0 4px 8px rgba(46,38,23,0.07);
   --sidebar-width: 280px;
+}
+
+/* Dark mode — same warm identity (mossy green accent, orange warning),
+   adapted for dark backgrounds: warm brown-black instead of the usual cool
+   gray-black, so it doesn't read as a totally different app in the dark.
+   Applied via [data-theme="dark"] on <html> (manual toggle, not
+   prefers-color-scheme), same variable names throughout so every rule below
+   that reads var(--bg)/var(--text)/etc. re-themes with no changes needed. */
+[data-theme="dark"] {
+  --bg: #211d17;
+  --bg-secondary: #29241c;
+  --bg-hover: #332c22;
+  --bg-active: #3d3527;
+  --border: #3a3226;
+  --border-strong: #4d4232;
+  --text: #f0e9db;
+  --text-secondary: #b3a68f;
+  --text-muted: #7d7362;
+  --accent: #8fa374;
+  --accent-light: #2c3624;
+  --accent-hover: #a3b78a;
+  --danger: #e08063;
+  --danger-light: #3d241a;
+  --danger-hover: #4d2f22;
+  --success: #5fb583;
+  --success-light: #1e3327;
+  --warning: #eba149;
+  --warning-light: #3d2c14;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
+  --shadow: 0 4px 12px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.3);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.6), 0 4px 8px rgba(0,0,0,0.4);
+}
+
+/* Smooth theme transitions rather than an abrupt flash when toggling —
+   scoped to just the properties that actually change between themes. */
+body, .btn, .card, input, textarea, select, .modal, .dropdown-menu {
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 html, body, #root {
@@ -66,7 +107,7 @@ h3 { font-size: 15px; font-weight: 600; }
 .btn-ghost { background: transparent; color: var(--text-secondary); }
 .btn-ghost:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .btn-danger { background: var(--danger-light); color: var(--danger); }
-.btn-danger:hover:not(:disabled) { background: #fbd5d5; }
+.btn-danger:hover:not(:disabled) { background: var(--danger-hover); }
 .btn-sm { padding: 4px 8px; font-size: 12px; }
 .btn-lg { padding: 8px 16px; font-size: 14px; }
 .btn-icon { padding: 6px; }
@@ -126,7 +167,7 @@ label { font-size: 13px; font-weight: 500; color: var(--text-secondary); display
 /* Modal overlay */
 .modal-overlay {
   position: fixed; inset: 0;
-  background: rgba(0,0,0,0.3); backdrop-filter: blur(2px);
+  background: rgba(46,38,23,0.35); backdrop-filter: blur(2px);
   display: flex; align-items: center; justify-content: center;
   z-index: 1000;
 }
@@ -199,7 +240,7 @@ label { font-size: 13px; font-weight: 500; color: var(--text-secondary); display
 .tooltip-wrapper { position: relative; display: inline-flex; }
 .tooltip {
   position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
-  background: var(--text); color: #fff; font-size: 11px;
+  background: var(--text); color: var(--bg); font-size: 11px;
   padding: 4px 8px; border-radius: var(--radius-sm);
   white-space: nowrap; pointer-events: none; z-index: 500;
   opacity: 0; transition: opacity 0.15s;
