@@ -369,8 +369,9 @@
                   },
                   {
                     "id": "el_1784148186702_6roq",
-                    "label": "No external interruptions disrupted the conversation.",
-                    "guide_source_id": "el_1783372032475_ttyl"
+                    "label": "4. No external interruptions disrupted the conversation.",
+                    "guide_source_id": "el_1783372032475_ttyl",
+                    "guide_reverse": true
                   },
                   {
                     "id": "el_1784148211329_9854",

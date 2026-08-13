@@ -109,6 +109,8 @@ export default function SetupPage() {
   const [autolinking, setAutolinking] = useState(false)
   const [linkSaving, setLinkSaving] = useState(null) // mediaFileId being linked
   const [dragOverMediaId, setDragOverMediaId] = useState(null)
+  const [relinkTarget, setRelinkTarget] = useState(null)
+  const [isDraggingRelink, setIsDraggingRelink] = useState(false)
   const [appInfo, setAppInfo] = useState(null)
   const [updateStatus, setUpdateStatus] = useState(null)
   const [aboutBusy, setAboutBusy] = useState(false)
@@ -536,6 +538,28 @@ export default function SetupPage() {
     setLinkSaving(null)
   }
 
+  // Drop zone for the relink modal itself — mirrors the row-level drag
+  // handlers above, so both dropping directly on a row and using the modal
+  // work the same way.
+  function handleRelinkDragOver(e) {
+    e.preventDefault()
+    if (!isDraggingRelink) setIsDraggingRelink(true)
+  }
+  function handleRelinkDragLeave(e) {
+    e.preventDefault()
+    setIsDraggingRelink(false)
+  }
+  function handleRelinkDrop(e) {
+    e.preventDefault()
+    setIsDraggingRelink(false)
+    const file = e.dataTransfer?.files?.[0]
+    const filePath = file ? api.getPathForFile(file) : null
+    if (filePath && relinkTarget) {
+      setRelinkTarget(null)
+      handleDropLink(relinkTarget.id, filePath)
+    }
+  }
+
   async function handleMarkNA(mediaFileId) {
     await api.markMediaNotApplicable(mediaFileId)
     load()
@@ -952,7 +976,11 @@ export default function SetupPage() {
                               if (!acceptsDrop) return
                               e.preventDefault()
                               setDragOverMediaId(null)
-                              const filePath = e.dataTransfer.files?.[0]?.path
+                              // api.getPathForFile wraps Electron's webUtils.getPathForFile
+                              // — the dropped File object's non-standard .path property was
+                              // removed in recent Electron versions.
+                              const file = e.dataTransfer.files?.[0]
+                              const filePath = file ? api.getPathForFile(file) : null
                               if (filePath) handleDropLink(mf.id, filePath)
                             }}
                             style={{
@@ -974,7 +1002,7 @@ export default function SetupPage() {
                             <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                               {status !== 'not_applicable' && (
                                 <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22 }}
-                                  onClick={() => handleManualLink(mf.id)} disabled={busy}>
+                                  onClick={() => setRelinkTarget(mf)} disabled={busy}>
                                   {busy ? '…' : (status === 'linked' || status === 'missing') ? 'Relink' : 'Link'}
                                 </button>
                               )}
@@ -1024,6 +1052,42 @@ export default function SetupPage() {
           )}
         </div>
       </div>
+
+      {/* Relink Modal */}
+      <Modal
+        open={!!relinkTarget}
+        onClose={() => setRelinkTarget(null)}
+        title="Relink Media"
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setRelinkTarget(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={() => { const id = relinkTarget?.id; setRelinkTarget(null); handleManualLink(id) }}>
+              Choose File…
+            </button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+            Relink <strong>{relinkTarget?.name}</strong> — drag the actual video file in below, or click
+            "Choose File…" to browse for it.
+          </p>
+          <div
+            onDragOver={handleRelinkDragOver}
+            onDragLeave={handleRelinkDragLeave}
+            onDrop={handleRelinkDrop}
+            style={{
+              border: isDraggingRelink ? '2px dashed var(--accent)' : '2px dashed var(--border)',
+              borderRadius: 8, padding: '28px 12px', textAlign: 'center',
+              background: isDraggingRelink ? 'rgba(59,130,246,0.06)' : 'var(--bg-secondary)',
+              transition: 'border-color 0.15s ease, background 0.15s ease',
+              fontSize: 13, color: 'var(--text-muted)',
+            }}
+          >
+            {isDraggingRelink ? 'Drop the video file to relink it' : 'Drag and drop a video file here'}
+          </div>
+        </div>
+      </Modal>
 
       {/* Delete Confirmation Modal */}
       <Modal

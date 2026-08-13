@@ -1131,7 +1131,15 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
       if (naCount > 0) return { numeric: [], isNA: false }
 
       const numericAnswered = answered
-      const avg = numericAnswered.reduce((a, b) => a + b, 0) / numericAnswered.length
+      let avg = numericAnswered.reduce((a, b) => a + b, 0) / numericAnswered.length
+      // Reverse-scored items: this item's wording is the inverse of its
+      // source group's (e.g. UCAT Global Measure 4, "No external
+      // interruptions disrupted the conversation", vs. its source category's
+      // more direct framing) — a high source average should suggest a LOW
+      // point here, not the same point. (scale + 1) - avg on a 1..scale range
+      // maps 1<->scale, 2<->scale-1, etc., same as the standard reverse-score
+      // formula for a Likert item (6 - avg on a 1-5 scale).
+      if (item.guide_reverse) avg = (scale + 1) - avg
       const clamped = Math.min(scale, Math.max(1, avg))
       const lower = Math.floor(clamped)
       const upper = Math.ceil(clamped)

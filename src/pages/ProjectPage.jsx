@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
-  ChevronLeft, Settings, Filter, ChevronDown, ChevronRight,
+  ChevronLeft, Settings, ChevronDown, ChevronRight,
   Video, FileText, File, Plus, CheckCircle2, Circle,
   Search, X, Play, RefreshCw, Share2, FolderDown, AlertTriangle, Cloud, User,
   LayoutList, BarChart2, Activity, LineChart, HelpCircle, Pencil,
@@ -17,7 +17,6 @@ import {
 } from '../lib/reliabilityStats.mjs'
 import Modal from '../components/ui/Modal'
 import NewReviewModal from '../components/encounters/NewReviewModal'
-import FilterPanel from '../components/encounters/FilterPanel'
 import useTour from '../components/ui/useTour'
 
 const PAGE_SIZE = 15
@@ -51,13 +50,7 @@ const PROJECT_TOUR_STEPS = [
     targetId: 'tut-proj-health',
     placement: 'bottom',
     title: 'Unlinked Files',
-    body: "This warning is local to this machine. Use Auto-link to scan a folder for matching files, or Link to relink one manually.",
-  },
-  {
-    targetId: 'tut-proj-autolink',
-    placement: 'bottom',
-    title: 'Auto-link Files',
-    body: 'Have all your videos in one folder? Auto-link scans it (and subfolders) and links every file whose name matches a slot in the project — no manual locating needed. Each teammate does this once on their own machine.',
+    body: "This warning is local to this machine. Use Link on the file in the list below to relink it manually.",
   },
   {
     targetId: 'tut-proj-sync',
@@ -90,8 +83,6 @@ export default function ProjectPage() {
   const [deleteReviewTarget, setDeleteReviewTarget] = useState(null) // { id, reviewer_name }
   const [deleteMediaTarget, setDeleteMediaTarget] = useState(null) // { id, name }
   const [deleteEncounterTarget, setDeleteEncounterTarget] = useState(null) // { id, name }
-  const [showFilter, setShowFilter] = useState(false)
-  const [filters, setFilters] = useState({})
   const [search, setSearch] = useState('')
   const [syncStatus, setSyncStatus] = useState({ syncMode: 'none', syncFolder: null, lastSyncAt: null })
   const [syncing, setSyncing] = useState(false)
@@ -110,7 +101,6 @@ export default function ProjectPage() {
   const [mediaHealth, setMediaHealth] = useState(null)
   const [activePage, setActivePage] = useState('encounters')
   const [currentPage, setCurrentPage] = useState(1)
-  const [autolinking, setAutolinking] = useState(false)
   const [linkSaving, setLinkSaving] = useState(null)
   const [showShareModal, setShowShareModal] = useState(false)
   const [showExportMenu, setShowExportMenu] = useState(false)
@@ -119,6 +109,8 @@ export default function ProjectPage() {
   const [shareRecipients, setShareRecipients] = useState([{ name: '', role: 'reviewer' }])
   const [sharing, setSharing] = useState(false)
   const [newMediaTarget, setNewMediaTarget] = useState(null)
+  const [relinkTarget, setRelinkTarget] = useState(null)
+  const [isDraggingRelink, setIsDraggingRelink] = useState(false)
   const [isDraggingNewMedia, setIsDraggingNewMedia] = useState(false)
   const [showScanModal, setShowScanModal] = useState(false)
   const [scanFolder, setScanFolder] = useState('')
@@ -128,9 +120,6 @@ export default function ProjectPage() {
   const [unlockInput, setUnlockInput] = useState('')
   const [unlockError, setUnlockError] = useState('')
   const [mediaTypeConfirmTarget, setMediaTypeConfirmTarget] = useState(null)
-  const [showAutolinkModal, setShowAutolinkModal] = useState(false)
-  const [autolinkFolder, setAutolinkFolder] = useState('')
-  const [autolinkResult, setAutolinkResult] = useState(null)
   const [syncOffline, setSyncOffline] = useState(false)
   const [googleDriveAccessIds, setGoogleDriveAccessIds] = useState([])
   const [grantingGoogleDriveAccess, setGrantingGoogleDriveAccess] = useState(false)
@@ -424,7 +413,7 @@ export default function ProjectPage() {
     setExpanded(e => ({ ...e, [encId]: !e[encId] }))
   }
 
-  function applyFilters(encs) {
+  function applySearch(encs) {
     // Sorted ascending by id (creation order) so a newly created encounter
     // always lands after existing ones, rather than wherever the backend
     // happens to return it.
@@ -436,33 +425,12 @@ export default function ProjectPage() {
         enc.media?.some(m => m.name.toLowerCase().includes(q))
       )
     }
-    if (filters.completion === 'complete') result = result.filter(e => e.completed)
-    if (filters.completion === 'incomplete') result = result.filter(e => !e.completed)
-    if (filters.mediaType) result = result.filter(e => e.media?.some(m => m.media_type_id == filters.mediaType))
     return result
   }
 
-  const filtered = useMemo(() => applyFilters(encounters), [encounters, filters, search])
+  const filtered = useMemo(() => applySearch(encounters), [encounters, search])
 
-  useEffect(() => setCurrentPage(1), [search, filters])
-
-  async function handleOpenAutolinkModal() {
-    const folder = await api.getBaseFolder(projectId)
-    setAutolinkFolder(folder || '')
-    setAutolinkResult(null)
-    setShowAutolinkModal(true)
-  }
-
-  async function handleRunAutolink() {
-    if (autolinkFolder) await api.setBaseFolder(Number(projectId), autolinkFolder)
-    setAutolinking(true)
-    const result = await api.autolink(projectId)
-    setAutolinking(false)
-    setAutolinkResult(result)
-    const [encs, health] = await Promise.all([api.listEncounters(projectId), api.mediaHealthCheck(projectId)])
-    setEncounters(encs)
-    setMediaHealth(health)
-  }
+  useEffect(() => setCurrentPage(1), [search])
 
   // Shared by both manual browse and drag-and-drop relinking below — decides
   // whether to rename the media file (and its encounter, if it's the only
@@ -498,10 +466,9 @@ export default function ProjectPage() {
     setLinkSaving(null)
   }
 
-  // Drag-and-drop relinking — the dropped file already gives us an absolute
-  // local path (Electron exposes this via the dropped File object's .path,
-  // a non-standard extension the browser File API doesn't have), so this
-  // skips straight to setMediaLink instead of opening the native picker.
+  // Called with an already-resolved absolute path (from either the row-level
+  // drop target or the relink modal's own drop zone below) — skips straight
+  // to setMediaLink instead of opening the native picker.
   async function handleDropLink(mediaFileId, filePath) {
     setLinkSaving(mediaFileId)
     const result = await api.setMediaLink(mediaFileId, projectId, filePath)
@@ -510,6 +477,28 @@ export default function ProjectPage() {
     setEncounters(encs)
     setMediaHealth(health)
     setLinkSaving(null)
+  }
+
+  // Drop zone for the relink modal itself — mirrors handleNewMediaDragOver/
+  // DragLeave/Drop below (the Add Media flow's own drop zone) so both
+  // linking a new file and relinking an existing one feel the same.
+  function handleRelinkDragOver(e) {
+    e.preventDefault()
+    if (!isDraggingRelink) setIsDraggingRelink(true)
+  }
+  function handleRelinkDragLeave(e) {
+    e.preventDefault()
+    setIsDraggingRelink(false)
+  }
+  function handleRelinkDrop(e) {
+    e.preventDefault()
+    setIsDraggingRelink(false)
+    const file = e.dataTransfer?.files?.[0]
+    const filePath = file ? api.getPathForFile(file) : null
+    if (filePath && relinkTarget) {
+      setRelinkTarget(null)
+      handleDropLink(relinkTarget.id, filePath)
+    }
   }
 
   async function handleClearLink(mediaFileId) {
@@ -1136,21 +1125,13 @@ export default function ProjectPage() {
                     <FolderDown size={13} />
                     Scan Folder
                   </button>
-                  <button id="tut-proj-autolink" className="btn btn-secondary btn-sm" onClick={handleOpenAutolinkModal} disabled={autolinking}>
-                    <RefreshCw size={13} style={{ animation: autolinking ? 'spin 1s linear infinite' : 'none' }} />
-                    {autolinking ? 'Linking…' : 'Auto-link Files'}
-                  </button>
                   <div style={{ position: 'relative' }}>
                     <Search size={13} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
                     <input placeholder="Search encounters…" value={search} onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 28, width: 200, height: 32, fontSize: 13 }} />
                     {search && <button style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} onClick={() => setSearch('')}><X size={12} color="var(--text-muted)" /></button>}
                   </div>
-                  <button className={`btn btn-sm ${showFilter ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setShowFilter(s => !s)}>
-                    <Filter size={13} /> Filter {Object.keys(filters).length > 0 && `(${Object.keys(filters).length})`}
-                  </button>
                 </div>
               </div>
-              {showFilter && <FilterPanel filters={filters} setFilters={setFilters} mediaTypes={mediaTypes} onClose={() => setShowFilter(false)} />}
               {filtered.length === 0 ? (
                 <div className="empty-state">
                   <FolderOpenIcon />
@@ -1170,7 +1151,7 @@ export default function ProjectPage() {
                 <>
                   <div id="tut-proj-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE).map(enc => (
-                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onRenameEncounter={() => { setRenameEncounterTarget(enc); setRenameInput(enc.name || '') }} onDeleteEncounter={() => setDeleteEncounterTarget(enc)} onRenameMedia={(mf) => { setRenameMediaTarget(mf); setRenameInput(mf.name || '') }} onAddMedia={() => setNewMediaTarget(enc)} onChangeMediaType={handleChangeMediaType} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onDeleteMedia={(mf) => setDeleteMediaTarget(mf)} onManualLink={handleManualLink} onDropLink={handleDropLink} onClearLink={handleClearLink} linkSaving={linkSaving} />
+                      <EncounterRow key={enc.id} encounter={enc} expanded={!!expanded[enc.id]} onToggle={() => toggle(enc.id)} mediaTypes={mediaTypes} onRenameEncounter={() => { setRenameEncounterTarget(enc); setRenameInput(enc.name || '') }} onDeleteEncounter={() => setDeleteEncounterTarget(enc)} onRenameMedia={(mf) => { setRenameMediaTarget(mf); setRenameInput(mf.name || '') }} onAddMedia={() => setNewMediaTarget(enc)} onChangeMediaType={handleChangeMediaType} onAddReview={(mf) => setNewReview({ mediaFile: mf })} onOpenReview={(reviewId) => navigate(`/review/${reviewId}`)} onDeleteReview={(r) => setDeleteReviewTarget(r)} onDeleteMedia={(mf) => setDeleteMediaTarget(mf)} onManualLink={handleManualLink} onDropLink={handleDropLink} onOpenRelink={(mf) => setRelinkTarget(mf)} onClearLink={handleClearLink} linkSaving={linkSaving} />
                     ))}
                   </div>
                   <Pagination currentPage={currentPage} totalPages={Math.ceil(filtered.length / PAGE_SIZE)} total={filtered.length} pageSize={PAGE_SIZE} onPageChange={setCurrentPage} />
@@ -1346,6 +1327,41 @@ export default function ProjectPage() {
       </Modal>
 
       <Modal
+        open={!!relinkTarget}
+        onClose={() => setRelinkTarget(null)}
+        title="Relink Media"
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setRelinkTarget(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={() => { const id = relinkTarget?.id; setRelinkTarget(null); handleManualLink(id) }}>
+              Choose File…
+            </button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+            Relink <strong>{relinkTarget?.name}</strong> — drag the actual video file in below, or click
+            "Choose File…" to browse for it.
+          </p>
+          <div
+            onDragOver={handleRelinkDragOver}
+            onDragLeave={handleRelinkDragLeave}
+            onDrop={handleRelinkDrop}
+            style={{
+              border: isDraggingRelink ? '2px dashed var(--accent)' : '2px dashed var(--border)',
+              borderRadius: 8, padding: '28px 12px', textAlign: 'center',
+              background: isDraggingRelink ? 'rgba(59,130,246,0.06)' : 'var(--bg-secondary)',
+              transition: 'border-color 0.15s ease, background 0.15s ease',
+              fontSize: 13, color: 'var(--text-muted)',
+            }}
+          >
+            {isDraggingRelink ? 'Drop the video file to relink it' : 'Drag and drop a video file here'}
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
         open={!!renameEncounterTarget}
         onClose={() => setRenameEncounterTarget(null)}
         title="Rename Encounter"
@@ -1515,76 +1531,6 @@ export default function ProjectPage() {
         </div>
       </Modal>
 
-      <Modal
-        open={showAutolinkModal}
-        onClose={() => { if (!autolinking) { setShowAutolinkModal(false); setAutolinkResult(null) } }}
-        title="Auto-link Files"
-        footer={
-          <>
-            <button className="btn btn-secondary" onClick={() => { setShowAutolinkModal(false); setAutolinkResult(null) }} disabled={autolinking}>
-              {autolinkResult ? 'Close' : 'Cancel'}
-            </button>
-            {!autolinkResult && (
-              <button className="btn btn-primary" onClick={handleRunAutolink} disabled={autolinking || !autolinkFolder}>
-                <RefreshCw size={13} style={{ animation: autolinking ? 'spin 1s linear infinite' : 'none' }} />
-                {autolinking ? 'Linking…' : 'Auto-link'}
-              </button>
-            )}
-          </>
-        }
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {!autolinkResult ? (
-            <>
-              <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                <strong style={{ color: 'var(--text)', display: 'block', marginBottom: 4 }}>How auto-link works</strong>
-                Auto-link searches a folder (and all its subfolders) for files whose names match the media slots in this project. Matching is done by filename — the file name on disk must match the slot name in the project exactly (case-insensitive). Already-linked files are skipped.
-                <div style={{ marginTop: 8, fontFamily: 'monospace', fontSize: 11, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, padding: '6px 8px', lineHeight: 1.7 }}>
-                  Slot: <strong>consult_video.mp4</strong><br />
-                  Match: <strong>/your/folder/Patient001/consult_video.mp4</strong> ✓<br />
-                  No match: <strong>/your/folder/ConsultVideo.mp4</strong> ✗
-                </div>
-              </div>
-              <div className="form-field" style={{ margin: 0 }}>
-                <label>Base Folder</label>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <input
-                    value={autolinkFolder}
-                    onChange={e => setAutolinkFolder(e.target.value)}
-                    placeholder="/path/to/your/media/folder"
-                    style={{ flex: 1 }}
-                  />
-                  <button className="btn btn-secondary" style={{ flexShrink: 0 }}
-                    onClick={async () => { const p = await api.selectFolder(); if (p) setAutolinkFolder(p) }}>
-                    Browse
-                  </button>
-                </div>
-                <span className="text-muted text-sm" style={{ marginTop: 4 }}>
-                  The folder (and subfolders) to search. This is saved per project so you only set it once.
-                </span>
-              </div>
-            </>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {autolinkResult.error ? (
-                <div style={{ background: 'var(--danger-light)', border: '1px solid var(--danger)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--danger)' }}>
-                  {autolinkResult.error}
-                </div>
-              ) : (
-                <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {autolinkResult.linked > 0
-                    ? <span style={{ color: 'var(--success)', fontWeight: 600 }}>✓ {autolinkResult.linked} file{autolinkResult.linked !== 1 ? 's' : ''} linked</span>
-                    : <span style={{ color: 'var(--text-muted)' }}>No new files linked</span>}
-                  {autolinkResult.skipped > 0 && <span style={{ color: 'var(--text-muted)' }}>· {autolinkResult.skipped} already linked (skipped)</span>}
-                  {autolinkResult.ambiguous > 0 && <span style={{ color: 'var(--warning)' }}>· {autolinkResult.ambiguous} ambiguous — multiple files matched the same name, link manually using the button on each file</span>}
-                  {autolinkResult.notFound > 0 && <span style={{ color: 'var(--text-muted)' }}>· {autolinkResult.notFound} not found in folder</span>}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </Modal>
-
       {newReview && (
         <NewReviewModal
           mediaFile={newReview.mediaFile}
@@ -1680,7 +1626,7 @@ function Pagination({ currentPage, totalPages, total, pageSize, onPageChange }) 
   )
 }
 
-function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncounter, onDeleteEncounter, onRenameMedia, onAddMedia, onChangeMediaType, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onDropLink, onClearLink, linkSaving }) {
+function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncounter, onDeleteEncounter, onRenameMedia, onAddMedia, onChangeMediaType, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onDropLink, onOpenRelink, onClearLink, linkSaving }) {
   const completedMedia = encounter.media?.filter(m => {
     if (!m.reviews_required) return m.reviews?.some(r => r.status === 'submitted')
     return m.reviews_completed >= m.reviews_required
@@ -1754,6 +1700,7 @@ function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onRenameEncou
               onDeleteMedia={onDeleteMedia}
               onManualLink={onManualLink}
               onDropLink={onDropLink}
+              onOpenRelink={onOpenRelink}
               onClearLink={onClearLink}
               onChangeMediaType={onChangeMediaType}
               onRename={() => onRenameMedia(mf)}
@@ -1784,7 +1731,7 @@ function reopenedReasonLabel(reason) {
   return 'Reopened'
 }
 
-function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onDropLink, onClearLink, onChangeMediaType, onRename, linkSaving, isFirst, canDelete }) {
+function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview, onDeleteMedia, onManualLink, onDropLink, onOpenRelink, onClearLink, onChangeMediaType, onRename, linkSaving, isFirst, canDelete }) {
   const Icon = MEDIA_ICONS[mediaFile.file_type] || File
   const required = mediaFile.reviews_required
   const completed = mediaFile.reviews_completed || 0
@@ -1808,10 +1755,13 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
     if (!acceptsDrop) return
     e.preventDefault()
     setIsDragOver(false)
-    // Electron extends the standard File object with a real absolute local
-    // path — the regular web File API has no equivalent, so this only works
-    // because we're in Electron's renderer, not a plain browser.
-    const filePath = e.dataTransfer.files?.[0]?.path
+    // api.getPathForFile wraps Electron's webUtils.getPathForFile — the
+    // dropped File object's non-standard .path property was removed in
+    // recent Electron versions, so this is the only reliable way to get a
+    // dropped file's real local path. Matches the same mechanism the
+    // Add Media drop zone already uses.
+    const file = e.dataTransfer.files?.[0]
+    const filePath = file ? api.getPathForFile(file) : null
     if (filePath) onDropLink(mediaFile.id, filePath)
   }
 
@@ -1851,16 +1801,18 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
               link either proactively or because it broke is the same action
               from here, so there's no separate "Locate" label anymore. Only
               a never-linked file still says "Link", a genuinely different
-              first-time action. */}
+              first-time action. Both now open the relink modal (drop zone +
+              Choose File…) rather than jumping straight to the native
+              picker, matching Add Media's pattern. */}
           {(status === 'linked' || status === 'missing') && (
             <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
-              onClick={() => onManualLink(mediaFile.id)} disabled={busy}>
+              onClick={() => onOpenRelink(mediaFile)} disabled={busy}>
               {busy ? '…' : 'Relink'}
             </button>
           )}
           {status !== 'linked' && status !== 'missing' && status !== 'not_applicable' && (
             <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
-              onClick={() => onManualLink(mediaFile.id)} disabled={busy}>
+              onClick={() => onOpenRelink(mediaFile)} disabled={busy}>
               {busy ? '…' : 'Link'}
             </button>
           )}
