@@ -4,7 +4,7 @@ import {
   ChevronLeft, Settings, ChevronDown, ChevronRight,
   Video, FileText, File, Plus, CheckCircle2, Circle,
   Search, X, Play, RefreshCw, Share2, FolderDown, AlertTriangle, Cloud, User,
-  LayoutList, BarChart2, Activity, LineChart, HelpCircle, Pencil,
+  LayoutList, BarChart2, LineChart, HelpCircle, Pencil,
   Download, Upload, Gauge
 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
@@ -26,7 +26,7 @@ const PROJECT_TOUR_STEPS = [
     targetId: 'tut-proj-nav',
     placement: 'right',
     title: 'Your Project',
-    body: 'Welcome to your project. Encounters are listed in the main area. Use this sidebar to switch between Encounters, Progress, and Activity views. Settings live at the bottom.',
+    body: 'Welcome to your project. Encounters are listed in the main area. Use this sidebar to switch between Encounters and Progress views. Settings live at the bottom.',
   },
   {
     targetId: 'tut-proj-encounters',
@@ -60,9 +60,6 @@ const PROJECT_TOUR_STEPS = [
   },
 ]
 const MEDIA_ICONS = { video: Video, document: FileText, other: File }
-
-const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316']
-function colorFor(name) { let h = 0; for (const c of (name || '')) h = (h * 31 + c.charCodeAt(0)) & 0xffff; return COLORS[h % COLORS.length] }
 
 export default function ProjectPage() {
   const { projectId } = useParams()
@@ -1028,7 +1025,6 @@ export default function ProjectPage() {
             {[
               { id: 'encounters', icon: LayoutList, label: 'Encounters' },
               { id: 'progress',   icon: BarChart2,  label: 'Progress' },
-              { id: 'activity',   icon: Activity,   label: 'Activity' },
             ].map(({ id, icon: Icon, label }) => {
               const active = activePage === id
               return (
@@ -1162,9 +1158,6 @@ export default function ProjectPage() {
 
           {/* ── PROGRESS ── */}
           {activePage === 'progress' && <ProgressView encounters={encounters} mediaTypes={mediaTypes} projectId={projectId} />}
-
-          {/* ── ACTIVITY ── */}
-          {activePage === 'activity' && <ActivityView encounters={encounters} />}
 
           {/* ── DATA VISUALIZATION ── */}
           {!isReviewer && activePage === 'dataviz' && <DataVizView projectId={projectId} mediaTypes={mediaTypes} />}
@@ -2035,7 +2028,7 @@ function ProgressView({ encounters, mediaTypes, projectId }) {
       {allReviews.length > 0 && (
         <div style={{ marginBottom: 32 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13, fontWeight: 500 }}>
-            <span>Overall Completion</span>
+            <span>Project Completion</span>
             <span style={{ color: 'var(--text-muted)' }}>{Math.round(submitted.length / allReviews.length * 100)}%</span>
           </div>
           <div style={{ height: 8, background: 'var(--border)', borderRadius: 99 }}>
@@ -2098,76 +2091,6 @@ function ProgressView({ encounters, mediaTypes, projectId }) {
       )}
 
       {encounters.length === 0 && <div className="empty-state"><p>No encounters yet.</p></div>}
-    </div>
-  )
-}
-
-// ── Activity View ─────────────────────────────────────────────────────────────
-function ActivityView({ encounters }) {
-  const events = []
-  for (const enc of encounters) {
-    for (const m of (enc.media || [])) {
-      for (const r of (m.reviews || [])) {
-        if (r.submitted_at) events.push({ type: 'submitted', date: new Date(r.submitted_at), reviewer: r.reviewer_name, encounter: enc.name, file: m.name })
-        else events.push({ type: 'in_progress', date: new Date(r.created_at), reviewer: r.reviewer_name, encounter: enc.name, file: m.name })
-      }
-    }
-  }
-  events.sort((a, b) => b.date - a.date)
-
-  function groupByDate(events) {
-    const groups = {}
-    for (const e of events) {
-      const key = e.date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
-      if (!groups[key]) groups[key] = []
-      groups[key].push(e)
-    }
-    return Object.entries(groups)
-  }
-
-  function initials(name) {
-    return (name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
-  }
-
-
-
-  const groups = groupByDate(events)
-
-  return (
-    <div style={{ maxWidth: 620 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Activity</h1>
-      <p className="text-secondary text-sm" style={{ marginBottom: 28 }}>Review events across all encounters, newest first.</p>
-
-      {groups.length === 0 && <div className="empty-state"><p>No review activity yet.</p></div>}
-
-      {groups.map(([date, evts]) => (
-        <div key={date} style={{ marginBottom: 28 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>{date}</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {evts.map((e, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 10px', borderRadius: 7, background: 'var(--bg-secondary)' }}>
-                <div style={{ width: 28, height: 28, borderRadius: '50%', background: colorFor(e.reviewer), color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
-                  {initials(e.reviewer)}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    <span>{e.reviewer}</span>
-                    <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {e.encounter} / {e.file}</span>
-                  </div>
-                </div>
-                <div style={{ flexShrink: 0 }}>
-                  {e.type === 'submitted'
-                    ? <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--success)', background: 'var(--success-light)', padding: '2px 7px', borderRadius: 99 }}>Submitted</span>
-                    : <span style={{ fontSize: 11, color: 'var(--text-muted)', background: 'var(--border)', padding: '2px 7px', borderRadius: 99 }}>In progress</span>}
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
-                  {e.date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
     </div>
   )
 }
@@ -3183,7 +3106,9 @@ function QuestionReliabilityView({ projectId, showToast }) {
           <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>No questions use these methods yet</p>
           <p style={{ fontSize: 13 }}>
             In the form builder, set a question's agreement method to ICC, Cohen's kappa, or weighted
-            kappa to see it appear here once encounters have been rated by two or more reviewers.
+            kappa to see it appear here. A single reviewer's answers (or one imported file) already
+            show up right away — you'll see "—" for the statistic itself until there's a second rating
+            to compare against, but the answer is visible.
           </p>
         </div>
       ) : (
