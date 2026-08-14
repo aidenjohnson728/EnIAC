@@ -2324,7 +2324,12 @@ function formatRawAnswerValue(value, rowLabelById = null, arrayLabels = null) {
 // showing exactly what each individual reviewer answered — used by
 // Alignment.
 function QuestionAgreementRow({ question, rowKey, methodExtra }) {
-  const [expanded, setExpanded] = useState(false)
+  // Schema-driven, not hardcoded to specific labels/forms — a question opts
+  // into starting expanded via default_expanded on its element (e.g. UCAT's
+  // Global Measures and final question), same pattern as agreement_enabled/
+  // guide_reverse elsewhere in this schema. Most questions have no such flag
+  // and default to collapsed, unchanged from before.
+  const [expanded, setExpanded] = useState(!!question.meta?.default_expanded)
   const hasAnswers = Array.isArray(question.rawAnswers) && question.rawAnswers.length > 0
   // likert_group answers are objects keyed by row element ID — translate
   // those into their actual row labels rather than showing raw IDs.
@@ -2739,7 +2744,7 @@ function DataVizView({ projectId, mediaTypes = [] }) {
                 </div>
                 {orderedQuestions.length > 0 ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {orderedQuestions.slice(0, 6).map(question => (
+                    {orderedQuestions.map(question => (
                       <QuestionAgreementRow
                         key={`${row.mediaName}-${question.label}`}
                         rowKey={`${row.mediaName}-${question.label}`}
@@ -2803,7 +2808,7 @@ function QuestionReliabilityView({ projectId, showToast }) {
   const [rawReviews, setRawReviews] = useState([])
   const [currentForms, setCurrentForms] = useState([])
   const [importedSources, setImportedSources] = useState([])
-  const [expandedKey, setExpandedKey] = useState(null)
+  const [collapsedAnswerKeys, setCollapsedAnswerKeys] = useState(new Set())
   const [mismatchDismissed, setMismatchDismissed] = useState(false)
   const [removingId, setRemovingId] = useState(null)
 
@@ -2862,10 +2867,10 @@ function QuestionReliabilityView({ projectId, showToast }) {
     // from this project's own database or an imported results file from a
     // completely different install. `meta` carries whatever a
     // reliabilityStats function needs (min/max/options).
-    function record(key, label, method, meta, subjectKey, value, reviewerName, sourceLabel) {
+    function record(key, label, method, meta, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex) {
       if (value == null || value === '') return
       if (!questionMap.has(key)) {
-        questionMap.set(key, { key, label, method, meta, subjects: new Map(), cells: new Map() })
+        questionMap.set(key, { key, label, method, meta, sectionTitle, sortIndex, subjects: new Map(), cells: new Map() })
       }
       const entry = questionMap.get(key)
       const bucket = entry.subjects.get(subjectKey) || []
@@ -2891,51 +2896,66 @@ function QuestionReliabilityView({ projectId, showToast }) {
       const liveForm = currentFormsByName.get(formName) || currentFormsById.get(String(formIdForFallback))
       const schemaSource = liveForm?.schema || formSnapshot
       const sections = questionReliabilitySchemaSections(schemaSource)
-      const elements = sections.flatMap(section => section?.elements || [])
       const instanceKeySuffix = instanceRole ? `:${instanceRole}:${instanceOrder}` : ''
       const instanceLabelSuffix = instanceRole ? ` (${instanceRole} ${instanceOrder})` : ''
-      for (const element of elements) {
-        const method = element?.agreement_method
-        if (!RELIABILITY_METHODS.has(method)) continue
-        if (UNSUPPORTED_COMPOSITE_TYPES.has(element?.type)) continue
+      // Sort index is the question's actual position in the form — section
+      // index times a fixed stride, plus its position within that section
+      // (assumes no section has 1000+ elements, comfortably safe). This is
+      // what lets the Agreement page order questions the way the form
+      // actually presents them instead of alphabetically.
+      let sectionIdx = 0
+      for (const section of sections) {
+        const sectionTitle = section?.title || `Section ${sectionIdx + 1}`
+        const elements = section?.elements || []
+        let elementIdx = 0
+        for (const element of elements) {
+          const sortIndex = sectionIdx * 1000 + elementIdx
+          elementIdx++
+          const method = element?.agreement_method
+          if (!RELIABILITY_METHODS.has(method)) continue
+          if (UNSUPPORTED_COMPOSITE_TYPES.has(element?.type)) continue
 
-        if (ROW_UNPACK_TYPES.has(element?.type)) {
-          // One pooled question PER ROW (e.g. UCAT's "Global Measures" group
-          // has 10 rows == 10 dimension-level ICCs), not one for the whole group.
-          const groupResponses = responses?.[element.id] || {}
-          const rowMeta = { min: 1, max: Number(element.scale) || 5 }
-          for (const item of (element.items || [])) {
-            const key = `${formName}:${element.id}:${item.id}${instanceKeySuffix}`
-            const value = groupResponses?.[item.id]
-            const label = (element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)) + instanceLabelSuffix
-            record(key, label, method, rowMeta, subjectKey, value, reviewerName, sourceLabel)
+          if (ROW_UNPACK_TYPES.has(element?.type)) {
+            // One pooled question PER ROW (e.g. UCAT's "Global Measures" group
+            // has 10 rows == 10 dimension-level ICCs), not one for the whole group.
+            const groupResponses = responses?.[element.id] || {}
+            const rowMeta = { min: 1, max: Number(element.scale) || 5 }
+            let rowIdx = 0
+            for (const item of (element.items || [])) {
+              const key = `${formName}:${element.id}:${item.id}${instanceKeySuffix}`
+              const value = groupResponses?.[item.id]
+              const label = (element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)) + instanceLabelSuffix
+              record(key, label, method, rowMeta, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex + rowIdx / 1000)
+              rowIdx++
+            }
+            continue
           }
-          continue
-        }
 
-        if (ARRAY_UNPACK_TYPES.has(element?.type)) {
-          // One pooled question PER SUB-DIAL (e.g. SDMo's "Evidence of
-          // Distinction Dials", count: 2, becomes 2 separate numeric/ICC
-          // pooled questions) — array position is the only identifier
-          // available, since unlike ROW_UNPACK_TYPES there's no row id to
-          // key by. control_labels (if present) name each position; falls
-          // back to a generic "Dial N" label otherwise.
-          const arrayResponses = Array.isArray(responses?.[element.id]) ? responses[element.id] : []
-          const count = Math.min(5, Math.max(1, Number(element.count || 1)))
-          const dialMeta = { min: Number(element.min ?? 0), max: Number(element.max ?? 100) }
-          for (let idx = 0; idx < count; idx++) {
-            const key = `${formName}:${element.id}:${idx}${instanceKeySuffix}`
-            const value = arrayResponses[idx]
-            const subLabel = element.control_labels?.[idx] || `Dial ${idx + 1}`
-            const label = (element.label ? `${element.label} — ${subLabel}` : subLabel) + instanceLabelSuffix
-            record(key, label, method, dialMeta, subjectKey, value, reviewerName, sourceLabel)
+          if (ARRAY_UNPACK_TYPES.has(element?.type)) {
+            // One pooled question PER SUB-DIAL (e.g. SDMo's "Evidence of
+            // Distinction Dials", count: 2, becomes 2 separate numeric/ICC
+            // pooled questions) — array position is the only identifier
+            // available, since unlike ROW_UNPACK_TYPES there's no row id to
+            // key by. control_labels (if present) name each position; falls
+            // back to a generic "Dial N" label otherwise.
+            const arrayResponses = Array.isArray(responses?.[element.id]) ? responses[element.id] : []
+            const count = Math.min(5, Math.max(1, Number(element.count || 1)))
+            const dialMeta = { min: Number(element.min ?? 0), max: Number(element.max ?? 100) }
+            for (let idx = 0; idx < count; idx++) {
+              const key = `${formName}:${element.id}:${idx}${instanceKeySuffix}`
+              const value = arrayResponses[idx]
+              const subLabel = element.control_labels?.[idx] || `Dial ${idx + 1}`
+              const label = (element.label ? `${element.label} — ${subLabel}` : subLabel) + instanceLabelSuffix
+              record(key, label, method, dialMeta, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex + idx / 1000)
+            }
+            continue
           }
-          continue
-        }
 
-        const key = `${formName}:${element.id}${instanceKeySuffix}`
-        const value = responses?.[element.id]
-        record(key, (element.label || element.id) + instanceLabelSuffix, method, element, subjectKey, value, reviewerName, sourceLabel)
+          const key = `${formName}:${element.id}${instanceKeySuffix}`
+          const value = responses?.[element.id]
+          record(key, (element.label || element.id) + instanceLabelSuffix, method, element, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex)
+        }
+        sectionIdx++
       }
     }
 
@@ -2992,6 +3012,12 @@ function QuestionReliabilityView({ projectId, showToast }) {
       results.push({
         key: entry.key,
         label: entry.label,
+        sectionTitle: entry.sectionTitle || 'Other',
+        sortIndex: entry.sortIndex ?? 0,
+        // Same schema-driven flag used for Alignment's default-expanded rows
+        // (see QuestionAgreementRow) — used here to decide whether the
+        // section this question belongs to should start collapsed or open.
+        defaultExpanded: !!entry.meta?.default_expanded,
         // Prefer the computed result's own method label over the originally
         // dispatched one — 'numeric' dispatches to computeICC, which
         // self-labels its output 'icc'. Using entry.method here would
@@ -3011,9 +3037,51 @@ function QuestionReliabilityView({ projectId, showToast }) {
         cells: entry.cells,
       })
     }
-    results.sort((a, b) => a.label.localeCompare(b.label))
+    // Form order, not alphabetical — sortIndex already encodes each
+    // question's actual position (section index * 1000 + position within
+    // it), so this reproduces the form's own section/question ordering.
+    results.sort((a, b) => a.sortIndex - b.sortIndex)
     return { results, mismatchWarnings: warnings }
   }, [rawReviews, currentForms, importedSources])
+
+  // Groups are built from the already form-ordered `questions` array, so
+  // this just splits it into contiguous runs by section — no re-sorting
+  // needed, since sortIndex already guarantees same-section questions sit
+  // next to each other.
+  const questionGroups = useMemo(() => {
+    const groups = []
+    for (const q of questions) {
+      const last = groups[groups.length - 1]
+      if (last && last.sectionTitle === q.sectionTitle) {
+        last.items.push(q)
+      } else {
+        groups.push({ sectionTitle: q.sectionTitle, items: [q] })
+      }
+    }
+    return groups
+  }, [questions])
+
+  // Map<sectionTitle, boolean> — only holds entries the user has explicitly
+  // clicked. Absence means "use the schema-driven default": a section starts
+  // collapsed unless at least one of its questions opts in via
+  // default_expanded (same flag Alignment's QuestionAgreementRow uses), e.g.
+  // UCAT's Global Measures / final question start open, everything else
+  // (Conversation through Future Topics) starts collapsed. Either way, a
+  // section stays exactly where the user last left it, clicked or not.
+  const [sectionOverrides, setSectionOverrides] = useState(new Map())
+
+  function isSectionCollapsed(group) {
+    if (sectionOverrides.has(group.sectionTitle)) return sectionOverrides.get(group.sectionTitle)
+    return !group.items.some(q => q.defaultExpanded)
+  }
+
+  function toggleSection(group) {
+    setSectionOverrides(prev => {
+      const next = new Map(prev)
+      next.set(group.sectionTitle, !isSectionCollapsed(group))
+      return next
+    })
+  }
 
   if (loading) return <div className="empty-state"><p>Loading…</p></div>
 
@@ -3112,8 +3180,26 @@ function QuestionReliabilityView({ projectId, showToast }) {
           </p>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {questions.map(q => {
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {questionGroups.map(group => {
+            const isCollapsed = isSectionCollapsed(group)
+            return (
+              <div key={group.sectionTitle}>
+                <button
+                  onClick={() => toggleSection(group)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+                    background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0 8px',
+                    color: 'var(--text)', fontFamily: 'var(--font)',
+                  }}
+                >
+                  <ChevronDown size={14} style={{ color: 'var(--text-muted)', transform: isCollapsed ? 'rotate(-90deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0 }} />
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>{group.sectionTitle}</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 400 }}>({group.items.length})</span>
+                </button>
+                {!isCollapsed && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {group.items.map(q => {
             const value = q.stat?.value ?? null
             const noVariance = q.stat?.reason === 'no_variance'
             const interpretation = q.method === 'icc'
@@ -3122,7 +3208,7 @@ function QuestionReliabilityView({ projectId, showToast }) {
                 ? null
                 : kappaInterpretation(value)
             const displayValue = value == null ? '—' : q.method === 'percent' ? `${Math.round(value * 100)}%` : value.toFixed(2)
-            const isExpanded = expandedKey === q.key
+            const isExpanded = !collapsedAnswerKeys.has(q.key)
 
             // Built only when expanded — no point recomputing this for every
             // collapsed card on every render. Rows are subjects (encounters);
@@ -3152,7 +3238,12 @@ function QuestionReliabilityView({ projectId, showToast }) {
             return (
               <div key={q.key} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
                 <div
-                  onClick={() => setExpandedKey(isExpanded ? null : q.key)}
+                  onClick={() => setCollapsedAnswerKeys(prev => {
+                    const next = new Set(prev)
+                    if (isExpanded) next.add(q.key)
+                    else next.delete(q.key)
+                    return next
+                  })}
                   style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, cursor: 'pointer' }}
                 >
                   <div>
@@ -3213,6 +3304,11 @@ function QuestionReliabilityView({ projectId, showToast }) {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+              </div>
+            )
+                    })}
                   </div>
                 )}
               </div>

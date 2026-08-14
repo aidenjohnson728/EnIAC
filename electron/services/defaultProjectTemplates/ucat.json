@@ -11,7 +11,7 @@
         "sections": [
           {
             "id": "el_1783368967705_c97k",
-            "title": "Overall Conversation",
+            "title": "Conversation",
             "description": "",
             "elements": [
               {
@@ -392,7 +392,8 @@
                 "required": true,
                 "global_agreement_question": false,
                 "agreement_method": "icc",
-                "agreement_enabled": true
+                "agreement_enabled": true,
+                "default_expanded": true
               }
             ]
           },
@@ -413,7 +414,8 @@
                 "scale": 5,
                 "low_label": "Strongly Disagree",
                 "high_label": "Strongly Agree",
-                "global_agreement_question": true
+                "global_agreement_question": true,
+                "default_expanded": true
               }
             ]
           }

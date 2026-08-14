@@ -461,7 +461,15 @@ export function computeInterraterAgreementForMediaFile({
         }
         const entry = formResponsesByQuestion.get(questionKey)
         const responseValue = values?.[element?.id]
-        entry.values.push({ reviewerName, value: responseValue })
+        // When roles are pooled into one shared question row (poolAcrossRoles),
+        // the same person's Trainee and Consultant instances would otherwise
+        // both display under the exact same reviewerName with no way to tell
+        // them apart — e.g. two columns both labeled "Dara Osei". Append the
+        // role here (not to instanceSuffix/questionKey above, which controls
+        // pooling itself and must stay unchanged) so each individual value is
+        // still attributed correctly even though the question row is shared.
+        const displayReviewerName = (instanceRole && poolAcrossRoles) ? `${reviewerName} (${instanceRole})` : reviewerName
+        entry.values.push({ reviewerName: displayReviewerName, value: responseValue })
       }
     }
   }
