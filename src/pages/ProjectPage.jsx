@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import { SETUP_SECTIONS } from '../lib/setupSections'
-import { AGREEMENT_METHOD_LABELS, computeInterraterAgreementForMediaFile } from '../lib/interraterAgreement.mjs'
+import { AGREEMENT_METHOD_LABELS, computeInterraterAgreementForMediaFile, splitReviewDetailsByRole, valuesDisagreeWithTolerance } from '../lib/interraterAgreement.mjs'
 import {
   computeQuestionReliability,
   iccInterpretation,
@@ -2323,7 +2323,7 @@ function formatRawAnswerValue(value, rowLabelById = null, arrayLabels = null) {
 // One question's summary line, with a collapsed-by-default table underneath
 // showing exactly what each individual reviewer answered — used by
 // Alignment.
-function QuestionAgreementRow({ question, rowKey, methodExtra }) {
+function QuestionAgreementRow({ question, rowKey, methodExtra, tolerance = null }) {
   // Schema-driven, not hardcoded to specific labels/forms — a question opts
   // into starting expanded via default_expanded on its element (e.g. UCAT's
   // Global Measures and final question), same pattern as agreement_enabled/
@@ -2385,7 +2385,7 @@ function QuestionAgreementRow({ question, rowKey, methodExtra }) {
               </thead>
               <tbody>
                 {Array.from(rowLabelById.entries()).map(([itemId, itemLabel]) => {
-                  const disagreement = new Set(question.rawAnswers.map(a => JSON.stringify((a.value || {})[itemId] ?? null))).size > 1
+                  const disagreement = valuesDisagreeWithTolerance(question.rawAnswers.map(a => (a.value || {})[itemId] ?? null), tolerance, question.meta)
                   return (
                     <tr key={`${rowKey}-item-${itemId}`}>
                       <td style={{ padding: '4px 6px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)', maxWidth: 280, overflowWrap: 'break-word' }}>{itemLabel}</td>
@@ -2404,24 +2404,44 @@ function QuestionAgreementRow({ question, rowKey, methodExtra }) {
               </tbody>
             </table>
           ) : (
-            // Simple two-column layout for single-value questions — already
-            // clear as-is, no matrix needed for one value per reviewer.
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)' }}>Reviewer</th>
-                  <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)' }}>Answer</th>
-                </tr>
-              </thead>
-              <tbody>
-                {question.rawAnswers.map((a, i) => (
-                  <tr key={`${rowKey}-${a.reviewerName}-${i}`}>
-                    <td style={{ padding: '4px 6px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>{a.reviewerName}</td>
-                    <td style={{ padding: '4px 6px', color: 'var(--text)', borderBottom: '1px solid var(--border)', whiteSpace: 'pre-line' }}>{formatRawAnswerValue(a.value, rowLabelById, arrayLabels)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            // Simple two-column layout for single-value questions — no
+            // matrix needed for one value per reviewer, but still needs its
+            // own disagreement check (added below; this branch previously
+            // had none at all).
+            (() => {
+              // Single-value questions (no sub-items) previously had no
+              // disagreement highlighting at all — the Set-size check below
+              // only ever ran inside the matrix branch above. This adds it:
+              // one disagreement check across every reviewer's answer to
+              // this question, and if it fires, every answer cell in the
+              // column is highlighted (there's only one "item" here, so
+              // unlike the matrix layout there's no per-row distinction to
+              // make — either this question's answers agree within
+              // tolerance or they don't).
+              const disagreement = valuesDisagreeWithTolerance(question.rawAnswers.map(a => a.value), tolerance, question.meta)
+              return (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)' }}>Reviewer</th>
+                      <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)' }}>Answer</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {question.rawAnswers.map((a, i) => (
+                      <tr key={`${rowKey}-${a.reviewerName}-${i}`}>
+                        <td style={{ padding: '4px 6px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>{a.reviewerName}</td>
+                        <td style={{
+                          padding: '4px 6px', borderBottom: '1px solid var(--border)', whiteSpace: 'pre-line',
+                          color: disagreement ? 'var(--danger)' : 'var(--text)',
+                          fontWeight: disagreement ? 600 : 400,
+                        }}>{formatRawAnswerValue(a.value, rowLabelById, arrayLabels)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )
+            })()
           )}
         </div>
       )}
@@ -2443,6 +2463,13 @@ function DataVizView({ projectId, mediaTypes = [] }) {
   // form itself; 'agreement_desc' shows the lowest-agreement questions last,
   // highest first — useful for scanning straight to the weakest questions.
   const [questionSortMode, setQuestionSortMode] = useState('form_order')
+  // Alignment's Exact/Within-1 selector for likert-scale (1-5) questions.
+  // Defaults to 'exact' (tolerance 0) rather than null/"leave as before":
+  // null would keep likert_group/table sub-items on the old distance-weighted
+  // score, which is the exact confusion this selector exists to resolve —
+  // starting on Exact means the percentage and the red highlighting agree
+  // with each other from the first render, for both question shapes.
+  const [agreementTolerance, setAgreementTolerance] = useState(0)
 
   // Sections and Questions are two independent multi-selects that combine
   // by union (see the effectiveQuestionIds effect below) — by design, so you
@@ -2589,23 +2616,51 @@ function DataVizView({ projectId, mediaTypes = [] }) {
       grouped.get(key).reviews.push(review)
     }
 
-    const rows = Array.from(grouped.values()).map(entry => computeInterraterAgreementForMediaFile({
-      mediaName: entry.mediaName,
-      encounterName: entry.encounterName,
-      reviewDetails: entry.reviews,
-      questionIds: effectiveQuestionIds,
-      globalOnly: agreementMode === 'final',
-      // Alignment shows agreement among everyone who rated a file
-      // automatically, regardless of instance role (Trainee/Consultant) —
-      // the shared engine's default is role-separated, so this explicitly
-      // opts out of that split.
-      poolAcrossRoles: true,
-    })).filter(item => item.reviewCount >= 2)
+    const rows = Array.from(grouped.values()).flatMap(entry => {
+      // Option A: when a video has both Trainee and Consultant reviewers,
+      // show two independent cards instead of pooling them into one shared
+      // comparison. splitReviewDetailsByRole returns null for the common
+      // case (a single role, or no role data at all) and this falls
+      // through to the original single-card behavior unchanged.
+      const roleGroups = splitReviewDetailsByRole(entry.reviews) || [{ role: null, reviewDetails: entry.reviews }]
+      return roleGroups.map(group => ({
+        ...computeInterraterAgreementForMediaFile({
+          mediaName: group.role ? `${entry.mediaName} — ${group.role}` : entry.mediaName,
+          encounterName: entry.encounterName,
+          reviewDetails: group.reviewDetails,
+          questionIds: effectiveQuestionIds,
+          globalOnly: agreementMode === 'final',
+          // Within a role group, still pool everyone who rated in that role
+          // together — Alignment shows agreement among everyone who rated a
+          // file in a given role automatically, it just no longer mixes
+          // Trainee and Consultant into the same comparison.
+          poolAcrossRoles: true,
+          alignmentTolerance,
+        }),
+        // The underlying video name, without the " — Trainee"/" — Consultant"
+        // suffix — kept separately from the display mediaName so a split
+        // video can still be counted as ONE file for "Files Compared"
+        // instead of two, without string-parsing the display label back
+        // apart (which would break if a video name itself ever contained
+        // " — ").
+        baseMediaName: entry.mediaName,
+      }))
+    }).filter(item => item.reviewCount >= 2)
     rows.sort((a, b) => (b.overallAgreement ?? -1) - (a.overallAgreement ?? -1))
     setAgreementRows(rows)
-  }, [agreementMode, filteredReviews, questionOptions, selectedQuestionIds, selectedSectionIds])
+  }, [agreementMode, filteredReviews, questionOptions, selectedQuestionIds, selectedSectionIds, agreementTolerance])
 
   const scoredAgreementRows = agreementRows.filter(row => row.overallAgreement != null)
+  // Counts distinct underlying videos, not role-split cards — a video shown
+  // as two cards (Trainee + Consultant) still only counts once here. Uses
+  // baseMediaName (set alongside each row above) rather than parsing the
+  // display mediaName, since that display label is what gets the
+  // " — Trainee"/" — Consultant" suffix appended for split cards.
+  const filesComparedCount = new Set(agreementRows.map(row => row.baseMediaName ?? row.mediaName)).size
+  // Deliberately left as a simple per-card mean (a split video's Trainee and
+  // Consultant cards each count once, same as any other two cards) —
+  // explicitly requested to stay this way rather than being reweighted to
+  // count each video once.
   const averageAgreement = scoredAgreementRows.length > 0
     ? scoredAgreementRows.reduce((sum, row) => sum + row.overallAgreement, 0) / scoredAgreementRows.length
     : null
@@ -2642,6 +2697,20 @@ function DataVizView({ projectId, mediaTypes = [] }) {
                 Final Evaluation Agreement
               </button>
             </div>
+          </div>
+        </div>
+        <div className="form-field" style={{ margin: 0 }}>
+          <label>Agreement Method (likert-scale questions)</label>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button className={`btn btn-sm ${agreementTolerance === 0 ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setAgreementTolerance(0)}>
+              Exact Match
+            </button>
+            <button className={`btn btn-sm ${agreementTolerance === 1 ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setAgreementTolerance(1)}>
+              Within 1 Point
+            </button>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            Applies to 1-5 likert-scale questions only — controls both the percentage shown and the red disagreement highlighting below.
           </div>
         </div>
         {agreementMode === 'question' ? (
@@ -2686,7 +2755,7 @@ function DataVizView({ projectId, mediaTypes = [] }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
         <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Files Compared</div>
-          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{agreementRows.length}</div>
+          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{filesComparedCount}</div>
         </div>
         <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Average Agreement</div>
@@ -2749,7 +2818,8 @@ function DataVizView({ projectId, mediaTypes = [] }) {
                         key={`${row.mediaName}-${question.label}`}
                         rowKey={`${row.mediaName}-${question.label}`}
                         question={question}
-                        methodExtra={q => `w${q.weight ?? 1}`}
+                        tolerance={agreementTolerance}
+                        methodExtra={q => `w${q.weight ?? 1}${(q.type === 'likert' || q.type === 'rating' || q.type === 'likert_group' || q.type === 'table') ? ` · ${agreementTolerance === 1 ? 'within 1pt' : 'exact'}` : ''}`}
                       />
                     ))}
                   </div>
@@ -2867,15 +2937,21 @@ function QuestionReliabilityView({ projectId, showToast }) {
     // from this project's own database or an imported results file from a
     // completely different install. `meta` carries whatever a
     // reliabilityStats function needs (min/max/options).
-    function record(key, label, method, meta, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex) {
+    function record(key, label, method, meta, subjectKey, subjectDisplayLabel, value, reviewerName, sourceLabel, sectionTitle, sortIndex) {
       if (value == null || value === '') return
       if (!questionMap.has(key)) {
-        questionMap.set(key, { key, label, method, meta, sectionTitle, sortIndex, subjects: new Map(), cells: new Map() })
+        questionMap.set(key, { key, label, method, meta, sectionTitle, sortIndex, subjects: new Map(), cells: new Map(), subjectLabels: new Map() })
       }
       const entry = questionMap.get(key)
       const bucket = entry.subjects.get(subjectKey) || []
       bucket.push(value)
       entry.subjects.set(subjectKey, bucket)
+      // The raw subjectKey is now "mediaName:role:order" when a role is
+      // present (see qualifiedSubjectKey below), which isn't fit to show a
+      // person — this tracks the clean "mediaName (Role)" version alongside
+      // it purely for display, without needing to parse the composite key
+      // back apart (media names could themselves contain a colon).
+      entry.subjectLabels.set(subjectKey, subjectDisplayLabel)
       // Parallel to `subjects` above (which stays a plain value array — don't
       // touch it, computeQuestionReliability consumes it exactly as-is).
       // This tracks who gave each value, purely for the answer-table UI —
@@ -2896,8 +2972,23 @@ function QuestionReliabilityView({ projectId, showToast }) {
       const liveForm = currentFormsByName.get(formName) || currentFormsById.get(String(formIdForFallback))
       const schemaSource = liveForm?.schema || formSnapshot
       const sections = questionReliabilitySchemaSections(schemaSource)
-      const instanceKeySuffix = instanceRole ? `:${instanceRole}:${instanceOrder}` : ''
-      const instanceLabelSuffix = instanceRole ? ` (${instanceRole} ${instanceOrder})` : ''
+      // Trainee/Consultant (or any other instance_role) are different
+      // encounters that happen to share one media file — never pool them
+      // together as the same SUBJECT (that would average two different
+      // people's ratings into one data point). But they're still measuring
+      // the same QUESTION/dimension — "Pace" is "Pace" regardless of which
+      // encounter it's rating — so unlike Alignment/Agreement Between
+      // Results (per-file views that intentionally show a fully separate
+      // comparison per role), the pooled ICC/kappa here combines every role
+      // into ONE statistic per question, differentiating role only at the
+      // subject level: Trainee-video-A and Consultant-video-A become two
+      // distinct rows in the same subject x rater matrix, not two separate
+      // ICCs. (Previously this baked role+order into the QUESTION key
+      // instead, which silently produced two fully independent ICC values —
+      // "Pace (Trainee 1)" and "Pace (Consultant 1)" — rather than the one
+      // combined estimate the underlying construct calls for.)
+      const qualifiedSubjectKey = instanceRole ? `${subjectKey}:${instanceRole}:${instanceOrder}` : subjectKey
+      const subjectDisplayLabel = instanceRole ? `${subjectKey} (${instanceRole})` : subjectKey
       // Sort index is the question's actual position in the form — section
       // index times a fixed stride, plus its position within that section
       // (assumes no section has 1000+ elements, comfortably safe). This is
@@ -2922,10 +3013,10 @@ function QuestionReliabilityView({ projectId, showToast }) {
             const rowMeta = { min: 1, max: Number(element.scale) || 5 }
             let rowIdx = 0
             for (const item of (element.items || [])) {
-              const key = `${formName}:${element.id}:${item.id}${instanceKeySuffix}`
+              const key = `${formName}:${element.id}:${item.id}`
               const value = groupResponses?.[item.id]
-              const label = (element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)) + instanceLabelSuffix
-              record(key, label, method, rowMeta, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex + rowIdx / 1000)
+              const label = element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)
+              record(key, label, method, rowMeta, qualifiedSubjectKey, subjectDisplayLabel, value, reviewerName, sourceLabel, sectionTitle, sortIndex + rowIdx / 1000)
               rowIdx++
             }
             continue
@@ -2942,18 +3033,18 @@ function QuestionReliabilityView({ projectId, showToast }) {
             const count = Math.min(5, Math.max(1, Number(element.count || 1)))
             const dialMeta = { min: Number(element.min ?? 0), max: Number(element.max ?? 100) }
             for (let idx = 0; idx < count; idx++) {
-              const key = `${formName}:${element.id}:${idx}${instanceKeySuffix}`
+              const key = `${formName}:${element.id}:${idx}`
               const value = arrayResponses[idx]
               const subLabel = element.control_labels?.[idx] || `Dial ${idx + 1}`
-              const label = (element.label ? `${element.label} — ${subLabel}` : subLabel) + instanceLabelSuffix
-              record(key, label, method, dialMeta, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex + idx / 1000)
+              const label = element.label ? `${element.label} — ${subLabel}` : subLabel
+              record(key, label, method, dialMeta, qualifiedSubjectKey, subjectDisplayLabel, value, reviewerName, sourceLabel, sectionTitle, sortIndex + idx / 1000)
             }
             continue
           }
 
-          const key = `${formName}:${element.id}${instanceKeySuffix}`
+          const key = `${formName}:${element.id}`
           const value = responses?.[element.id]
-          record(key, (element.label || element.id) + instanceLabelSuffix, method, element, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex)
+          record(key, element.label || element.id, method, element, qualifiedSubjectKey, subjectDisplayLabel, value, reviewerName, sourceLabel, sectionTitle, sortIndex)
         }
         sectionIdx++
       }
@@ -3035,6 +3126,7 @@ function QuestionReliabilityView({ projectId, showToast }) {
         // individual answer behind this pooled statistic, for the
         // click-to-expand answer table. Not consumed by any stats math.
         cells: entry.cells,
+        subjectLabels: entry.subjectLabels,
       })
     }
     // Form order, not alphabetical — sortIndex already encodes each
@@ -3231,8 +3323,8 @@ function QuestionReliabilityView({ projectId, showToast }) {
               tableColumns = Array.from(columnMap.values()).sort((a, b) => a.reviewerName.localeCompare(b.reviewerName))
               tableSubjects = Array.from(q.cells.entries()).map(([subjectKey, cells]) => {
                 const byColumn = new Map(cells.map(c => [`${c.reviewerName}::${c.sourceLabel}`, c.value]))
-                return { subjectKey, byColumn }
-              }).sort((a, b) => a.subjectKey.localeCompare(b.subjectKey))
+                return { subjectKey, subjectLabel: q.subjectLabels?.get(subjectKey) || subjectKey, byColumn }
+              }).sort((a, b) => a.subjectLabel.localeCompare(b.subjectLabel))
             }
 
             return (
@@ -3294,7 +3386,7 @@ function QuestionReliabilityView({ projectId, showToast }) {
                       <tbody>
                         {tableSubjects.map(row => (
                           <tr key={row.subjectKey} style={{ borderTop: '1px solid var(--border)' }}>
-                            <td style={{ padding: '6px 8px 6px 0', fontWeight: 500, overflowWrap: 'break-word' }}>{row.subjectKey}</td>
+                            <td style={{ padding: '6px 8px 6px 0', fontWeight: 500, overflowWrap: 'break-word' }}>{row.subjectLabel}</td>
                             {tableColumns.map(col => (
                               <td key={col.key} style={{ padding: '6px 8px', overflowWrap: 'break-word' }}>
                                 {formatRawAnswerValue(row.byColumn.get(col.key))}
