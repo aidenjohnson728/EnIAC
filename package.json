@@ -55,8 +55,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "n232not",
-        "repo": "sdmo-app"
+        "owner": "aidenjohnson728",
+        "repo": "EnIAC"
       }
     ],
     "files": [
