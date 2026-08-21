@@ -173,6 +173,7 @@ function getOrdinalRange(meta = {}) {
 }
 
 function ordinalValue(value, meta = {}) {
+  if (value === null || value === undefined || value === '') return null
   if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value)
   const parsed = Number(value)
   if (Number.isFinite(parsed)) return Math.round(parsed)
@@ -193,6 +194,22 @@ function agreementForOrdinal(values, meta = {}) {
   const observedRange = Math.max(...numeric) - Math.min(...numeric)
   const range = getOrdinalRange(meta) || Math.max(1, observedRange)
   return averagePairwise(numeric, (a, b) => 1 - Math.min(1, Math.abs(a - b) / range))
+}
+
+// Alignment-only, tolerance-aware ordinal scoring. Deliberately a separate
+// function from agreementForOrdinal above, not a parameterization of it —
+// this is binary per pair (a pair either agrees within `tolerance` points or
+// it doesn't; no partial credit for closeness), where agreementForOrdinal is
+// a continuous distance-weighted score. tolerance=0 means exact match.
+// Called both for standalone likert/rating questions and (via
+// agreementForObject) for individual numeric sub-items inside a
+// likert_group/table question. Only reachable when Alignment's Exact/Within-1
+// selector passes a non-null tolerance — every other caller/page is
+// untouched by this.
+function agreementForOrdinalWithTolerance(values, meta = {}, tolerance = 0) {
+  const numeric = values.map(v => ordinalValue(v, meta)).filter(v => v !== null)
+  if (numeric.length < 2) return null
+  return averagePairwise(numeric, (a, b) => Math.abs(a - b) <= tolerance ? 1 : 0)
 }
 
 // Still used internally by agreementForObject() for scoring individual
@@ -262,7 +279,17 @@ function agreementForWeightedKappa(values, meta = {}) {
   })
 }
 
-function agreementForObject(values, meta = {}, itemMethod = 'auto') {
+// `tolerance` is Alignment-only: when non-null, every numeric-typed sub-item
+// (a likert_group row or a table column that's all-numeric) is scored with
+// agreementForOrdinalWithTolerance instead of the distance-weighted
+// agreementForOrdinal, using that same tolerance value. Non-numeric sub-items
+// (text/multiselect columns inside a table) are untouched either way — a
+// tolerance is meaningless for them. Leave tolerance null for any caller that
+// isn't Alignment's new Exact/Within-1 selector, to preserve existing
+// distance-weighted behavior everywhere else (e.g. the pooled Agreement tab
+// doesn't call this at all, but any other item_group caller keeps today's
+// scoring untouched).
+function agreementForObject(values, meta = {}, itemMethod = 'auto', tolerance = null) {
   const normalized = values
     .map(v => (v && typeof v === 'object' && !Array.isArray(v) ? v : null))
     .filter(Boolean)
@@ -281,9 +308,11 @@ function agreementForObject(values, meta = {}, itemMethod = 'auto') {
     const numericItemValues = itemValues.map(v => ordinalValue(v, meta)).filter(v => v !== null)
 
     if (numericItemValues.length === itemValues.length) {
-      itemScores.push(itemMethod === 'weighted_kappa'
-        ? agreementForWeightedKappa(numericItemValues, meta)
-        : agreementForOrdinal(numericItemValues, meta))
+      itemScores.push(tolerance != null
+        ? agreementForOrdinalWithTolerance(numericItemValues, meta, tolerance)
+        : (itemMethod === 'weighted_kappa'
+          ? agreementForWeightedKappa(numericItemValues, meta)
+          : agreementForOrdinal(numericItemValues, meta)))
     } else if (itemValues.some(Array.isArray)) {
       itemScores.push(agreementForMultiselect(itemValues))
     } else {
@@ -321,7 +350,16 @@ function getAgreementMethod(type, questionMeta = {}) {
   return method === 'auto' ? defaultAgreementMethodForType(type) : method
 }
 
-export function computeAgreementForQuestion(type, values, weights = DEFAULT_AGREEMENT_WEIGHTS, questionMeta = {}) {
+// `alignmentTolerance` is Alignment-only (null for every other caller,
+// including the pooled Agreement tab's reliabilityStats.mjs, which doesn't
+// call this function at all). When non-null, it overrides scoring for the
+// two shapes Alignment's Exact/Within-1 selector applies to: standalone
+// likert/rating scalar questions, and the numeric sub-items of a
+// likert_group/table question (via agreementForObject). Every other question
+// type (multiselect, multiple_choice, checkbox, text, timestamp, etc.)
+// ignores this param entirely and scores exactly as before — a tolerance
+// only means something for an ordinal 1-5 scale.
+export function computeAgreementForQuestion(type, values, weights = DEFAULT_AGREEMENT_WEIGHTS, questionMeta = {}, alignmentTolerance = null) {
   if (questionMeta.agreement_enabled === false) return null
   if (questionMeta.agreement_enabled == null && !defaultAgreementEnabledForType(type)) return null
 
@@ -329,6 +367,7 @@ export function computeAgreementForQuestion(type, values, weights = DEFAULT_AGRE
   if (cleaned.length < 2) return null
 
   const weight = getAgreementWeight(type, weights, questionMeta)
+  const isLikertScalar = alignmentTolerance != null && (type === 'likert' || type === 'rating')
   // 'icc' and 'weighted_fleiss_kappa' are pooled-engine-only concepts — both
   // require comparing variance *between* subjects, which is mathematically
   // undefined for a single file. This function has never actually computed
@@ -341,7 +380,12 @@ export function computeAgreementForQuestion(type, values, weights = DEFAULT_AGRE
     ? defaultAgreementMethodForType(type)
     : configuredMethod
 
-  if (method === 'percent') return { score: agreementForCategorical(values), weight, method }
+  if (method === 'percent') {
+    const score = isLikertScalar
+      ? agreementForOrdinalWithTolerance(values, questionMeta, alignmentTolerance)
+      : agreementForCategorical(values)
+    return { score, weight, method }
+  }
   if (method === 'cohen_kappa') return { score: agreementForCohenKappa(values), weight, method }
   if (method === 'weighted_kappa') {
     const score = type === 'likert_group' || type === 'table'
@@ -360,7 +404,7 @@ export function computeAgreementForQuestion(type, values, weights = DEFAULT_AGRE
   // scoring — so old configuration data can't reintroduce this by accident.
   if (method === 'timestamp') return { score: agreementForTimestamp(values, questionMeta), weight, method }
   if (method === 'exact_text') return { score: agreementForText(values), weight, method }
-  if (method === 'item_group') return { score: agreementForObject(values, questionMeta), weight, method }
+  if (method === 'item_group') return { score: agreementForObject(values, questionMeta, undefined, alignmentTolerance), weight, method }
 
   switch (type) {
     case 'timestamp_select':
@@ -369,15 +413,94 @@ export function computeAgreementForQuestion(type, values, weights = DEFAULT_AGRE
     case 'paragraph':
       return { score: agreementForText(values), weight, method }
     case 'likert_group':
-      return { score: agreementForObject(values, questionMeta), weight, method }
+      return { score: agreementForObject(values, questionMeta, undefined, alignmentTolerance), weight, method }
     case 'table':
-      return { score: agreementForObject(values, questionMeta), weight, method }
-    // multiselect, checkbox, multiple_choice, rating, likert, slider, dial,
-    // vertical_slider, and any unrecognized type all fall through to plain
-    // categorical (exact-match/percent) agreement.
+      return { score: agreementForObject(values, questionMeta, undefined, alignmentTolerance), weight, method }
+    // multiselect, checkbox, multiple_choice, slider, dial, vertical_slider,
+    // and any unrecognized type all fall through to plain categorical
+    // (exact-match/percent) agreement, tolerance or not — a tolerance only
+    // applies to likert/rating, handled by isLikertScalar above.
     default:
-      return { score: agreementForCategorical(values), weight, method }
+      return { score: isLikertScalar ? agreementForOrdinalWithTolerance(values, questionMeta, alignmentTolerance) : agreementForCategorical(values), weight, method }
   }
+}
+
+// Shared by QuestionAgreementRow's two layouts (matrix sub-items, and the
+// simple single-value table) so the red highlighting always matches whatever
+// Alignment's Exact/Within-1 selector is currently set to, instead of the
+// old hardcoded exact-match-only Set-size check. `tolerance` null means "no
+// selector active" and falls back to the old strict exact-match behavior.
+// Deliberately reuses ordinalValue() (same function agreementForOrdinal/
+// agreementForOrdinalWithTolerance score with) rather than a separate
+// parsing implementation — that's what keeps the highlighting and the
+// percentage from silently drifting apart again the way they did before
+// this feature existed. `meta` is the question's schema element, needed for
+// options-based (non-numeric-string) likert scales.
+// A reviewer who left the question blank is EXCLUDED from the comparison —
+// same as agreementForCategorical/agreementForOrdinalWithTolerance already
+// exclude them from the percentage — rather than treated as a rating of 0
+// (a real bug this fixes: `Number(null) === 0` in JS was silently turning a
+// missing answer into a fake "0" rating) or automatically flagged as a
+// mismatch just for being absent. With fewer than 2 actual answers there's
+// nothing to compare, so no highlight fires.
+export function valuesDisagreeWithTolerance(rawValues, tolerance = null, meta = {}) {
+  const answered = rawValues.filter(v => v !== null && v !== undefined && v !== '')
+  if (answered.length < 2) return false
+
+  const numeric = answered.map(v => ordinalValue(v, meta))
+  if (numeric.every(v => v !== null)) {
+    const effectiveTolerance = tolerance ?? 0
+    return (Math.max(...numeric) - Math.min(...numeric)) > effectiveTolerance
+  }
+  // At least one actual answer isn't ordinal at all (a text/multiselect
+  // column inside a table, say) — a tolerance is meaningless for it, so fall
+  // back to strict exact-match on just the real answers, the same set of
+  // values agreementForCategorical itself would score from.
+  return new Set(answered.map(v => JSON.stringify(v))).size > 1
+}
+
+// Alignment-only. Splits one media file's reviewDetails into separate
+// per-instance-role groups (e.g. Trainee vs Consultant) so each role can be
+// scored and displayed as its own independent card instead of pooled
+// together — deliberately implemented as a pre-filter of reviewDetails
+// rather than a new mode inside computeInterraterAgreementForMediaFile
+// itself, so the core pooling engine (and every other caller of it) is
+// completely untouched by this.
+// instance_role lives on each individual form_response, not on the review
+// as a whole — one review can in principle contain form_responses for more
+// than one role — so this filters form_responses, not just relabels
+// reviewers, and drops any review left with zero matching form_responses
+// from that role's group entirely (so its reviewCount reflects only people
+// who actually rated in that role).
+// Returns null (meaning "don't split, use the single pooled card as
+// before") when: fewer than 2 distinct roles are present, or the media's
+// form_responses mix role-tagged and role-less entries — that mix is
+// ambiguous (which card would a role-less question belong to?) and
+// splitting anyway would silently drop those questions from every card, so
+// the safer choice is to fall back rather than guess.
+export function splitReviewDetailsByRole(reviewDetails = []) {
+  let sawRole = false
+  let sawNoRole = false
+  const roles = new Set()
+  for (const review of reviewDetails) {
+    for (const fr of review?.form_responses || []) {
+      if (fr?.instance_role) {
+        sawRole = true
+        roles.add(fr.instance_role)
+      } else {
+        sawNoRole = true
+      }
+    }
+  }
+  if (roles.size < 2) return null
+  if (sawRole && sawNoRole) return null
+
+  return Array.from(roles).sort().map(role => ({
+    role,
+    reviewDetails: reviewDetails
+      .map(review => ({ ...review, form_responses: (review?.form_responses || []).filter(fr => fr?.instance_role === role) }))
+      .filter(review => review.form_responses.length > 0),
+  }))
 }
 
 function getElementLabel(element, fallback) {
@@ -411,6 +534,11 @@ export function computeInterraterAgreementForMediaFile({
   // Results (an explicit, user-chosen 2-source comparison) keeps its
   // existing role-separated behavior unless a caller opts in.
   poolAcrossRoles = false,
+  // Alignment-only. null preserves every existing default (distance-weighted
+  // item_group, exact-match standalone likert/rating). 0 = exact match, 1 =
+  // within-1-point — see computeAgreementForQuestion for exactly which
+  // question types this affects.
+  alignmentTolerance = null,
 }) {
   const questionSummaries = []
   const formResponsesByQuestion = new Map()
@@ -486,7 +614,7 @@ export function computeInterraterAgreementForMediaFile({
       ...question.meta,
       formId: question.formId,
       questionId: question.questionId,
-    })
+    }, alignmentTolerance)
     if (result?.score != null) {
       questionSummaries.push({
         label: question.label,
