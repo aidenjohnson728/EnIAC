@@ -355,12 +355,14 @@
                   {
                     "id": "el_1784148124488_9fsz",
                     "label": "1d. Participants interacted during the conversation without interrupting each other.",
-                    "guide_source_id": "el_1783371261565_8svy"
+                    "guide_source_id": "el_1783371261565_8svy",
+                    "guide_show_all": true
                   },
                   {
                     "id": "el_1784148155864_a6by",
                     "label": "2. Participants were able to pause during the conversation. ",
-                    "guide_source_id": "el_1783371833481_olsl"
+                    "guide_source_id": "el_1783371833481_olsl",
+                    "guide_show_all": true
                   },
                   {
                     "id": "el_1784148170762_zm8n",

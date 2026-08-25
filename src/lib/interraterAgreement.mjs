@@ -396,23 +396,21 @@ function getSchemaSections(formSnapshot) {
   return []
 }
 
-export function computeInterraterAgreementForMediaFile({
-  mediaName,
-  encounterName,
+// Walks every reviewer's form responses for one media file and groups the
+// individual answers by question, applying the same instance-role pooling,
+// question-id filtering and global-only filtering rules for every consumer.
+//
+// Extracted from computeInterraterAgreementForMediaFile so the near-alignment
+// engine below reads exactly the same answers from exactly the same keys —
+// the two must never diverge on WHICH answers belong to a question, only on
+// how those answers are scored. Behavior is unchanged from when this lived
+// inline.
+function collectQuestionResponses({
   reviewDetails = [],
-  weights = DEFAULT_AGREEMENT_WEIGHTS,
   questionIds = null,
   globalOnly = false,
-  // When true, every reviewer of this file is pooled into one comparison per
-  // question regardless of instance role (Trainee/Consultant) — this is what
-  // Alignment needs, since it's meant to show agreement among everyone who
-  // rated a file automatically, not split by role the way the pooled
-  // Agreement page intentionally is. Defaults to false so Agreement Between
-  // Results (an explicit, user-chosen 2-source comparison) keeps its
-  // existing role-separated behavior unless a caller opts in.
   poolAcrossRoles = false,
 }) {
-  const questionSummaries = []
   const formResponsesByQuestion = new Map()
   const selectedQuestionIds = Array.isArray(questionIds) && questionIds.length > 0
     ? new Set(questionIds.map(id => String(id)))
@@ -474,6 +472,27 @@ export function computeInterraterAgreementForMediaFile({
     }
   }
 
+  return formResponsesByQuestion
+}
+
+export function computeInterraterAgreementForMediaFile({
+  mediaName,
+  encounterName,
+  reviewDetails = [],
+  weights = DEFAULT_AGREEMENT_WEIGHTS,
+  questionIds = null,
+  globalOnly = false,
+  // When true, every reviewer of this file is pooled into one comparison per
+  // question regardless of instance role (Trainee/Consultant) — this is what
+  // Alignment needs, since it's meant to show agreement among everyone who
+  // rated a file automatically, not split by role the way the pooled
+  // Agreement page intentionally is. Defaults to false so any other caller
+  // keeps role-separated behavior unless it opts in.
+  poolAcrossRoles = false,
+}) {
+  const questionSummaries = []
+  const formResponsesByQuestion = collectQuestionResponses({ reviewDetails, questionIds, globalOnly, poolAcrossRoles })
+
   let excludedQuestionCount = 0
   for (const question of formResponsesByQuestion.values()) {
     const defaultExcluded = question.meta?.agreement_enabled == null && !defaultAgreementEnabledForType(question.type)
@@ -526,5 +545,227 @@ export function computeInterraterAgreementForMediaFile({
     // for every consumer. Alignment and Agreement Between Results each sort
     // this at render time based on whichever order the person has selected.
     questions: scoredQuestions,
+  }
+}
+// ── Near alignment ────────────────────────────────────────────────────────────
+// A second, deliberately coarser read of the same per-file answers the
+// engine above scores as a percentage. Instead of "how close were these
+// raters", it answers one binary question per scored item: did everyone land
+// within a tolerance of each other?
+//
+// The motivating case: four raters answering 4 / 4 / 4 / 5 on a 5-point
+// likert item are, for this study's purposes, in agreement — one rater being
+// a single point off is noise, not a real disagreement. Percent agreement
+// reports that as 0% exact match, which reads far worse than it is.
+//
+// This is a SEPARATE export rather than a mode of computeInterraterAgreement-
+// ForMediaFile on purpose: that function's return shape (per-question
+// `agreement` fraction + weighted `overallAgreement`) is consumed elsewhere
+// and must not change. Both read their answers from collectQuestionResponses
+// above, so the two views can never disagree about which answers belong to
+// which question.
+export const NEAR_ALIGNMENT_DEFAULT_TOLERANCE = 1
+
+// The verdict is computed on the SPREAD of the ratings — max minus min — not
+// on pairwise adjacency. So 4/4/4/5 (spread 1) is an agreement at tolerance
+// 1, while 3/4/4/5 (spread 2) is a disagreement even though every rater is
+// adjacent to some other rater. That's intentional: a two-point gap between
+// the highest and lowest rater is a real split regardless of how the middle
+// fills in.
+function nearVerdictForOrderedValues(numbers, tolerance) {
+  const spread = Math.max(...numbers) - Math.min(...numbers)
+  return { verdict: spread <= tolerance ? 'agreement' : 'disagreement', spread }
+}
+
+// Only genuinely ordered answer types get tolerance treatment. "One point
+// off" is meaningless for an unordered category — two adjacent entries in a
+// multiple_choice options list have no more in common than two distant ones —
+// so those fall back to exact match, which is the same thing a tolerance of 0
+// would produce. Note ordinalValue() maps an option label to its index, which
+// is correct for a likert scale rendered as labels but would be nonsense for
+// multiple_choice, hence the type gate rather than a purely value-driven test.
+const NEAR_ORDERED_TYPES = new Set([
+  'likert', 'likert_group', 'rating', 'scale',
+  'slider', 'vertical_slider', 'dial', 'number', 'numeric',
+])
+
+function isNearOrderedType(type) {
+  return NEAR_ORDERED_TYPES.has(String(type || ''))
+}
+
+// One scored unit of near alignment. For a plain question that's the question
+// itself; for a likert_group/table it's one row; for a multi-dial control it's
+// one dial position — the same "one thing per sub-item" principle the pooled
+// engine applies via ROW_UNPACK_TYPES / ARRAY_UNPACK_TYPES.
+function nearAlignmentItemFromValues({ itemId, label, ordered, meta, entries, tolerance }) {
+  const usable = entries.filter(entry => toComparableValue(entry.value) !== null)
+  const base = { itemId, label, ordered, tolerance, values: entries }
+
+  // A single rater trivially "agrees" with nobody. Reporting that as an
+  // agreement would inflate the file's counts with items only one person
+  // actually answered, so it stays unscored and is surfaced separately.
+  if (usable.length < 2) {
+    return { ...base, verdict: null, spread: null, reason: 'not_enough_raters', ratedCount: usable.length }
+  }
+
+  if (ordered) {
+    const numbers = usable.map(entry => ordinalValue(entry.value, meta)).filter(v => v !== null)
+    if (numbers.length === usable.length) {
+      const { verdict, spread } = nearVerdictForOrderedValues(numbers, tolerance)
+      return { ...base, verdict, spread, reason: null, ratedCount: usable.length }
+    }
+    // An ordered question whose answers aren't all numeric (a stray text
+    // answer, an option label with no match in the schema's options list)
+    // can't be measured by distance — fall through to exact match rather
+    // than silently dropping the non-numeric raters from the comparison.
+  }
+
+  const keys = usable.map(entry => stableComparableKey(entry.value))
+  const identical = keys.every(key => key === keys[0])
+  return {
+    ...base,
+    ordered: false,
+    verdict: identical ? 'agreement' : 'disagreement',
+    spread: null,
+    reason: null,
+    ratedCount: usable.length,
+  }
+}
+
+// Splits one question's per-reviewer answers into its scored items. Object
+// answers (likert_group/table) unpack by row id, array answers (multi-dial)
+// by position, everything else stays whole.
+function nearAlignmentItemsForQuestion(question, tolerance) {
+  const entries = question.values
+  const meta = question.meta || {}
+  const anyObject = entries.some(entry => entry.value && typeof entry.value === 'object' && !Array.isArray(entry.value) && entry.value.__na !== true)
+  const anyArray = entries.some(entry => Array.isArray(entry.value))
+
+  if (anyObject) {
+    // Prefer the schema's own item order/labels; fall back to whatever keys
+    // the answers actually contain so an older snapshot without an items
+    // array still produces rows.
+    const schemaItems = Array.isArray(meta.items) ? meta.items : null
+    const keysFromAnswers = [...new Set(entries.flatMap(entry => (entry.value && typeof entry.value === 'object' && !Array.isArray(entry.value)) ? Object.keys(entry.value) : []))]
+    const itemIds = schemaItems ? schemaItems.map(item => String(item.id)) : keysFromAnswers
+    const labelById = new Map((schemaItems || []).map(item => [String(item.id), item.label || item.id]))
+    return itemIds.map(itemId => nearAlignmentItemFromValues({
+      itemId,
+      label: labelById.get(itemId) || itemId,
+      ordered: isNearOrderedType(question.type),
+      meta,
+      entries: entries.map(entry => ({
+        reviewerName: entry.reviewerName,
+        value: (entry.value && typeof entry.value === 'object' && !Array.isArray(entry.value)) ? entry.value[itemId] : null,
+      })),
+      tolerance,
+    }))
+  }
+
+  if (anyArray) {
+    const length = Math.max(...entries.map(entry => (Array.isArray(entry.value) ? entry.value.length : 0)))
+    const controlLabels = Array.isArray(meta.control_labels) ? meta.control_labels : null
+    return Array.from({ length }, (unused, index) => nearAlignmentItemFromValues({
+      itemId: String(index),
+      label: controlLabels?.[index] || `${question.label} ${index + 1}`,
+      ordered: isNearOrderedType(question.type),
+      meta,
+      entries: entries.map(entry => ({
+        reviewerName: entry.reviewerName,
+        value: Array.isArray(entry.value) ? entry.value[index] : null,
+      })),
+      tolerance,
+    }))
+  }
+
+  return [nearAlignmentItemFromValues({
+    itemId: String(question.questionId ?? question.label),
+    label: question.label,
+    ordered: isNearOrderedType(question.type),
+    meta,
+    entries,
+    tolerance,
+  })]
+}
+
+export function computeNearAlignmentForMediaFile({
+  mediaName,
+  encounterName,
+  reviewDetails = [],
+  questionIds = null,
+  globalOnly = false,
+  poolAcrossRoles = true,
+  tolerance = NEAR_ALIGNMENT_DEFAULT_TOLERANCE,
+}) {
+  const effectiveTolerance = Number.isFinite(Number(tolerance)) ? Math.max(0, Number(tolerance)) : NEAR_ALIGNMENT_DEFAULT_TOLERANCE
+  const formResponsesByQuestion = collectQuestionResponses({ reviewDetails, questionIds, globalOnly, poolAcrossRoles })
+
+  const questions = []
+  let excludedQuestionCount = 0
+  let agreementCount = 0
+  let disagreementCount = 0
+  let unscoredItemCount = 0
+
+  for (const question of formResponsesByQuestion.values()) {
+    // Same opt-out rules as the percent engine — a question excluded from
+    // agreement is excluded here too, including SDMo's dials (agreement_-
+    // enabled: false) and free-text types.
+    const defaultExcluded = question.meta?.agreement_enabled == null && !defaultAgreementEnabledForType(question.type)
+    if (question.meta?.agreement_enabled === false || defaultExcluded) {
+      excludedQuestionCount++
+      continue
+    }
+
+    const items = nearAlignmentItemsForQuestion(question, effectiveTolerance)
+    const scored = items.filter(item => item.verdict != null)
+    if (scored.length === 0 && items.every(item => item.reason === 'not_enough_raters')) {
+      unscoredItemCount += items.length
+      continue
+    }
+
+    const questionAgreementCount = scored.filter(item => item.verdict === 'agreement').length
+    const questionDisagreementCount = scored.length - questionAgreementCount
+    agreementCount += questionAgreementCount
+    disagreementCount += questionDisagreementCount
+    unscoredItemCount += items.length - scored.length
+
+    questions.push({
+      label: question.label,
+      type: question.type,
+      meta: question.meta,
+      questionId: question.questionId,
+      // A multi-item question is only an agreement when every one of its
+      // items is — one disagreeing row is a disagreement on that question,
+      // the same way it would be if the row were its own question.
+      verdict: scored.length === 0 ? null : (questionDisagreementCount === 0 ? 'agreement' : 'disagreement'),
+      itemCount: scored.length,
+      agreementCount: questionAgreementCount,
+      disagreementCount: questionDisagreementCount,
+      // Single-item questions still carry an items array of length 1 so the
+      // UI has one shape to render, not two.
+      items,
+      rawAnswers: question.values,
+    })
+  }
+
+  const scoredItemCount = agreementCount + disagreementCount
+  return {
+    mediaName,
+    encounterName,
+    reviewCount: reviewDetails.length,
+    tolerance: effectiveTolerance,
+    questionCount: questions.length,
+    excludedQuestionCount,
+    itemCount: scoredItemCount,
+    agreementCount,
+    disagreementCount,
+    unscoredItemCount,
+    // The share of scored items that came back "agreement" — a summary of the
+    // binary verdicts, NOT a percent-agreement score. Two files can have the
+    // same value here and very different percent agreement.
+    nearAgreementRate: scoredItemCount > 0 ? agreementCount / scoredItemCount : null,
+    // Natural form-question order, same as the percent engine — sorting is a
+    // display decision left to the caller.
+    questions,
   }
 }

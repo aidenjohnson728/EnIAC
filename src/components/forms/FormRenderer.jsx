@@ -1107,45 +1107,77 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
     // Guide highlight: if an item is configured with `guide_source_id` (the id
     // of another likert_group element on this form — e.g. UCAT's "Global
     // Measures" rows pointing at their matching "Category" statement group),
-    // show a faint highlight on the point(s) that the source group's currently
-    // answered sub-items average to. When the average falls exactly halfway
-    // between two whole numbers (e.g. 3.5), both are highlighted rather than
-    // picking one arbitrarily. Purely advisory — never auto-fills or blocks
-    // picking a different value.
+    // show a faint highlight on the point(s) the source group's currently
+    // answered sub-items point to. Purely advisory — never auto-fills or
+    // blocks picking a different value.
     //
-    // Three outcomes depending on the linked source group's own answers:
-    // - every answered sub-item is numeric -> highlight the average, as before
+    // Two modes, chosen per item by the `guide_show_all` flag:
+    // - default (no flag): highlight the AVERAGE of the source sub-items. When
+    //   that average falls exactly halfway between two whole numbers (e.g.
+    //   3.5), both are highlighted rather than picking one arbitrarily.
+    // - `guide_show_all: true`: highlight EVERY distinct value the person
+    //   actually gave on the source group, with no averaging — so sub-items
+    //   answered 1 and 3 light up 1 and 3, not 2. Used where the source
+    //   sub-items are treated as separate observations to carry forward rather
+    //   than components of one blended score (UCAT's Global Measures 1d and 2).
+    //   Same per-item, schema-level opt-in pattern as `guide_reverse` below.
+    //
+    // Three outcomes depending on the linked source group's own answers, in
+    // both modes:
+    // - every answered sub-item is numeric -> highlight, as described above
     // - every answered sub-item is marked N/A -> highlight the N/A option instead
-    // - a mix of numeric and N/A answers -> no highlight at all; averaging a
-    //   subset of the numbers while ignoring the N/A ones would misrepresent
-    //   what the source group actually says, so showing nothing is safer than
-    //   guessing.
+    // - a mix of numeric and N/A answers -> no highlight at all; averaging (or
+    //   carrying forward) a subset of the numbers while ignoring the N/A ones
+    //   would misrepresent what the source group actually says, so showing
+    //   nothing is safer than guessing.
     function guideValuesForItem(item) {
-      if (!item?.guide_source_id) return { numeric: [], isNA: false }
+      const empty = { numeric: [], isNA: false, tooltip: null }
+      if (!item?.guide_source_id) return empty
       const sourceVal = allValues?.[item.guide_source_id]
-      if (!sourceVal || typeof sourceVal !== 'object') return { numeric: [], isNA: false }
+      if (!sourceVal || typeof sourceVal !== 'object') return empty
       const answered = Object.values(sourceVal).filter(v => v === 'N/A' || (typeof v === 'number' && Number.isFinite(v)))
-      if (answered.length === 0) return { numeric: [], isNA: false }
+      if (answered.length === 0) return empty
       const naCount = answered.filter(v => v === 'N/A').length
-      if (naCount === answered.length) return { numeric: [], isNA: true }
-      if (naCount > 0) return { numeric: [], isNA: false }
+      if (naCount === answered.length) return { numeric: [], isNA: true, tooltip: 'Suggested — every linked sub-item was marked N/A' }
+      if (naCount > 0) return empty
 
       const numericAnswered = answered
-      let avg = numericAnswered.reduce((a, b) => a + b, 0) / numericAnswered.length
       // Reverse-scored items: this item's wording is the inverse of its
       // source group's (e.g. UCAT Global Measure 4, "No external
       // interruptions disrupted the conversation", vs. its source category's
-      // more direct framing) — a high source average should suggest a LOW
-      // point here, not the same point. (scale + 1) - avg on a 1..scale range
+      // more direct framing) — a high source score should suggest a LOW
+      // point here, not the same point. (scale + 1) - v on a 1..scale range
       // maps 1<->scale, 2<->scale-1, etc., same as the standard reverse-score
-      // formula for a Likert item (6 - avg on a 1-5 scale).
-      if (item.guide_reverse) avg = (scale + 1) - avg
-      const clamped = Math.min(scale, Math.max(1, avg))
-      const lower = Math.floor(clamped)
-      const upper = Math.ceil(clamped)
-      if (lower === upper) return { numeric: [lower], isNA: false }
-      const isExactlyHalfway = Math.abs((clamped - lower) - 0.5) < 1e-9
-      return { numeric: isExactlyHalfway ? [lower, upper] : [Math.round(clamped)], isNA: false }
+      // formula for a Likert item (6 - v on a 1-5 scale).
+      const reverse = v => (item.guide_reverse ? (scale + 1) - v : v)
+      const clampToScale = v => Math.min(scale, Math.max(1, v))
+
+      if (item.guide_show_all) {
+        // Each answer carried forward on its own. Reversed individually rather
+        // than reversing an average, so the highlighted points stay the actual
+        // mirrored answers. Deduplicated and sorted purely for a stable,
+        // readable tooltip — two sub-items answered the same way highlight one
+        // point, not the same point twice.
+        const distinct = [...new Set(numericAnswered.map(v => clampToScale(reverse(v))))].sort((a, b) => a - b)
+        if (distinct.length === 0) return empty
+        return {
+          numeric: distinct,
+          isNA: false,
+          tooltip: `Suggested from linked sub-item scores (${distinct.join(', ')})`,
+        }
+      }
+
+      const avg = clampToScale(reverse(numericAnswered.reduce((a, b) => a + b, 0) / numericAnswered.length))
+      const lower = Math.floor(avg)
+      const upper = Math.ceil(avg)
+      if (lower === upper) return { numeric: [lower], isNA: false, tooltip: `Suggested from linked sub-item scores (avg ≈ ${lower})` }
+      const isExactlyHalfway = Math.abs((avg - lower) - 0.5) < 1e-9
+      const numeric = isExactlyHalfway ? [lower, upper] : [Math.round(avg)]
+      return {
+        numeric,
+        isNA: false,
+        tooltip: `Suggested from linked sub-item scores (avg ≈ ${isExactlyHalfway ? `${lower}.5` : numeric[0]})`,
+      }
     }
 
     return (
@@ -1164,7 +1196,7 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
               <div style={{ flex: 1, fontSize: 13, paddingRight: 10, lineHeight: 1.4 }}>{item.label || `Statement ${i + 1}`}</div>
               {el.has_na && (
                 <div
-                  title={guideResult.isNA ? 'Suggested — every linked sub-item was marked N/A' : undefined}
+                  title={guideResult.isNA ? guideResult.tooltip : undefined}
                   style={{
                     width: COL_W, display: 'flex', justifyContent: 'center', flexShrink: 0, borderRadius: 6,
                     background: guideResult.isNA ? 'rgba(59,130,246,0.14)' : 'transparent',
@@ -1176,11 +1208,10 @@ function FormElement({ el, questionNumber, value, onChange, readOnly, timestamps
               )}
               {points.map(p => {
                 const isGuided = guideResult.numeric.includes(p)
-                const guideLabel = guideResult.numeric.length > 1 ? `${guideResult.numeric[0]}.5` : guideResult.numeric[0]
                 return (
                   <div
                     key={p}
-                    title={isGuided ? `Suggested from linked sub-item scores (avg ≈ ${guideLabel})` : undefined}
+                    title={isGuided ? guideResult.tooltip : undefined}
                     style={{
                       width: COL_W, display: 'flex', justifyContent: 'center', flexShrink: 0, borderRadius: 6,
                       background: isGuided ? 'rgba(59,130,246,0.14)' : 'transparent',

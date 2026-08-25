@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import { api, formatDate } from '../lib/api'
 import { SETUP_SECTIONS } from '../lib/setupSections'
-import { AGREEMENT_METHOD_LABELS, computeInterraterAgreementForMediaFile } from '../lib/interraterAgreement.mjs'
+import { AGREEMENT_METHOD_LABELS, computeInterraterAgreementForMediaFile, computeNearAlignmentForMediaFile, NEAR_ALIGNMENT_DEFAULT_TOLERANCE } from '../lib/interraterAgreement.mjs'
 import {
   computeQuestionReliability,
   iccInterpretation,
@@ -2127,6 +2127,10 @@ function collectAgreementQuestionOptions(reviews) {
               id: String(el.id),
               label: `${formName} · ${el.label || 'Untitled question'}`,
               sectionId: sectionKey,
+              // Kept on the option even though Alignment no longer has a
+              // final-evaluation-only mode: the schema flag is still set on
+              // UCAT's summary question, and this is the one place that reads
+              // it into a usable shape if a caller wants it again.
               isFinalEvaluation: el.global_agreement_question === true,
             })
           }
@@ -2429,13 +2433,121 @@ function QuestionAgreementRow({ question, rowKey, methodExtra }) {
   )
 }
 
+// Agreement / Disagreement pill for Near Alignment. Uses the existing
+// .badge classes rather than its own colors so it re-themes with everything
+// else — never hardcode a hex here.
+function NearVerdictBadge({ verdict, size = 'normal' }) {
+  if (verdict == null) return <span className="badge badge-muted" style={{ fontSize: size === 'small' ? 10 : 11 }}>Not rated</span>
+  const isAgreement = verdict === 'agreement'
+  return (
+    <span
+      className={`badge ${isAgreement ? 'badge-success' : ''}`}
+      style={{
+        fontSize: size === 'small' ? 10 : 11,
+        ...(isAgreement ? {} : { background: 'var(--danger-light)', color: 'var(--danger)' }),
+      }}
+    >
+      {isAgreement ? 'Agreement' : 'Disagreement'}
+    </span>
+  )
+}
+
+// One question's near-alignment verdict, expandable into a per-item table of
+// exactly which raters said what and how far apart they were. The unit of
+// judgement is the ITEM (a likert_group row, a dial position, or a plain
+// question), so a question row summarizes its own items rather than being the
+// scored thing itself.
+function NearAlignmentQuestionRow({ question, rowKey }) {
+  const [expanded, setExpanded] = useState(!!question.meta?.default_expanded)
+  const multiItem = question.items.length > 1
+  const reviewerNames = question.items[0]?.values?.map(v => v.reviewerName) || []
+  return (
+    <div style={{ background: 'var(--bg-secondary)', borderRadius: 8, overflow: 'hidden' }}>
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+          width: '100%', padding: '6px 8px', fontSize: 12, background: 'transparent', border: 'none',
+          cursor: 'pointer', textAlign: 'left', font: 'inherit', color: 'var(--text)',
+        }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          {expanded ? <ChevronDown size={12} style={{ flexShrink: 0, color: 'var(--text-muted)' }} /> : <ChevronRight size={12} style={{ flexShrink: 0, color: 'var(--text-muted)' }} />}
+          <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }} className="truncate">{question.label}</span>
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
+          {multiItem && (
+            <span style={{ color: 'var(--text-muted)' }}>
+              {question.agreementCount}/{question.itemCount} items
+            </span>
+          )}
+          <NearVerdictBadge verdict={question.verdict} />
+        </span>
+      </button>
+      {expanded && (
+        <div style={{ padding: '0 8px 8px', overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)', minWidth: 160, maxWidth: 280 }}>Item</th>
+                {reviewerNames.map((name, i) => (
+                  <th key={`${rowKey}-head-${name}-${i}`} style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{name}</th>
+                ))}
+                <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>Spread</th>
+                <th style={{ textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '1px solid var(--border)' }}>Verdict</th>
+              </tr>
+            </thead>
+            <tbody>
+              {question.items.map(item => (
+                <tr key={`${rowKey}-item-${item.itemId}`}>
+                  <td style={{ padding: '4px 6px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)', maxWidth: 280, overflowWrap: 'break-word' }}>{item.label}</td>
+                  {item.values.map((v, i) => (
+                    <td key={`${rowKey}-cell-${item.itemId}-${i}`} style={{
+                      padding: '4px 6px', borderBottom: '1px solid var(--border)',
+                      color: item.verdict === 'disagreement' ? 'var(--danger)' : 'var(--text)',
+                      fontWeight: item.verdict === 'disagreement' ? 600 : 400,
+                    }}>
+                      {formatRawAnswerValue(v.value)}
+                    </td>
+                  ))}
+                  <td style={{ padding: '4px 6px', color: 'var(--text-muted)', borderBottom: '1px solid var(--border)' }}>
+                    {item.spread == null ? '—' : item.spread}
+                  </td>
+                  <td style={{ padding: '4px 6px', borderBottom: '1px solid var(--border)' }}>
+                    <NearVerdictBadge verdict={item.verdict} size="small" />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {question.items.some(item => item.ordered === false && item.verdict != null) && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              Items with no spread aren't on a numeric scale, so they're judged by exact match.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Alignment View (formerly "Data Visualization") ─────────────────────────────
 function DataVizView({ projectId, mediaTypes = [] }) {
   const [agreementRows, setAgreementRows] = useState([])
+  // Near Alignment's rows are a different shape from the percent engine's
+  // (binary verdicts per item, no weighted overall score), so they get their
+  // own state rather than being crammed into agreementRows.
+  const [nearRows, setNearRows] = useState([])
+  const [nearTolerance, setNearTolerance] = useState(NEAR_ALIGNMENT_DEFAULT_TOLERANCE)
   const [rawReviews, setRawReviews] = useState([])
   const [importedSources, setImportedSources] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedMediaTypeId, setSelectedMediaTypeId] = useState('')
+  // 'question' = percent agreement (the original scoring), 'near' = binary
+  // Agreement/Disagreement verdicts. The state value stays 'question' rather
+  // than being renamed to 'percent' so nothing else keying off it has to
+  // change; only the button's label differs.
   const [agreementMode, setAgreementMode] = useState('question')
   const [selectedSectionIds, setSelectedSectionIds] = useState([])
   const [selectedQuestionIds, setSelectedQuestionIds] = useState([])
@@ -2570,7 +2682,9 @@ function DataVizView({ projectId, mediaTypes = [] }) {
 
   useEffect(() => {
     const effectiveQuestionIds = (() => {
-      if (agreementMode !== 'question') return null
+      // The section and question filters apply to both modes identically —
+      // Percent Agreement and Near Alignment score the same selected
+      // questions, they just report them differently.
       const ids = new Set(selectedQuestionIds)
       for (const sectionId of selectedSectionIds) {
         const section = questionOptions.sections.find(item => item.id === sectionId)
@@ -2594,7 +2708,6 @@ function DataVizView({ projectId, mediaTypes = [] }) {
       encounterName: entry.encounterName,
       reviewDetails: entry.reviews,
       questionIds: effectiveQuestionIds,
-      globalOnly: agreementMode === 'final',
       // Alignment shows agreement among everyone who rated a file
       // automatically, regardless of instance role (Trainee/Consultant) —
       // the shared engine's default is role-separated, so this explicitly
@@ -2603,21 +2716,43 @@ function DataVizView({ projectId, mediaTypes = [] }) {
     })).filter(item => item.reviewCount >= 2)
     rows.sort((a, b) => (b.overallAgreement ?? -1) - (a.overallAgreement ?? -1))
     setAgreementRows(rows)
-  }, [agreementMode, filteredReviews, questionOptions, selectedQuestionIds, selectedSectionIds])
+
+    // Same grouping, same filters, same role pooling — only the scoring
+    // differs. Computed unconditionally so switching modes doesn't re-run
+    // everything; both are cheap relative to the data load above.
+    const near = Array.from(grouped.values()).map(entry => computeNearAlignmentForMediaFile({
+      mediaName: entry.mediaName,
+      encounterName: entry.encounterName,
+      reviewDetails: entry.reviews,
+      questionIds: effectiveQuestionIds,
+      poolAcrossRoles: true,
+      tolerance: nearTolerance,
+    })).filter(item => item.reviewCount >= 2)
+    // Files with the most disagreements first — the opposite ordering from
+    // the percent view, because a binary verdict list is a worklist: the
+    // files that need adjudicating should be at the top.
+    near.sort((a, b) => (b.disagreementCount ?? 0) - (a.disagreementCount ?? 0))
+    setNearRows(near)
+  }, [filteredReviews, questionOptions, selectedQuestionIds, selectedSectionIds, nearTolerance])
 
   const scoredAgreementRows = agreementRows.filter(row => row.overallAgreement != null)
   const averageAgreement = scoredAgreementRows.length > 0
     ? scoredAgreementRows.reduce((sum, row) => sum + row.overallAgreement, 0) / scoredAgreementRows.length
     : null
-  const finalQuestionCount = questionOptions.questions.filter(question => question.isFinalEvaluation).length
-  const selectedMediaType = mediaTypesWithReviews.find(type => String(type.id) === String(selectedMediaTypeId))
+  const isNearMode = agreementMode === 'near'
+  const nearTotals = useMemo(() => nearRows.reduce((acc, row) => ({
+    agreement: acc.agreement + (row.agreementCount || 0),
+    disagreement: acc.disagreement + (row.disagreementCount || 0),
+  }), { agreement: 0, disagreement: 0 }), [nearRows])
+  const nearScoredTotal = nearTotals.agreement + nearTotals.disagreement
+  const visibleRowCount = isNearMode ? nearRows.length : agreementRows.length
 
   return (
     <div style={{ maxWidth: 860 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 20 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>Alignment</h1>
-          <p className="text-secondary text-sm" style={{ margin: 0 }}>Compare question-level agreement or the final evaluation question for one media type.</p>
+          <p className="text-secondary text-sm" style={{ margin: 0 }}>Compare reviewers on one media type, either as a percent agreement score or as a near-alignment verdict.</p>
         </div>
       </div>
 
@@ -2636,66 +2771,165 @@ function DataVizView({ projectId, mediaTypes = [] }) {
             <label>Compare</label>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <button className={`btn btn-sm ${agreementMode === 'question' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setAgreementMode('question')}>
-                Question-Level Agreement
+                Percent Agreement
               </button>
-              <button className={`btn btn-sm ${agreementMode === 'final' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setAgreementMode('final')}>
-                Final Evaluation Agreement
+              <button className={`btn btn-sm ${agreementMode === 'near' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setAgreementMode('near')}>
+                Near Alignment
               </button>
             </div>
           </div>
         </div>
-        {agreementMode === 'question' ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
-            <AgreementMultiSelect
-              label="Sections"
-              options={questionOptions.sections.map(section => ({
-                id: section.id,
-                label: section.label,
-                subLabel: `${section.questionIds.length} question${section.questionIds.length === 1 ? '' : 's'}`,
-              }))}
-              selectedIds={selectedSectionIds}
-              onChange={setSelectedSectionIds}
-              emptyText="No sections found"
-            />
-            <AgreementMultiSelect
-              label="Questions"
-              options={questionOptions.questions.map(question => ({
-                id: question.id,
-                label: question.label,
-              }))}
-              selectedIds={selectedQuestionIds}
-              onChange={handleQuestionIdsChange}
-              emptyText="No questions found"
-              align="right"
-            />
-            <div style={{ gridColumn: '1 / -1', fontSize: 12, color: 'var(--text-muted)' }}>
-              {selectedSectionIds.length === 0 && selectedQuestionIds.length === 0
-                ? 'Using all comparable questions.'
-                : `Using ${selectedSectionIds.length} section${selectedSectionIds.length === 1 ? '' : 's'} and ${selectedQuestionIds.length} individual question${selectedQuestionIds.length === 1 ? '' : 's'}.`}
+        {isNearMode && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}>
+            <span style={{ fontWeight: 600 }}>Tolerance</span>
+            <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+              {[0, 1, 2].map(value => (
+                <button
+                  key={`near-tolerance-${value}`}
+                  className="btn btn-sm"
+                  style={{ borderRadius: 0, background: nearTolerance === value ? 'var(--accent)' : 'transparent', color: nearTolerance === value ? '#fff' : 'var(--text)' }}
+                  onClick={() => setNearTolerance(value)}
+                >
+                  ±{value}
+                </button>
+              ))}
             </div>
-          </div>
-        ) : (
-          <div style={{ fontSize: 12, color: finalQuestionCount > 0 ? 'var(--text-secondary)' : 'var(--warning)', background: finalQuestionCount > 0 ? 'var(--bg-secondary)' : 'var(--warning-light)', border: `1px solid ${finalQuestionCount > 0 ? 'var(--border)' : 'var(--warning)'}`, borderRadius: 8, padding: '8px 10px' }}>
-            {finalQuestionCount > 0
-              ? `${finalQuestionCount} final evaluation question${finalQuestionCount === 1 ? '' : 's'} found for ${selectedMediaType?.name || 'this media type'}.`
-              : 'No final evaluation question is set for this media type. Mark one question in form settings to use this mode.'}
+            <span style={{ color: 'var(--text-muted)' }}>
+              {nearTolerance === 0
+                ? 'Raters must give the identical answer to count as an agreement.'
+                : `An item counts as an agreement when the highest and lowest rating are within ${nearTolerance} point${nearTolerance === 1 ? '' : 's'} of each other.`}
+            </span>
           </div>
         )}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+          <AgreementMultiSelect
+            label="Sections"
+            options={questionOptions.sections.map(section => ({
+              id: section.id,
+              label: section.label,
+              subLabel: `${section.questionIds.length} question${section.questionIds.length === 1 ? '' : 's'}`,
+            }))}
+            selectedIds={selectedSectionIds}
+            onChange={setSelectedSectionIds}
+            emptyText="No sections found"
+          />
+          <AgreementMultiSelect
+            label="Questions"
+            options={questionOptions.questions.map(question => ({
+              id: question.id,
+              label: question.label,
+            }))}
+            selectedIds={selectedQuestionIds}
+            onChange={handleQuestionIdsChange}
+            emptyText="No questions found"
+            align="right"
+          />
+          <div style={{ gridColumn: '1 / -1', fontSize: 12, color: 'var(--text-muted)' }}>
+            {selectedSectionIds.length === 0 && selectedQuestionIds.length === 0
+              ? 'Using all comparable questions.'
+              : `Using ${selectedSectionIds.length} section${selectedSectionIds.length === 1 ? '' : 's'} and ${selectedQuestionIds.length} individual question${selectedQuestionIds.length === 1 ? '' : 's'}.`}
+          </div>
+        </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
         <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Files Compared</div>
-          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{agreementRows.length}</div>
+          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{visibleRowCount}</div>
         </div>
-        <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Average Agreement</div>
-          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{averageAgreement == null ? '—' : `${Math.round(averageAgreement * 100)}%`}</div>
-        </div>
+        {isNearMode ? (
+          <>
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Items in Agreement</div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>
+                {nearScoredTotal === 0 ? '—' : `${nearTotals.agreement} / ${nearScoredTotal}`}
+              </div>
+            </div>
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Disagreements</div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6, color: nearTotals.disagreement > 0 ? 'var(--danger)' : 'var(--text)' }}>{nearTotals.disagreement}</div>
+            </div>
+          </>
+        ) : (
+          <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Average Agreement</div>
+            <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{averageAgreement == null ? '—' : `${Math.round(averageAgreement * 100)}%`}</div>
+          </div>
+        )}
       </div>
 
       {loading ? (
         <div className="empty-state"><p>Calculating agreement…</p></div>
+      ) : isNearMode ? (
+        nearRows.length === 0 ? (
+          <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
+            <LineChart size={38} style={{ margin: '0 auto 14px', opacity: 0.35 }} />
+            <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>No matching multi-review comparisons yet</p>
+            <p style={{ fontSize: 13 }}>Submit at least two reviews for the same file, or adjust the media type and question filters.</p>
+          </div>
+        ) : (
+          <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Order questions by:</span>
+            <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+              <button
+                className="btn btn-sm"
+                style={{ borderRadius: 0, background: questionSortMode === 'form_order' ? 'var(--accent)' : 'transparent', color: questionSortMode === 'form_order' ? '#fff' : 'var(--text)' }}
+                onClick={() => setQuestionSortMode('form_order')}
+              >
+                Form order
+              </button>
+              <button
+                className="btn btn-sm"
+                style={{ borderRadius: 0, background: questionSortMode === 'agreement_desc' ? 'var(--accent)' : 'transparent', color: questionSortMode === 'agreement_desc' ? '#fff' : 'var(--text)' }}
+                onClick={() => setQuestionSortMode('agreement_desc')}
+              >
+                Agreements first
+              </button>
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {nearRows.map(row => {
+              const orderedQuestions = questionSortMode === 'agreement_desc'
+                ? [...row.questions].sort((a, b) => (a.disagreementCount || 0) - (b.disagreementCount || 0))
+                : row.questions
+              return (
+                <div key={`near-${row.encounterName}-${row.mediaName}`} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, background: 'var(--bg)' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>{row.mediaName}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        {row.encounterName} · {row.reviewCount} reviews · ±{row.tolerance}
+                        {row.excludedQuestionCount > 0 ? ` · ${row.excludedQuestionCount} excluded` : ''}
+                        {row.unscoredItemCount > 0 ? ` · ${row.unscoredItemCount} not rated by enough reviewers` : ''}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: row.disagreementCount === 0 ? 'var(--success)' : 'var(--danger)' }}>
+                        {row.itemCount === 0 ? '—' : `${row.agreementCount}/${row.itemCount}`}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>items in agreement</div>
+                    </div>
+                  </div>
+                  {orderedQuestions.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {orderedQuestions.map(question => (
+                        <NearAlignmentQuestionRow
+                          key={`near-${row.mediaName}-${question.label}`}
+                          rowKey={`near-${row.mediaName}-${question.label}`}
+                          question={question}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No comparable form questions were found for this video.</div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          </>
+        )
       ) : agreementRows.length === 0 ? (
         <div style={{ border: '2px dashed var(--border)', borderRadius: 12, padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
           <LineChart size={38} style={{ margin: '0 auto 14px', opacity: 0.35 }} />
@@ -2861,7 +3095,10 @@ function QuestionReliabilityView({ projectId, showToast }) {
     const warnings = []
 
     // Registers one value for one pooled question (creating it on first sight).
-    // Subject key is now the MEDIA NAME (a string), not the local media_file_id
+    // Subject key is built from the MEDIA NAME (a string), not the local
+    // media_file_id — plus the instance role/order on a multi-instance form,
+    // since each role is a separate person being assessed (see
+    // processFormResponse below)
     // — the only requirement for two ratings to be pooled as "the same
     // encounter" is that they share a media name, whether that rating came
     // from this project's own database or an imported results file from a
@@ -2892,12 +3129,31 @@ function QuestionReliabilityView({ projectId, showToast }) {
     // form of that name exists in this project (so turning on ICC applies
     // retroactively to all data, own or imported); falls back to the row's
     // own frozen snapshot only if no such form exists here.
-    function processFormResponse(formName, formIdForFallback, formSnapshot, responses, instanceRole, instanceOrder, subjectKey, reviewerName, sourceLabel) {
+    function processFormResponse(formName, formIdForFallback, formSnapshot, responses, instanceRole, instanceOrder, mediaName, reviewerName, sourceLabel) {
       const liveForm = currentFormsByName.get(formName) || currentFormsById.get(String(formIdForFallback))
       const schemaSource = liveForm?.schema || formSnapshot
       const sections = questionReliabilitySchemaSections(schemaSource)
-      const instanceKeySuffix = instanceRole ? `:${instanceRole}:${instanceOrder}` : ''
-      const instanceLabelSuffix = instanceRole ? ` (${instanceRole} ${instanceOrder})` : ''
+      // A repeatable form instance is its own SUBJECT, not its own question.
+      //
+      // On a multi-instance form like UCAT, the Trainee and the Consultant in
+      // one video are two different people being assessed against the same
+      // instrument — so they are two subjects rated by the same panel of
+      // reviewers, exactly like two different videos would be. Keying them as
+      // separate questions instead (which is what this did before) split the
+      // panel's ratings into two pools of one subject each, and ICC is
+      // undefined with one subject: a project with a single video could never
+      // produce an ICC at all, no matter how many reviewers rated it.
+      //
+      // Folding role+order into the subject key instead means one video with
+      // both roles yields 2 subjects, and N videos yield 2N — the same data,
+      // counted against the dimension that ICC actually needs variance along.
+      // Cross-reviewer matching still uses role + creation order rather than
+      // instance_key, per the existing rule: instance_key is unique per review
+      // and would never line up across two reviewers' own instances.
+      //
+      // Single-instance forms (SDMo) pass instanceRole null and are completely
+      // unaffected — their subject key stays the bare media name.
+      const subjectKey = instanceRole ? `${mediaName} — ${instanceRole} ${instanceOrder}` : mediaName
       // Sort index is the question's actual position in the form — section
       // index times a fixed stride, plus its position within that section
       // (assumes no section has 1000+ elements, comfortably safe). This is
@@ -2922,9 +3178,9 @@ function QuestionReliabilityView({ projectId, showToast }) {
             const rowMeta = { min: 1, max: Number(element.scale) || 5 }
             let rowIdx = 0
             for (const item of (element.items || [])) {
-              const key = `${formName}:${element.id}:${item.id}${instanceKeySuffix}`
+              const key = `${formName}:${element.id}:${item.id}`
               const value = groupResponses?.[item.id]
-              const label = (element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)) + instanceLabelSuffix
+              const label = element.label ? `${element.label} — ${item.label || item.id}` : (item.label || item.id)
               record(key, label, method, rowMeta, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex + rowIdx / 1000)
               rowIdx++
             }
@@ -2942,18 +3198,18 @@ function QuestionReliabilityView({ projectId, showToast }) {
             const count = Math.min(5, Math.max(1, Number(element.count || 1)))
             const dialMeta = { min: Number(element.min ?? 0), max: Number(element.max ?? 100) }
             for (let idx = 0; idx < count; idx++) {
-              const key = `${formName}:${element.id}:${idx}${instanceKeySuffix}`
+              const key = `${formName}:${element.id}:${idx}`
               const value = arrayResponses[idx]
               const subLabel = element.control_labels?.[idx] || `Dial ${idx + 1}`
-              const label = (element.label ? `${element.label} — ${subLabel}` : subLabel) + instanceLabelSuffix
+              const label = element.label ? `${element.label} — ${subLabel}` : subLabel
               record(key, label, method, dialMeta, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex + idx / 1000)
             }
             continue
           }
 
-          const key = `${formName}:${element.id}${instanceKeySuffix}`
+          const key = `${formName}:${element.id}`
           const value = responses?.[element.id]
-          record(key, (element.label || element.id) + instanceLabelSuffix, method, element, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex)
+          record(key, element.label || element.id, method, element, subjectKey, value, reviewerName, sourceLabel, sectionTitle, sortIndex)
         }
         sectionIdx++
       }
@@ -3265,8 +3521,10 @@ function QuestionReliabilityView({ projectId, showToast }) {
                   </div>
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
-                  {q.subjectsUsable} of {q.subjectsSeen} rated encounter{q.subjectsSeen === 1 ? '' : 's'} had 2+
-                  reviewers and count toward this statistic.
+                  {q.subjectsUsable} of {q.subjectsSeen} rated subject{q.subjectsSeen === 1 ? '' : 's'} had 2+
+                  reviewers and count toward this statistic. On a form with repeatable
+                  roles, each role in a video is its own subject — one video with a
+                  Trainee and a Consultant counts as two.
                   {/* ICC needs 2+ subjects to define between-subject variance at all;
                       percent agreement and kappa-family methods only need 1+, since
                       they're computed from pooled ratings rather than variance across
@@ -3280,7 +3538,7 @@ function QuestionReliabilityView({ projectId, showToast }) {
                     <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%', tableLayout: 'fixed' }}>
                       <thead>
                         <tr>
-                          <th style={{ textAlign: 'left', padding: '4px 8px 4px 0', color: 'var(--text-muted)', fontWeight: 600, overflowWrap: 'break-word' }}>Encounter</th>
+                          <th style={{ textAlign: 'left', padding: '4px 8px 4px 0', color: 'var(--text-muted)', fontWeight: 600, overflowWrap: 'break-word' }}>Subject</th>
                           {tableColumns.map(col => (
                             <th key={col.key} style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--text-muted)', fontWeight: 600, overflowWrap: 'break-word' }}>
                               {col.reviewerName}
