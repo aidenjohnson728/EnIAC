@@ -230,8 +230,8 @@ export default function HomePage() {
         padding: '0 20px', borderBottom: '1px solid var(--border)',
         WebkitAppRegion: 'drag',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <img src={appIcon} alt="" style={{ width: 44, height: 44, objectFit: 'contain' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <img src={appIcon} alt="" style={{ width: 30, height: 30, objectFit: 'contain', display: 'block' }} />
           <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: '-0.2px' }}>EnIAC</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, WebkitAppRegion: 'no-drag' }}>
