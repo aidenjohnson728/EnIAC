@@ -55,12 +55,3 @@ When a coder opens a media file, they create a **Review**. Inside a review they 
 ### Sharing a Project with a Team
 
 When you share a project (Share Project on the project page), you assign each person a role — **Leader** or **Reviewer** — as part of one shared file. When someone imports that file, they pick their own name from the list you set up, which sets their role automatically. Reviewers see everything needed to code encounters, but won't see Settings, Agreement/Alignment, or the option to import others' results — that stays with Leaders.
-
-### Multi-User / Sync
-
-EnIAC supports syncing across multiple coders' machines so a team can work on the same project simultaneously.
-
-- **OneDrive or Google Drive** — connect from Setup → Sync. Each coder connects their own account and points to the shared project folder. The app syncs automatically in the background.
-- **Local folder** — point all machines to a shared network drive or a locally-synced cloud folder (Dropbox, OneDrive desktop sync, etc.)
-
-The project Leader sets up the encounters, forms, and media types. Coders only need to import the shared project file, pick their name, and connect to the shared folder — they do not need to configure anything else.
